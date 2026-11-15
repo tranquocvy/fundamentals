@@ -1,0 +1,170 @@
+# Roadmap: Backend
+# Khung tự xây dựng bởi người đóng góp (không sao chép roadmap.sh), tham khảo các nguồn mở bên dưới.
+# Node có `article` dùng chung tiến trình với cây khác chứa cùng bài.
+# Quy ước: id node KHÔNG được đổi/xoá. Xem CONTRIBUTING.md mục "Roadmap".
+
+title: Backend
+description: Từ nền tảng mạng và hệ điều hành tới thiết kế API, dữ liệu và vận hành một service thật.
+order: 2
+sources:
+  - name: Người đóng góp fundamentals
+    note: khung tự xây dựng, mở cho PR bổ sung
+  - name: The Twelve-Factor App
+    url: https://12factor.net/
+    note: nguyên tắc vận hành service
+  - name: MDN Learn web development
+    url: https://developer.mozilla.org/en-US/docs/Learn
+
+sections:
+  - id: foundations
+    title: Nền tảng cần có
+    subject: os
+    outcome: Hiểu service của mình chạy trên cái gì và nói chuyện với client qua đâu.
+    description: Những khái niệm backend dùng hằng ngày, học kỹ ở cây CS Fundamentals.
+    nodes:
+      - id: process-thread
+        title: Process vs Thread
+        article: os/process-thread
+      - id: tcp-vs-udp
+        title: TCP vs UDP
+        article: networking/tcp-vs-udp
+      - id: dns
+        title: DNS
+        article: networking/dns
+        requires: [tcp-vs-udp]
+      - id: http-basics
+        title: HTTP
+        description: Request/response, method, status code, header, cookie.
+        requires: [tcp-vs-udp]
+        resources:
+          - title: "MDN — HTTP"
+            url: https://developer.mozilla.org/en-US/docs/Web/HTTP
+
+  - id: api
+    title: API Design
+    subject: backend
+    outcome: Thiết kế được một API rõ ràng, an toàn và khó bị dùng sai.
+    description: Thiết kế giao diện để client và service khác gọi vào.
+    nodes:
+      - id: rest
+        title: REST
+        description: Tài nguyên, method, mã lỗi và quy ước đặt URL.
+        requires: [http-basics]
+        resources:
+          - title: "MDN — HTTP request methods"
+            url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods
+      - id: authn-authz
+        title: Authentication & Authorization
+        description: Xác định bạn là ai (session, token, OAuth) và bạn được làm gì.
+        requires: [rest]
+        resources:
+          - title: "MDN — Authentication"
+            url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Authentication
+      - id: input-validation
+        title: Validation & Error Handling
+        description: Không tin dữ liệu đầu vào; trả lỗi rõ ràng, nhất quán.
+        requires: [rest]
+        resources:
+          - title: "OWASP — Input Validation Cheat Sheet"
+            url: https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html
+      - id: rate-limiting
+        title: Rate Limiting
+        description: Giới hạn số request để bảo vệ service.
+        requires: [rest]
+        optional: true
+        resources:
+          - title: "MDN — 429 Too Many Requests"
+            url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+      - id: graphql-grpc
+        title: GraphQL & gRPC
+        description: Hai lựa chọn khác REST và khi nào nên dùng.
+        requires: [rest]
+        optional: true
+        resources:
+          - title: "gRPC — Introduction"
+            url: https://grpc.io/docs/what-is-grpc/introduction/
+
+  - id: data
+    title: Data
+    subject: databases
+    outcome: Chọn được nơi lưu dữ liệu và giữ truy vấn nhanh khi dữ liệu lớn dần.
+    description: Chọn nơi lưu dữ liệu và giữ nó nhanh, đúng.
+    nodes:
+      - id: sql-databases
+        title: SQL Databases
+        description: Postgres/MySQL, schema, migration, transaction.
+        resources:
+          - title: "PostgreSQL — Tutorial"
+            url: https://www.postgresql.org/docs/current/tutorial.html
+      - id: indexing
+        title: Indexing & Query Tuning
+        description: Đọc query plan, thêm index đúng chỗ.
+        requires: [sql-databases]
+        resources:
+          - title: "Use The Index, Luke"
+            url: https://use-the-index-luke.com/
+      - id: caching
+        title: Caching
+        description: Cache ở đâu, khi nào hết hạn, và chuyện dữ liệu cũ.
+        requires: [sql-databases]
+        resources:
+          - title: "MDN — HTTP caching"
+            url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching
+      - id: nosql
+        title: NoSQL
+        description: Key-value, document, wide-column và đánh đổi so với SQL.
+        requires: [sql-databases]
+        optional: true
+        resources:
+          - title: "Redis — Documentation"
+            url: https://redis.io/docs/latest/
+      - id: message-queues
+        title: Message Queues
+        description: Xử lý bất đồng bộ, retry, at-least-once delivery.
+        requires: [process-thread]
+        optional: true
+        resources:
+          - title: "RabbitMQ — Tutorials"
+            url: https://www.rabbitmq.com/tutorials
+
+  - id: ops
+    title: Vận hành
+    subject: devops
+    outcome: Tự đóng gói, deploy và theo dõi được một service đang chạy.
+    description: Đưa service lên chạy thật và biết khi nào nó hỏng.
+    nodes:
+      - id: linux-basics
+        title: Linux cơ bản
+        description: Shell, process, quyền file, đọc log.
+        requires: [process-thread]
+        resources:
+          - title: "The Linux Command Line (sách miễn phí)"
+            url: https://linuxcommand.org/tlcl.php
+      - id: containers
+        title: Docker & Containers
+        description: Đóng gói service cùng môi trường chạy của nó.
+        requires: [linux-basics]
+        resources:
+          - title: "Docker — Get started"
+            url: https://docs.docker.com/get-started/
+      - id: ci-cd
+        title: CI/CD
+        description: Tự động test, build và deploy mỗi lần push.
+        requires: [containers]
+        resources:
+          - title: "GitHub Actions — Understanding"
+            url: https://docs.github.com/en/actions/about-github-actions/understanding-github-actions
+      - id: config-secrets
+        title: Config & Secrets
+        description: Tách cấu hình khỏi code, giữ bí mật an toàn.
+        requires: [containers]
+        resources:
+          - title: The Twelve-Factor App — III. Config
+            url: https://12factor.net/config
+      - id: observability
+        title: Logging, Metrics & Tracing
+        description: Nhìn vào bên trong service đang chạy.
+        requires: [ci-cd]
+        resources:
+          - title: "OpenTelemetry — Observability primer"
+            url: https://opentelemetry.io/docs/concepts/observability-primer/

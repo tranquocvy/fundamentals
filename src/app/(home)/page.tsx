@@ -12,9 +12,12 @@ export default function HomePage() {
       <p className="mt-6 max-w-xl text-lg text-fd-muted-foreground">
         Ghi chú kiến thức nền tảng IT — viết bằng tiếng Việt, giữ thuật ngữ tiếng Anh, kèm nguồn gốc để đối chiếu.
       </p>
-      <div className="mt-6 font-mono text-sm">
+      <div className="mt-6 flex flex-col gap-2 font-mono text-sm sm:flex-row sm:gap-6">
         <Link href="/docs/os" className="text-fd-primary hover:underline">
           &gt; bắt đầu với Operating Systems
+        </Link>
+        <Link href="/roadmaps" className="text-fd-primary hover:underline">
+          &gt; chọn một roadmap
         </Link>
       </div>
       <h2 className="mt-16 mb-4 font-mono text-sm font-normal text-fd-muted-foreground">~/subjects</h2>

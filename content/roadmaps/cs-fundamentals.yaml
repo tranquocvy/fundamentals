@@ -1,0 +1,202 @@
+# Roadmap: CS Fundamentals
+# Khung theo OSSU Computer Science (phần Core), đối chiếu knowledge area của ACM/IEEE CS2023.
+# Quy ước: id node KHÔNG được đổi/xoá (là khoá lưu tiến trình). Muốn bỏ node thì thêm `deprecated: true`.
+# Xem CONTRIBUTING.md mục "Roadmap".
+
+title: CS Fundamentals
+description: Nền tảng khoa học máy tính cho người tự học, từ thuật toán tới hệ điều hành, mạng và cơ sở dữ liệu.
+order: 1
+sources:
+  - name: OSSU Computer Science
+    url: https://github.com/ossu/computer-science
+    note: thứ tự các môn Core
+  - name: ACM/IEEE-CS/AAAI Computer Science Curricula 2023 (CS2023)
+    url: https://csed.acm.org/
+    note: đối chiếu knowledge area
+  - name: Teach Yourself Computer Science
+    url: https://teachyourselfcs.com/
+    note: sách/khoá gợi ý cho từng môn
+
+sections:
+  - id: dsa
+    title: Data Structures & Algorithms
+    subject: dsa
+    outcome: Ước lượng được chi phí của một đoạn code và chọn đúng cấu trúc dữ liệu cho bài toán.
+    description: Cách tổ chức dữ liệu và đo chi phí của thuật toán, nền cho mọi môn phía sau.
+    nodes:
+      - id: complexity
+        title: Big-O & Complexity
+        description: Đo thời gian và bộ nhớ theo kích thước đầu vào.
+        resources:
+          - title: Jeff Erickson — Algorithms (sách miễn phí)
+            url: https://jeffe.cs.illinois.edu/teaching/algorithms/
+      - id: arrays-linked-lists
+        title: Array & Linked List
+        description: Hai cách xếp dữ liệu tuần tự và cái giá của mỗi cách.
+        requires: [complexity]
+        resources:
+          - title: "MIT 6.006 — Introduction to Algorithms"
+            url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
+      - id: hash-tables
+        title: Hash Table
+        description: Tra cứu trung bình O(1) nhờ hàm băm, và chuyện va chạm.
+        requires: [arrays-linked-lists]
+        resources:
+          - title: "MIT 6.006 — Hashing"
+            url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
+      - id: trees
+        title: Tree & Binary Search Tree
+        description: Cấu trúc phân cấp, cân bằng cây, B-tree.
+        requires: [arrays-linked-lists]
+        resources:
+          - title: "Open Data Structures — Binary Trees"
+            url: https://opendatastructures.org/ods-python/6_Binary_Trees.html
+      - id: sorting
+        title: Sorting
+        description: Merge sort, quicksort, giới hạn dưới O(n log n).
+        requires: [complexity]
+        resources:
+          - title: "Jeff Erickson — Algorithms (sách miễn phí)"
+            url: https://jeffe.cs.illinois.edu/teaching/algorithms/
+      - id: graphs
+        title: Graph
+        description: BFS, DFS, đường đi ngắn nhất, sắp xếp topo.
+        requires: [trees]
+        resources:
+          - title: "Jeff Erickson — Algorithms (sách miễn phí)"
+            url: https://jeffe.cs.illinois.edu/teaching/algorithms/
+      - id: dynamic-programming
+        title: Dynamic Programming
+        description: Chia bài toán thành bài con chồng lấp và ghi nhớ kết quả.
+        requires: [sorting]
+        optional: true
+        resources:
+          - title: "Jeff Erickson — Algorithms (sách miễn phí)"
+            url: https://jeffe.cs.illinois.edu/teaching/algorithms/
+
+  - id: os
+    title: Operating Systems
+    subject: os
+    outcome: Giải thích được một chương trình chạy, chờ nhau và chia bộ nhớ thế nào.
+    description: OS chia CPU, bộ nhớ và thiết bị cho nhiều chương trình cùng lúc như thế nào.
+    nodes:
+      - id: process-thread
+        title: Process vs Thread
+        article: os/process-thread
+      - id: cpu-scheduling
+        title: CPU Scheduling
+        article: os/cpu-scheduling
+        requires: [process-thread]
+      - id: synchronization
+        title: Synchronization
+        description: Mutex, semaphore, condition variable để các thread phối hợp an toàn.
+        requires: [process-thread]
+        resources:
+          - title: "OSTEP — Chapter 28: Locks"
+            url: https://pages.cs.wisc.edu/~remzi/OSTEP/threads-locks.pdf
+      - id: deadlock
+        title: Deadlock
+        article: os/deadlock
+        requires: [synchronization]
+      - id: virtual-memory
+        title: Virtual Memory
+        article: os/virtual-memory
+        requires: [process-thread]
+      - id: file-systems
+        title: File Systems
+        description: File, thư mục, inode và cách dữ liệu nằm trên đĩa.
+        requires: [virtual-memory]
+        resources:
+          - title: "OSTEP — Chapter 39: Files and Directories"
+            url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-intro.pdf
+      - id: io-devices
+        title: I/O Devices
+        description: "Interrupt, DMA, driver: CPU nói chuyện với thiết bị thế nào."
+        optional: true
+        resources:
+          - title: "OSTEP — Chapter 36: I/O Devices"
+            url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-devices.pdf
+
+  - id: networking
+    title: Computer Networks
+    subject: networking
+    outcome: Kể được hành trình của một request từ lúc gõ URL tới lúc nhận response.
+    description: Dữ liệu đi từ máy này sang máy khác qua các tầng giao thức ra sao.
+    nodes:
+      - id: network-layers
+        title: OSI & TCP/IP Model
+        description: Chia mạng thành các tầng, mỗi tầng giải một bài toán.
+        resources:
+          - title: "Stanford CS144 — Introduction to Computer Networking"
+            url: https://cs144.github.io/
+      - id: ip-routing
+        title: IP & Routing
+        description: Địa chỉ IP, subnet, router chọn đường đi cho gói tin.
+        requires: [network-layers]
+        resources:
+          - title: "RFC 791 — Internet Protocol"
+            url: https://www.rfc-editor.org/rfc/rfc791
+      - id: tcp-vs-udp
+        title: TCP vs UDP
+        article: networking/tcp-vs-udp
+        requires: [ip-routing]
+      - id: dns
+        title: DNS
+        article: networking/dns
+        requires: [tcp-vs-udp]
+      - id: http
+        title: HTTP
+        description: Request, response, method, status code, header.
+        requires: [tcp-vs-udp]
+        resources:
+          - title: "MDN — HTTP"
+            url: https://developer.mozilla.org/en-US/docs/Web/HTTP
+      - id: tls
+        title: TLS & HTTPS
+        description: Mã hoá kết nối và chứng chỉ số.
+        requires: [http]
+        resources:
+          - title: RFC 8446 — TLS 1.3
+            url: https://www.rfc-editor.org/rfc/rfc8446
+
+  - id: databases
+    title: Databases
+    subject: databases
+    outcome: Thiết kế được bảng, viết truy vấn đủ nhanh và giữ dữ liệu đúng khi nhiều người cùng ghi.
+    description: Lưu, truy vấn và giữ dữ liệu đúng khi nhiều người cùng ghi.
+    nodes:
+      - id: relational-model
+        title: Relational Model & SQL
+        description: Bảng, khoá, join và ngôn ngữ truy vấn SQL.
+        resources:
+          - title: CMU 15-445 Database Systems
+            url: https://15445.courses.cs.cmu.edu/
+      - id: indexing
+        title: Indexing
+        description: B-tree index giúp truy vấn nhanh và cái giá khi ghi.
+        requires: [relational-model, trees]
+        resources:
+          - title: Use The Index, Luke
+            url: https://use-the-index-luke.com/
+      - id: transactions
+        title: Transactions & ACID
+        description: Nhóm thao tác thành một khối "tất cả hoặc không".
+        requires: [relational-model, synchronization]
+        resources:
+          - title: "PostgreSQL — Transactions"
+            url: https://www.postgresql.org/docs/current/tutorial-transactions.html
+      - id: isolation-levels
+        title: Isolation Levels
+        description: Dirty read, phantom read và các mức cô lập.
+        requires: [transactions]
+        resources:
+          - title: "PostgreSQL — Transaction Isolation"
+            url: https://www.postgresql.org/docs/current/transaction-iso.html
+      - id: normalization
+        title: Normalization
+        description: Thiết kế bảng tránh dư thừa và bất thường khi cập nhật.
+        requires: [relational-model]
+        optional: true
+        resources:
+          - title: "Wikipedia — Database normalization"
+            url: https://en.wikipedia.org/wiki/Database_normalization
