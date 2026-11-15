@@ -6,6 +6,7 @@
 //   npm run new os virtual-memory "Virtual Memory"
 //
 // Tiêu đề mặc định sinh từ slug: virtual-memory → "Virtual Memory".
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -34,8 +35,24 @@ const title =
     .map((w) => w[0].toUpperCase() + w.slice(1))
     .join(' ');
 
-const template = readFileSync(join('templates', '_template.mdx'), 'utf8');
-writeFileSync(file, template.replaceAll('{{title}}', title).replaceAll('{{subject}}', subject));
+// GitHub username để hiện avatar: ưu tiên `git config github.user`, sau đó hỏi GitHub CLI (`gh`) nếu đã đăng nhập.
+function githubUser() {
+  const run = (cmd, args) => {
+    try {
+      return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
+    } catch {
+      return '';
+    }
+  };
+  return run('git', ['config', 'github.user']) || run('gh', ['api', 'user', '--jq', '.login']);
+}
+const user = githubUser();
+
+let content = readFileSync(join('templates', '_template.mdx'), 'utf8')
+  .replaceAll('{{title}}', title)
+  .replaceAll('{{subject}}', subject);
+if (user) content = content.replace('# authors: [github-username]', `authors: [${user}]`);
+writeFileSync(file, content);
 
 const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
 meta.pages ??= [];
@@ -44,4 +61,9 @@ writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
 
 console.log(`✓ Đã tạo ${file}`);
 console.log(`✓ Đã thêm "${slug}" vào ${metaPath}`);
+console.log(
+  user
+    ? `✓ authors: [${user}]`
+    : '! Không tìm được GitHub username: sửa dòng "# authors" trong frontmatter, hoặc chạy `git config --global github.user <username>`.',
+);
 console.log(`→ Sửa các dòng TODO trong frontmatter, rồi xem ở http://localhost:3000/docs/${subject}/${slug}`);

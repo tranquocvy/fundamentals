@@ -54,7 +54,7 @@ title: Virtual Memory              # bắt buộc, giữ thuật ngữ tiếng A
 description: Một câu tiếng Việt tóm tắt bài.   # bắt buộc
 status: draft                      # draft | reviewed (chỉ người review mới đổi sang reviewed)
 tags: [os, memory]                 # chữ thường, tiếng Anh
-authors: [github-username]         # tuỳ chọn; bỏ trống thì lấy tên từ git commit đầu tiên
+authors: [github-username]         # `npm run new` tự điền (để hiện avatar); bỏ trống thì chỉ hiện tên từ git commit đầu tiên
 references:                        # ít nhất 1 nguồn
   - title: "OSTEP — Chapter 13: Address Spaces"
     url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-intro.pdf   # tuỳ chọn
