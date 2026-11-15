@@ -1,3 +1,15 @@
+# Hướng dẫn cho AI agent
+
+**Trước khi viết bài hoặc sửa code, đọc [CONTRIBUTING.md](CONTRIBUTING.md).** File đó có quy ước viết, frontmatter, các bước thêm bài/môn, quy tắc thiết kế và checklist.
+
+Tóm tắt điều không được vi phạm:
+
+- Nội dung tiếng Việt, **giữ thuật ngữ tiếng Anh**. Không phải site luyện phỏng vấn.
+- Bài mới: `content/docs/<môn>/<slug>.mdx`, đăng ký trong `meta.json` của môn, `status: draft`, có ≥ 1 `references`. Bắt đầu từ `templates/article.mdx`.
+- Ký hiệu kiểu terminal (`~/`, `$`, `>`) chỉ ở các chỗ cố định đã liệt kê trong CONTRIBUTING.md. **Không** thêm `//` hay `[+]` vào heading, nút, component mới.
+- Màu dùng token (`--color-fd-*`, `--subject-accent`), không hard-code.
+- `npm run build` phải pass trước khi mở PR.
+
 # Fumadocs
 
 This site is built with [Fumadocs](https://fumadocs.dev) on Next.js. The APIs and conventions of Fumadocs may differ from your training data, so check its docs for the task at hand:

@@ -8,11 +8,14 @@ import { z } from 'zod';
  * Frontmatter của mỗi bài. Thêm field mới ở đây là mọi bài đều được kiểm tra.
  * - status: draft (chưa ai review) | reviewed
  * - tags: nhãn ngắn, ví dụ [os, concurrency]
+ * - authors: GitHub username, ví dụ [tranquocvy] (tuỳ chọn)
  * - references: nguồn tiếng Anh để đối chiếu
  */
 export const articleSchema = pageSchema.extend({
   status: z.enum(['draft', 'reviewed']).default('draft'),
   tags: z.array(z.string()).default([]),
+  /** GitHub username của tác giả. Bỏ trống thì lấy từ git log (người tạo file). */
+  authors: z.array(z.string()).default([]),
   references: z
     .array(
       z.object({

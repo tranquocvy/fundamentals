@@ -2,7 +2,8 @@ import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
 import { appName, gitConfig } from './shared';
 import { FontToggle } from '@/components/font-toggle';
 
-export function baseOptions(): BaseLayoutProps {
+/** fontToggleInNav=false: trang docs đặt nút đổi font ở chân sidebar thay vì lẫn trong link nav. */
+export function baseOptions({ fontToggleInNav = true } = {}): BaseLayoutProps {
   return {
     nav: {
       title: (
@@ -16,7 +17,9 @@ export function baseOptions(): BaseLayoutProps {
       { text: <span className="font-mono text-sm">~/home</span>, url: '/', active: 'url' },
       { text: <span className="font-mono text-sm">/subjects</span>, url: '/docs', active: 'nested-url' },
       { text: <span className="font-mono text-sm">/contribute</span>, url: '/docs/contribute' },
-      { type: 'custom', secondary: true, children: <FontToggle /> },
+      ...(fontToggleInNav
+        ? [{ type: 'custom' as const, secondary: true, children: <FontToggle /> }]
+        : []),
     ],
   };
 }

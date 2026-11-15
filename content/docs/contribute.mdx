@@ -3,8 +3,14 @@ title: Contribute
 description: Cách thêm hoặc sửa một bài ghi chú.
 ---
 
-1. Fork hoặc clone repo (bạn bè được mời làm collaborator có thể commit/PR trực tiếp).
-2. Thêm file `.mdx` vào `content/docs/<môn>/`, và đăng ký trong `meta.json` của môn đó.
-3. Điền frontmatter: `title`, `description`, `status` (`draft` | `reviewed`), `tags`, `references`.
+Hướng dẫn đầy đủ (quy ước viết, frontmatter, thiết kế, checklist) nằm ở [CONTRIBUTING.md](https://github.com/tranquocvy/fundamentals/blob/main/CONTRIBUTING.md) trên GitHub. Nếu bạn dùng AI agent, bảo nó đọc file đó trước; repo cũng có `AGENTS.md` / `CLAUDE.md` để agent tự đọc.
+
+## Tóm tắt
+
+1. Clone repo (bạn bè được mời làm collaborator có thể commit/PR trực tiếp).
+2. Copy `templates/article.mdx` vào `content/docs/<môn>/<slug>.mdx`, điền frontmatter.
+3. Thêm `<slug>` vào `pages` trong `content/docs/<môn>/meta.json`.
 4. Dùng `<Term def="...">` cho thuật ngữ và `<Expand title="...">` cho phần mở rộng.
-5. Chạy `npm run dev` để xem trước, rồi mở Pull Request.
+5. `npm run dev` để xem trước, `npm run build` phải pass, rồi mở Pull Request.
+
+Tên tác giả lấy tự động từ git commit đầu tiên của file. Muốn hiện avatar GitHub, thêm `authors: [github-username]` vào frontmatter.

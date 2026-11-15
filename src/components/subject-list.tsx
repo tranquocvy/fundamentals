@@ -10,11 +10,12 @@ export function SubjectList({ subjects }: { subjects: Subject[] }) {
       {/* ô vuông trượt */}
       <span
         aria-hidden
-        className="pointer-events-none absolute left-0 top-0 h-[72px] w-1.5 transition-all duration-200 ease-out"
+        className="subject-bar pointer-events-none absolute left-0 top-0 h-[72px] w-1.5 transition-all duration-200 ease-out"
         style={{
           transform: `translateY(${(hover ?? 0) * 72}px)`,
           opacity: hover === null ? 0 : 1,
-          background: hover === null ? 'transparent' : subjects[hover].accent.dark,
+          ['--bar-light' as string]: subjects[hover ?? 0].accent.light,
+          ['--bar-dark' as string]: subjects[hover ?? 0].accent.dark,
         }}
       />
       {subjects.map((s, i) => {
