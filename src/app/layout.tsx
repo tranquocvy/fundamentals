@@ -3,9 +3,10 @@ import type { Metadata } from 'next';
 import { Provider } from '@/components/provider';
 import { SubjectScope } from '@/components/subject-scope';
 import { fontVariables } from '@/lib/fonts';
-import { appName, author } from '@/lib/shared';
+import { appName, author, siteUrl } from '@/lib/shared';
 
 export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl),
   title: { default: `${appName} — IT fundamentals notes`, template: `%s · ${appName}` },
   description: 'Ghi chú kiến thức nền tảng IT bằng tiếng Việt, giữ thuật ngữ tiếng Anh.',
 };
