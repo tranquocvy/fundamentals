@@ -98,6 +98,7 @@ Muốn thêm component mới: tạo trong `src/components/`, đăng ký ở `src
 - [ ] Thuật ngữ tiếng Anh giữ nguyên, có `<Term>` ở lần xuất hiện đầu nếu cần giải nghĩa
 - [ ] Không thêm ký hiệu `//`, `[+]` vào heading
 - [ ] `npm run build` pass
+- [ ] Commit message theo Conventional Commits (mục 8)
 - [ ] Xem thử cả dark/light và màn hình hẹp
 
 ## 7. Lệnh hay dùng
@@ -109,3 +110,28 @@ npm run build        # build tĩnh ra out/ (tự chạy scripts/fix-prefetch.mjs
 npx serve out -l 4000  # chạy bản build tĩnh
 npm run types:check  # kiểm tra type
 ```
+
+## 8. Commit message: Conventional Commits
+
+Mọi commit dùng [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <mô tả ngắn, viết thường, không chấm cuối>
+
+<thân: vì sao / thay đổi gì, mỗi ý một gạch đầu dòng (tuỳ chọn)>
+```
+
+| type | Dùng khi |
+|---|---|
+| `feat` | tính năng hoặc component mới, môn mới |
+| `fix` | sửa lỗi hiển thị/hành vi |
+| `content` | thêm hoặc sửa bài ghi chú trong `content/` |
+| `docs` | README, CONTRIBUTING, AGENTS, template |
+| `style` | chỉ đổi CSS/giao diện, không đổi logic |
+| `refactor` | sắp xếp lại code, không đổi hành vi |
+| `chore` | deps, config, script build, `.gitattributes` |
+
+- `scope` tuỳ chọn: môn (`os`, `networking`...) hoặc khu vực (`search`, `ui`, `build`).
+- Dòng đầu ≤ 72 ký tự, mệnh lệnh: `feat(ui): add byline`, không phải `Added byline`.
+- Một commit một mục đích. Nếu dòng đầu phải dùng "và" cho 2 việc khác loại, tách commit.
+- Ví dụ: `content(os): add virtual memory note`, `fix(search): strip JSX tags from index`.

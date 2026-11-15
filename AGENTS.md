@@ -9,6 +9,7 @@ Tóm tắt điều không được vi phạm:
 - Ký hiệu kiểu terminal (`~/`, `$`, `>`) chỉ ở các chỗ cố định đã liệt kê trong CONTRIBUTING.md. **Không** thêm `//` hay `[+]` vào heading, nút, component mới.
 - Màu dùng token (`--color-fd-*`, `--subject-accent`), không hard-code.
 - `npm run build` phải pass trước khi mở PR.
+- Commit message theo **Conventional Commits** (`feat`, `fix`, `content`, `docs`, `style`, `refactor`, `chore`), xem mục 8 CONTRIBUTING.md. Ví dụ: `content(os): add virtual memory note`.
 
 # Fumadocs
 
