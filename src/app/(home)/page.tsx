@@ -6,7 +6,7 @@ export default function HomePage() {
   return (
     <main className="mx-auto w-full max-w-4xl px-6 py-16">
       <p className="font-mono text-sm text-fd-muted-foreground">$ cat README.md</p>
-      <h1 className="mt-4 font-display text-6xl font-semibold md:text-7xl">
+      <h1 className="mt-4 font-display text-[clamp(2.25rem,11vw,3.75rem)] font-semibold leading-tight md:text-7xl">
         Fundamentals<span className="cursor">_</span>
       </h1>
       <p className="mt-6 max-w-xl text-lg text-fd-muted-foreground">

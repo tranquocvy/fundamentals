@@ -2,8 +2,11 @@ import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
 import { appName, gitConfig } from './shared';
 import { FontToggle } from '@/components/font-toggle';
 
-/** fontToggleInNav=false: trang docs đặt nút đổi font ở chân sidebar thay vì lẫn trong link nav. */
-export function baseOptions({ fontToggleInNav = true } = {}): BaseLayoutProps {
+/**
+ * docs=true: layout bài viết. Sidebar chỉ liệt kê môn/bài (không lặp link nav),
+ * nút đổi font nằm ở chân sidebar; logo "> fundamentals" vẫn dẫn về trang chủ.
+ */
+export function baseOptions({ docs = false } = {}): BaseLayoutProps {
   return {
     nav: {
       title: (
@@ -13,13 +16,12 @@ export function baseOptions({ fontToggleInNav = true } = {}): BaseLayoutProps {
       ),
     },
     githubUrl: `https://github.com/${gitConfig.user}/${gitConfig.repo}`,
-    links: [
+    links: docs ? [] : [
       { text: <span className="font-mono text-sm">~/home</span>, url: '/', active: 'url' },
       { text: <span className="font-mono text-sm">/subjects</span>, url: '/docs', active: 'nested-url' },
+      { text: <span className="font-mono text-sm">/glossary</span>, url: '/docs/glossary' },
       { text: <span className="font-mono text-sm">/contribute</span>, url: '/docs/contribute' },
-      ...(fontToggleInNav
-        ? [{ type: 'custom' as const, secondary: true, children: <FontToggle /> }]
-        : []),
+      { type: 'custom', secondary: true, children: <FontToggle /> },
     ],
   };
 }

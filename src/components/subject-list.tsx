@@ -1,42 +1,35 @@
-'use client';
 import Link from 'next/link';
-import { useState } from 'react';
 import type { Subject } from '@/lib/subjects';
 
+/**
+ * Danh sách môn ở trang chủ. Hàng tự co giãn theo nội dung (không cố định chiều cao),
+ * vạch accent bên trái khi hover làm bằng CSS (.subject-row), mỗi hàng mang màu môn của nó.
+ */
 export function SubjectList({ subjects }: { subjects: Subject[] }) {
-  const [hover, setHover] = useState<number | null>(null);
   return (
-    <ul className="relative border-t border-fd-border" onMouseLeave={() => setHover(null)}>
-      {/* ô vuông trượt */}
-      <span
-        aria-hidden
-        className="subject-bar pointer-events-none absolute left-0 top-0 h-[72px] w-1.5 transition-all duration-200 ease-out"
-        style={{
-          transform: `translateY(${(hover ?? 0) * 72}px)`,
-          opacity: hover === null ? 0 : 1,
-          ['--bar-light' as string]: subjects[hover ?? 0].accent.light,
-          ['--bar-dark' as string]: subjects[hover ?? 0].accent.dark,
-        }}
-      />
-      {subjects.map((s, i) => {
+    <ul className="border-t border-fd-border">
+      {subjects.map((s) => {
         const inner = (
-          <div
-            className="flex h-[72px] items-center gap-5 px-6 border-b border-fd-border"
-            style={{ ['--subject-accent' as string]: undefined }}
-          >
-            <span className="font-mono text-xs text-fd-muted-foreground w-8">{s.num} /</span>
-            <div className="flex-1 min-w-0">
-              <div className="font-display text-xl">{s.title}</div>
-              <div className="font-mono text-xs text-fd-muted-foreground truncate">{s.topics}</div>
+          <div className="flex items-center gap-4 px-4 py-4 sm:gap-5 sm:px-6">
+            <span className="w-8 shrink-0 font-mono text-xs text-fd-muted-foreground">{s.num} /</span>
+            <div className="min-w-0 flex-1">
+              <div className={`font-display text-lg leading-snug sm:text-xl ${s.ready ? '' : 'text-fd-muted-foreground'}`}>
+                {s.title}
+              </div>
+              <div className="mt-0.5 font-mono text-xs text-fd-muted-foreground">{s.topics}</div>
             </div>
-            <span className="font-mono text-xs" style={{ color: s.ready ? 'var(--color-fd-foreground)' : undefined }}>
+            <span className={`shrink-0 font-mono text-xs ${s.ready ? 'text-fd-foreground' : 'text-fd-muted-foreground'}`}>
               {s.ready ? '→' : 'soon'}
             </span>
           </div>
         );
         return (
-          <li key={s.slug} onMouseEnter={() => setHover(i)} className={s.ready ? '' : 'opacity-50'}>
-            {s.ready ? <Link href={`/docs/${s.slug}`}>{inner}</Link> : inner}
+          <li
+            key={s.slug}
+            className="subject-row border-b border-fd-border"
+            style={{ ['--row-light' as string]: s.accent.light, ['--row-dark' as string]: s.accent.dark }}
+          >
+            {s.ready ? <Link href={`/docs/${s.slug}`} className="block">{inner}</Link> : inner}
           </li>
         );
       })}

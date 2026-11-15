@@ -4,8 +4,6 @@ import {
   DocsDescription,
   DocsPage,
   DocsTitle,
-  MarkdownCopyButton,
-  ViewOptionsPopover,
 } from 'fumadocs-ui/layouts/docs/page';
 import { notFound } from 'next/navigation';
 import { getMDXComponents } from '@/components/mdx';
@@ -23,7 +21,7 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
   if (!page) notFound();
 
   const MDX = page.data.body;
-  const markdownUrl = `/llms.mdx${page.url}.md`;
+  const editUrl = `https://github.com/${gitConfig.user}/${gitConfig.repo}/edit/${gitConfig.branch}/content/docs/${encodeURI(page.path)}`;
   const git = getGitInfo(`content/docs/${page.path}`);
   const authors = page.data.authors;
 
@@ -34,20 +32,17 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
       </p>
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription className="mb-0">{page.data.description}</DocsDescription>
-      <Byline authors={authors} gitAuthor={git.author} contributors={git.contributors} updated={git.updated} />
+      <Byline authors={authors} gitAuthor={git.author} contributors={git.contributors} updated={git.updated} editUrl={editUrl} />
       <div className="flex flex-wrap items-center gap-2 font-mono text-xs mt-2">
-        <span className="border border-fd-primary text-fd-primary px-2 py-0.5">{page.data.status}</span>
+        {/* trạng thái chỉ có nghĩa với bài trong một môn, không với trang chung như glossary */}
+        {page.slugs.length > 1 && (
+          <span className="border border-fd-primary text-fd-primary px-2 py-0.5">{page.data.status}</span>
+        )}
         {page.data.tags.map((t) => (
           <span key={t} className="text-fd-muted-foreground">#{t}</span>
         ))}
       </div>
-      <div className="flex flex-row gap-2 items-center border-b pb-6">
-        <MarkdownCopyButton markdownUrl={markdownUrl} />
-        <ViewOptionsPopover
-          markdownUrl={markdownUrl}
-          githubUrl={`https://github.com/${gitConfig.user}/${gitConfig.repo}/blob/${gitConfig.branch}/content/docs/${encodeURI(page.path)}`}
-        />
-      </div>
+      <div className="border-b border-fd-border pb-6" />
       <DocsBody>
         <MDX
           components={getMDXComponents({
@@ -85,11 +80,13 @@ function Byline({
   gitAuthor,
   contributors,
   updated,
+  editUrl,
 }: {
   authors: string[];
   gitAuthor?: string;
   contributors: string[];
   updated?: string;
+  editUrl?: string;
 }) {
   if (authors.length === 0 && !gitAuthor && !updated) return null;
   return (
@@ -118,6 +115,11 @@ function Byline({
       )}
       {contributors.length > 0 && <span>· cùng {contributors.join(', ')}</span>}
       {updated && <span>· cập nhật {fmtDate(updated)}</span>}
+      {editUrl && (
+        <a href={editUrl} target="_blank" rel="noreferrer" className="hover:text-fd-primary">
+          · Sửa trên GitHub ↗
+        </a>
+      )}
     </div>
   );
 }

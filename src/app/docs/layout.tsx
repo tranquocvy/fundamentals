@@ -7,7 +7,7 @@ export default function Layout({ children }: LayoutProps<'/docs'>) {
   return (
     <DocsLayout
       tree={source.getPageTree()}
-      {...baseOptions({ fontToggleInNav: false })}
+      {...baseOptions({ docs: true })}
       sidebar={{ footer: <FontToggle /> }}
     >
       {children}
