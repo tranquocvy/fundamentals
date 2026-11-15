@@ -2,6 +2,8 @@
 
 Knowledge base ghi chú kiến thức nền tảng IT — viết bằng tiếng Việt, giữ thuật ngữ tiếng Anh, kèm nguồn tiếng Anh để đối chiếu.
 
+**Site:** https://fundamentals-notes.vercel.app
+
 Dùng nội bộ cho bản thân và bạn bè. Site tĩnh, không backend, không database.
 
 ## Stack
