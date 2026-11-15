@@ -5,12 +5,60 @@
       "def": "Vùng bộ nhớ ảo riêng mà process nhìn thấy; process khác không truy cập trực tiếp được.",
       "subject": "os"
     },
+    "atomic operation": {
+      "def": "Thao tác chạy trọn vẹn như một bước duy nhất: không thread nào thấy được trạng thái giữa chừng của nó.",
+      "subject": "os",
+      "aliases": [
+        "atomic"
+      ]
+    },
+    "compare-and-swap": {
+      "def": "Lệnh atomic của CPU: chỉ ghi giá trị mới vào một ô nhớ nếu giá trị hiện tại đúng bằng giá trị mong đợi, và cho biết có ghi được không.",
+      "subject": "os",
+      "aliases": [
+        "cas"
+      ]
+    },
+    "condition variable": {
+      "def": "Hàng đợi để thread ngủ chờ một điều kiện trở thành đúng; luôn dùng kèm một mutex và được thread khác đánh thức bằng signal.",
+      "subject": "os",
+      "aliases": [
+        "condition variables"
+      ]
+    },
     "context switch": {
       "def": "CPU lưu trạng thái của process/thread đang chạy rồi nạp trạng thái của cái khác để chạy tiếp.",
       "subject": "os"
     },
+    "copy-on-write": {
+      "def": "Kỹ thuật cho nhiều bên dùng chung các trang nhớ ở chế độ chỉ đọc, và chỉ sao chép một trang khi có bên ghi vào nó.",
+      "subject": "os",
+      "aliases": [
+        "cow"
+      ]
+    },
+    "critical section": {
+      "def": "Đoạn mã truy cập dữ liệu chung, không được để hai thread chạy cùng lúc.",
+      "subject": "os"
+    },
     "deadlock": {
       "def": "Nhóm thread chờ nhau theo vòng tròn, mỗi thread giữ một tài nguyên và chờ tài nguyên thread khác đang giữ, nên không ai chạy tiếp được.",
+      "subject": "os"
+    },
+    "demand paging": {
+      "def": "OS chỉ nạp hoặc cấp một trang nhớ khi chương trình thật sự truy cập tới nó, thông qua page fault.",
+      "subject": "os"
+    },
+    "device driver": {
+      "def": "Đoạn mã trong kernel biết giao thức riêng của một loại thiết bị và cung cấp ra ngoài một giao diện chuẩn.",
+      "subject": "os",
+      "aliases": [
+        "driver"
+      ]
+    },
+    "dma": {
+      "label": "DMA",
+      "def": "Direct Memory Access: thiết bị tự chép dữ liệu thẳng vào hoặc ra khỏi RAM mà không cần CPU chuyển từng byte.",
       "subject": "os"
     },
     "dns": {
@@ -18,9 +66,56 @@
       "def": "Domain Name System: hệ thống phân cấp, phân tán dùng để đổi tên miền thành địa chỉ IP và các thông tin khác.",
       "subject": "networking"
     },
+    "file descriptor": {
+      "def": "Số nguyên nhỏ mà process dùng để chỉ một file, socket hay pipe đang mở; là chỉ số trong bảng file descriptor của process đó.",
+      "subject": "os",
+      "aliases": [
+        "fd"
+      ]
+    },
+    "futex": {
+      "def": "Fast userspace mutex: system call của Linux cho thread ngủ chờ trên một ô nhớ và đánh thức thread đang chờ ở đó; nền để cài mutex chỉ vào kernel khi có tranh chấp.",
+      "subject": "os"
+    },
     "head-of-line blocking": {
       "def": "Một gói tin bị chậm hoặc mất làm mọi dữ liệu xếp sau nó phải chờ, dù chúng đã tới nơi.",
       "subject": "networking"
+    },
+    "inode": {
+      "def": "Cấu trúc trên đĩa chứa mọi thông tin về một file trừ tên: kích thước, quyền, thời điểm và vị trí các block dữ liệu.",
+      "subject": "os"
+    },
+    "interrupt": {
+      "def": "Tín hiệu từ phần cứng khiến CPU tạm dừng việc đang làm để chạy một trình xử lý của kernel, rồi quay lại.",
+      "subject": "os",
+      "aliases": [
+        "interrupts"
+      ]
+    },
+    "ipc": {
+      "label": "IPC",
+      "def": "Inter-Process Communication: các cơ chế do kernel cung cấp để process trao đổi dữ liệu, như pipe, socket, shared memory.",
+      "subject": "os"
+    },
+    "journal": {
+      "def": "Vùng trên đĩa nơi file system ghi trước ý định sẽ sửa gì, để sau khi sập có thể phát lại hoặc bỏ qua trọn vẹn từng cập nhật.",
+      "subject": "os",
+      "aliases": [
+        "journaling"
+      ]
+    },
+    "kernel mode": {
+      "def": "Chế độ đặc quyền của CPU, nơi kernel chạy và được dùng mọi lệnh; ngược với user mode của chương trình thường.",
+      "subject": "os"
+    },
+    "livelock": {
+      "def": "Các thread vẫn chạy và liên tục phản ứng với nhau nhưng không bên nào tiến triển; khác deadlock ở chỗ không ai bị block.",
+      "subject": "os"
+    },
+    "mmu": {
+      "label": "MMU",
+      "def": "Memory Management Unit: phần cứng trong CPU dịch địa chỉ ảo sang địa chỉ vật lý ở mỗi lần truy cập bộ nhớ.",
+      "subject": "os"
     },
     "mutex": {
       "def": "Khoá loại trừ lẫn nhau: tại một thời điểm chỉ một thread được giữ khoá và vào vùng code được bảo vệ.",
@@ -42,6 +137,11 @@
     },
     "page table": {
       "def": "Bảng của mỗi process ánh xạ số trang ảo sang khung vật lý trong RAM, kèm các bit như present, dirty, protection.",
+      "subject": "os"
+    },
+    "pcb": {
+      "label": "PCB",
+      "def": "Process Control Block: cấu trúc kernel lưu mọi thông tin về một process, như PID, trạng thái, register, bộ nhớ và file đang mở.",
       "subject": "os"
     },
     "port": {
@@ -77,14 +177,33 @@
       "def": "Phần của OS quyết định process hoặc thread nào được dùng CPU tiếp theo và trong bao lâu.",
       "subject": "os"
     },
+    "semaphore": {
+      "def": "Bộ đếm không âm với hai thao tác atomic: wait giảm đi 1 (ngủ nếu đang bằng 0) và post tăng lên 1 (đánh thức một thread đang chờ).",
+      "subject": "os",
+      "aliases": [
+        "semaphores"
+      ]
+    },
     "starvation": {
       "def": "Một thread hoặc job mãi không được cấp tài nguyên vì luôn có thứ khác được ưu tiên hơn, dù hệ thống vẫn chạy.",
       "subject": "os"
+    },
+    "system call": {
+      "def": "Cách chương trình nhờ kernel làm một việc đặc quyền (đọc file, tạo process...): CPU chuyển sang kernel mode, kernel thực hiện rồi trả quyền lại.",
+      "subject": "os",
+      "aliases": [
+        "syscall",
+        "system calls"
+      ]
     },
     "tcp": {
       "label": "TCP",
       "def": "Transmission Control Protocol: giao thức transport có kết nối, đảm bảo dữ liệu tới đủ, đúng thứ tự, có điều tiết tốc độ.",
       "subject": "networking"
+    },
+    "thrashing": {
+      "def": "Trạng thái hệ thống dành gần hết thời gian để đổi trang ra vào đĩa vì bộ nhớ đang dùng vượt quá RAM, nên gần như không việc gì tiến triển.",
+      "subject": "os"
     },
     "thread": {
       "def": "Đơn vị thực thi nhỏ nhất được lập lịch, nằm trong một process và chia sẻ address space với các thread khác.",
@@ -122,6 +241,13 @@
     "virtual memory": {
       "def": "Cơ chế OS và phần cứng dịch địa chỉ ảo của process sang địa chỉ vật lý, cho mỗi process một address space riêng.",
       "subject": "os"
+    },
+    "zombie process": {
+      "def": "Process đã kết thúc nhưng kernel còn giữ mã thoát của nó vì process cha chưa gọi wait().",
+      "subject": "os",
+      "aliases": [
+        "zombie"
+      ]
     }
   }
 }

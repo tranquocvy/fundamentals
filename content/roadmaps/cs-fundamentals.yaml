@@ -89,6 +89,7 @@ sections:
         requires: [process-thread]
       - id: synchronization
         title: Synchronization
+        article: os/synchronization
         description: Mutex, semaphore, condition variable để các thread phối hợp an toàn.
         requires: [process-thread]
         resources:
@@ -104,6 +105,7 @@ sections:
         requires: [process-thread]
       - id: file-systems
         title: File Systems
+        article: os/file-systems
         description: File, thư mục, inode và cách dữ liệu nằm trên đĩa.
         requires: [virtual-memory]
         resources:
@@ -111,6 +113,7 @@ sections:
             url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-intro.pdf
       - id: io-devices
         title: I/O Devices
+        article: os/io-devices
         description: "Interrupt, DMA, driver: CPU nói chuyện với thiết bị thế nào."
         optional: true
         resources:

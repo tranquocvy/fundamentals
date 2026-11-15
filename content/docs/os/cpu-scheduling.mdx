@@ -1,84 +1,546 @@
 ---
 title: CPU Scheduling
-description: OS chọn process nào chạy tiếp theo, đo "tốt" bằng gì, và vì sao không có thuật toán nào thắng mọi mặt.
-status: reviewed
+description: Scheduler chọn task nào chạy tiếp, đo "tốt" bằng gì, các thuật toán kinh điển đánh đổi ra sao, và Linux thật sự chia CPU thế nào với CFS, EEVDF và cgroup.
+status: draft
 tags: [os, scheduling]
 authors: [tranquocvy]
 references:
   - title: "OSTEP — Chapter 7: Scheduling: Introduction"
     url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched.pdf
     kind: book
+    note: FIFO, SJF, STCF, Round Robin và các chỉ số
   - title: "OSTEP — Chapter 8: Scheduling: The Multi-Level Feedback Queue"
     url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-mlfq.pdf
     kind: book
+  - title: "OSTEP — Chapter 9: Scheduling: Proportional Share"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-lottery.pdf
+    kind: book
+    note: lottery, stride scheduling và CFS
+  - title: "OSTEP — Chapter 10: Multiprocessor Scheduling"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-multi.pdf
+    kind: book
+  - title: "Linux kernel documentation — CFS Scheduler"
+    url: https://docs.kernel.org/scheduler/sched-design-CFS.html
+    kind: web
+  - title: "Linux kernel documentation — EEVDF Scheduler"
+    url: https://docs.kernel.org/scheduler/sched-eevdf.html
+    kind: web
+  - title: "Linux man-pages — sched(7)"
+    url: https://man7.org/linux/man-pages/man7/sched.7.html
+    kind: web
+    note: các scheduling policy và độ ưu tiên trên Linux
   - title: "Operating System Concepts (Silberschatz) — Chapter 5: CPU Scheduling"
     kind: book
 ---
 
 ## Ý chính
 
-Khi có nhiều <Term>process</Term> sẵn sàng chạy mà chỉ có một CPU, <Term>scheduler</Term> của OS quyết định ai chạy tiếp. Mỗi lần đổi người chạy là một <Term>context switch</Term>, tốn chi phí, nên scheduler phải cân giữa hai mục tiêu thường ngược nhau:
+Một máy thường có nhiều task muốn chạy hơn số CPU core. <Term>Scheduler</Term> là phần của kernel quyết định, tại mỗi thời điểm, task nào được chiếm core nào và trong bao lâu. Mỗi lần đổi task là một <Term>context switch</Term> và có chi phí (xem [Process vs Thread](/docs/os/process-thread)).
 
-- **<Term>turnaround time</Term>** thấp: job xong càng sớm càng tốt (quan trọng với job chạy nền, batch).
-- **<Term>response time</Term>** thấp: job được chạy lần đầu càng sớm càng tốt (quan trọng với chương trình tương tác).
+Không có thuật toán nào tốt nhất, vì "tốt" có nhiều nghĩa mâu thuẫn nhau: job chạy nền muốn xong sớm, chương trình tương tác muốn phản hồi nhanh, người vận hành muốn chia tài nguyên công bằng. Bài này đi qua các thuật toán kinh điển bằng ví dụ tính tay và một trình mô phỏng chạy được, rồi tới cách Linux giải bài toán này trong thực tế.
+
+Trong bài, "job" hoặc "task" nghĩa là một thứ scheduler lập lịch: một <Term>process</Term> đơn thread hoặc một <Term>thread</Term>. Trên Linux, scheduler không phân biệt hai loại này.
+
+## Khung của bài toán
+
+### Scheduler chạy lúc nào
+
+Scheduler không chạy liên tục. Nó chỉ được gọi khi kernel đang nắm quyền, ở bốn tình huống:
+
+1. Task đang chạy **tự block**: chờ I/O, chờ lock, gọi `sleep()`.
+2. Task đang chạy **kết thúc**.
+3. Một task **vừa sẵn sàng**: I/O của nó xong, hoặc nó vừa được tạo.
+4. **Ngắt timer**: phần cứng ngắt CPU theo chu kỳ (trên Linux thường 250 hoặc 1000 lần mỗi giây), cho kernel cơ hội xét lại.
+
+Nếu scheduler chỉ đổi task ở tình huống 1 và 2, nó là **non-preemptive**: task giữ CPU cho tới khi tự buông. Nếu nó còn có thể giật CPU khỏi task đang chạy ở tình huống 3 và 4, nó là **preemptive**. Mọi OS đa dụng hiện đại đều preemptive; nếu không, một vòng lặp vô hạn trong một chương trình sẽ treo cả máy.
+
+### CPU burst và I/O burst
+
+Một task không chạy liền một mạch. Nó xen kẽ giữa **CPU burst** (tính toán) và **I/O burst** (chờ đĩa, mạng, bàn phím):
+
+```text
+task tương tác:  ▓░░░░░░░░▓░░░░░░░░░░░▓░░░░░░░   CPU burst ngắn, chờ I/O dài
+task tính toán:  ▓▓▓▓▓▓▓▓▓▓▓▓▓░▓▓▓▓▓▓▓▓▓▓▓▓▓▓   CPU burst dài, hiếm khi chờ
+                 ▓ = dùng CPU    ░ = chờ I/O
+```
+
+- **I/O-bound**: phần lớn thời gian là chờ. Trình soạn thảo, shell, web server đang chờ request.
+- **CPU-bound**: phần lớn thời gian là tính. Compiler, mã hoá video, huấn luyện mô hình.
+
+Phân biệt này quan trọng vì hai loại cần hai thứ khác nhau. Task I/O-bound cần được chạy **ngay** khi nó thức dậy (nó chỉ cần CPU một chút rồi lại đi chờ), còn task CPU-bound chỉ cần **tổng** thời gian CPU nhiều.
+
+### Đo "tốt" bằng gì
+
+| Chỉ số | Định nghĩa | Ai quan tâm |
+|---|---|---|
+| <Term>Turnaround time</Term> | Thời điểm hoàn thành trừ thời điểm đến | Job chạy nền, batch |
+| <Term>Response time</Term> | Thời điểm được chạy lần đầu trừ thời điểm đến | Chương trình tương tác |
+| Waiting time | Tổng thời gian nằm trong hàng ready | Cả hai |
+| Throughput | Số job hoàn thành trong một đơn vị thời gian | Hệ thống batch |
+| Fairness | Mỗi task có nhận phần CPU tương xứng không | Hệ thống nhiều người dùng, container |
+| Tail latency | Độ trễ ở phân vị cao (p99, p99.9) | Service phục vụ request |
 
 ```text
 T_turnaround = T_hoàn_thành − T_đến
 T_response   = T_chạy_lần_đầu − T_đến
 ```
 
-## Các thuật toán cơ bản
+Turnaround và response kéo về hai hướng ngược nhau. Muốn turnaround thấp thì nên chạy một job cho xong rồi mới sang job khác. Muốn response thấp thì phải liên tục đổi qua lại để ai cũng được chạy sớm. Phần lớn lịch sử của scheduling là đi tìm điểm cân bằng giữa hai thứ này.
 
-| Thuật toán | Ý tưởng | Mạnh | Yếu |
+## Một trình mô phỏng để kiểm chứng
+
+Thay vì tin các con số, hãy tự tính. Đoạn Python dưới đây mô phỏng bốn thuật toán sẽ nói tới, theo từng đơn vị thời gian. Mọi kết quả trong các phần sau đều lấy từ nó.
+
+```python
+from collections import deque
+
+
+def simulate(jobs, policy, quantum=1):
+    """jobs: danh sách (tên, thời điểm đến, thời gian CPU cần). Mô phỏng theo từng đơn vị thời gian."""
+    arrival = {n: a for n, a, _ in jobs}
+    remaining = {n: b for n, _, b in jobs}
+    pending = deque(sorted(jobs, key=lambda j: j[1]))   # các job chưa đến
+    ready = deque()                                     # hàng đợi ready
+    first_run, finish = {}, {}
+    current, slice_left, t = None, 0, 0
+
+    while len(finish) < len(jobs):
+        while pending and pending[0][1] <= t:           # job nào đến thì vào hàng ready
+            ready.append(pending.popleft()[0])
+
+        if policy == "STCF" and current is not None:    # preemptive: xét lại ở mỗi bước
+            ready.append(current)
+            current = None
+        if policy == "RR" and current is not None and slice_left == 0:
+            ready.append(current)                       # hết time slice: về cuối hàng
+            current = None
+
+        if current is None and ready:
+            if policy in ("SJF", "STCF"):               # chọn job còn ít việc nhất
+                current = min(ready, key=lambda n: (remaining[n], arrival[n]))
+                ready.remove(current)
+            else:                                       # FCFS, RR: lấy đầu hàng
+                current = ready.popleft()
+            slice_left = quantum
+
+        if current is None:                             # không có gì để chạy: CPU rảnh
+            t += 1
+            continue
+
+        first_run.setdefault(current, t)
+        remaining[current] -= 1
+        slice_left -= 1
+        t += 1
+        if remaining[current] == 0:
+            finish[current] = t
+            current = None
+
+    # tên job -> (turnaround, response)
+    return {n: (finish[n] - arrival[n], first_run[n] - arrival[n]) for n in arrival}
+```
+
+Cả bốn thuật toán chỉ khác nhau ở hai chỗ: **khi nào** bỏ task đang chạy xuống, và **chọn ai** từ hàng ready. Đó cũng là hai câu hỏi cần đặt ra khi đọc về bất kỳ scheduler nào.
+
+## Các thuật toán kinh điển
+
+### FCFS: ai đến trước chạy trước
+
+First-Come, First-Served (còn gọi FIFO) chạy các job theo thứ tự đến, mỗi job chạy tới khi xong. Non-preemptive, cài bằng một hàng đợi.
+
+Ba job đến cùng lúc `t = 0` theo thứ tự A, B, C. A cần 100 giây, B và C mỗi job 10 giây:
+
+```text
+FCFS:  |──────────────── A ────────────────|─ B ─|─ C ─|
+       0                                  100   110   120
+
+turnaround: A = 100, B = 110, C = 120  → trung bình 110
+response:   A = 0,   B = 100, C = 110  → trung bình 70
+```
+
+Hai job 10 giây phải chờ hơn 100 giây. Hiện tượng job ngắn kẹt sau job dài gọi là **convoy effect**, giống cả hàng xe kẹt sau một xe tải chạy chậm. Nếu ba job đến theo thứ tự B, C, A thì cùng thuật toán này cho turnaround trung bình 50. FCFS tốt hay tệ hoàn toàn do may rủi của thứ tự đến.
+
+### SJF: job ngắn nhất trước
+
+Shortest Job First chọn job cần ít thời gian nhất trong hàng ready. Vẫn non-preemptive.
+
+```text
+SJF:   |─ B ─|─ C ─|──────────────── A ────────────────|
+       0    10    20                                  120
+
+turnaround: B = 10, C = 20, A = 120  → trung bình 50
+response:   B = 0,  C = 10, A = 20   → trung bình 10
+```
+
+Turnaround trung bình giảm từ 110 xuống 50 chỉ nhờ đổi thứ tự.
+
+<Expand title="Vì sao SJF tối ưu turnaround trung bình khi mọi job đến cùng lúc">
+
+Lập luận bằng cách đổi chỗ. Giả sử trong một lịch chạy có hai job đứng liền nhau, job dài X (cần `x`) đứng trước job ngắn Y (cần `y`), với `x > y`. Gọi `t` là thời điểm cặp này bắt đầu.
+
+- Thứ tự X rồi Y: X xong lúc `t + x`, Y xong lúc `t + x + y`. Tổng: `2t + 2x + y`.
+- Thứ tự Y rồi X: Y xong lúc `t + y`, X xong lúc `t + y + x`. Tổng: `2t + x + 2y`.
+
+Đổi chỗ làm tổng giảm đi `x − y > 0`, và không ảnh hưởng tới thời điểm hoàn thành của bất kỳ job nào khác (cặp này vẫn chiếm đúng khoảng `[t, t + x + y]`). Vậy mọi lịch còn một cặp "dài đứng trước ngắn" đều cải thiện được. Lịch duy nhất không cải thiện được nữa là lịch xếp tăng dần theo độ dài, chính là SJF.
+
+Trực giác: thời gian chạy của job đứng đầu bị **cộng vào thời gian chờ của mọi job phía sau**. Muốn tổng nhỏ thì để thứ bị cộng nhiều lần nhất là thứ ngắn nhất.
+
+</Expand>
+
+SJF có hai vấn đề. Thứ nhất, nó non-preemptive, nên nếu job dài đến trước một chút thì convoy effect quay lại. Thứ hai, và nghiêm trọng hơn: OS **không biết** một job sẽ chạy bao lâu.
+
+### STCF: SJF có preemption
+
+Shortest Time-to-Completion First (còn gọi SRTF, preemptive SJF): mỗi khi có job mới đến, so **thời gian còn lại** của mọi job và chạy job còn ít nhất, kể cả phải dừng job đang chạy.
+
+Lần này A đến lúc 0, còn B và C đến lúc 10:
+
+```text
+SJF:   |──────────────── A ────────────────|─ B ─|─ C ─|
+       0         ↑ B, C đến               100   110   120
+
+STCF:  |─ A ─|─ B ─|─ C ─|────────────── A ──────────────|
+       0    10    20    30                              120
+```
+
+Kết quả từ trình mô phỏng (mỗi job ghi `turnaround/response`):
+
+```text
+FCFS  turnaround TB = 103.33  response TB =  63.33   (A:100/0  B:100/90  C:110/100)
+SJF   turnaround TB = 103.33  response TB =  63.33   (A:100/0  B:100/90  C:110/100)
+STCF  turnaround TB =  50.00  response TB =   3.33   (A:120/0  B:10/0  C:20/10)
+```
+
+SJF không giúp được gì vì lúc B và C đến thì A đã chiếm CPU. STCF dừng A lại (A còn 90, B chỉ cần 10), và đưa turnaround trung bình về 50. STCF tối ưu turnaround trung bình cả khi các job đến ở thời điểm khác nhau.
+
+Nhưng nó vẫn cần biết thời gian còn lại, và có thể gây <Term>starvation</Term>: nếu job ngắn cứ liên tục đến, job dài không bao giờ được chạy.
+
+### Round Robin: chia lượt
+
+Round Robin (RR) không quan tâm job dài hay ngắn. Mỗi job chạy tối đa một <Term>time slice</Term> (còn gọi quantum), rồi về cuối hàng ready nhường cho job kế tiếp.
+
+Ba job A, B, C mỗi job cần 5 giây, đến cùng lúc, time slice 1 giây:
+
+```text
+SJF:  |──── A ────|──── B ────|──── C ────|
+      0           5          10          15
+
+RR:   |A|B|C|A|B|C|A|B|C|A|B|C|A|B|C|
+      0                             15
+```
+
+```text
+SJF   turnaround TB =  10.00  response TB =   5.00   (A:5/0  B:10/5  C:15/10)
+RR    turnaround TB =  14.00  response TB =   1.00   (A:13/0  B:14/1  C:15/2)
+```
+
+Response time tốt hơn 5 lần. Nhưng turnaround tệ hơn: RR kéo dài **mọi** job tới gần cuối (13, 14, 15) trong khi SJF cho hai job xong sớm. Với các job cùng độ dài, RR gần như là lựa chọn tệ nhất có thể cho turnaround. Đây là quy luật chung: **thuật toán nào công bằng (chia đều CPU theo từng khoảng nhỏ) thì turnaround kém, và ngược lại.**
+
+Quay lại ví dụ A dài, B và C ngắn đến sau:
+
+```text
+STCF  turnaround TB =  50.00  response TB =   3.33   (A:120/0  B:10/0  C:20/10)
+RR    turnaround TB =  59.00  response TB =   0.33   (A:120/0  B:28/0  C:29/1)
+```
+
+RR không cần biết gì về độ dài job mà chỉ kém STCF một chút về turnaround, và response tốt hơn 10 lần. Đó là lý do mọi scheduler thực tế đều có bóng dáng của Round Robin.
+
+<Expand title="Chọn time slice bao nhiêu">
+
+Time slice là một đánh đổi giữa response time và chi phí context switch.
+
+Giả sử mỗi context switch tốn 1 ms (tính cả chi phí gián tiếp do cache và TLB lạnh):
+
+| Time slice | Phần thời gian mất cho context switch | Response time khi có 10 job trong hàng |
+|---|---|---|
+| 1 ms | 1 / (1 + 1) = 50% | tối đa khoảng 20 ms |
+| 10 ms | 1 / (10 + 1) ≈ 9% | tối đa khoảng 110 ms |
+| 100 ms | 1 / (100 + 1) ≈ 1% | tối đa khoảng 1 giây |
+
+Time slice quá ngắn thì máy dành nửa thời gian để đổi task. Quá dài thì RR thoái hoá thành FCFS và người dùng thấy giật. Cách làm là chọn time slice **dài gấp nhiều lần** chi phí context switch để chi phí đó được chia nhỏ ra (amortize), nhưng vẫn đủ ngắn so với ngưỡng con người cảm nhận được độ trễ (khoảng 100 ms).
+
+Lưu ý thêm: với task I/O-bound, time slice gần như không liên quan. Chúng tự nhường CPU sau vài trăm micro giây, rất lâu trước khi hết lượt.
+
+</Expand>
+
+### Tóm tắt bốn thuật toán
+
+| Thuật toán | Preemptive | Chọn ai | Mạnh | Yếu |
+|---|---|---|---|---|
+| FCFS | không | Đến sớm nhất | Đơn giản, không starvation | Convoy effect |
+| SJF | không | Ngắn nhất | Turnaround tối ưu nếu đến cùng lúc | Cần biết độ dài; job dài đến trước vẫn chặn |
+| STCF | có | Còn ít việc nhất | Turnaround tối ưu | Cần biết độ dài; starvation cho job dài |
+| RR | có | Đầu hàng, theo lượt | Response tốt, không cần biết gì, không starvation | Turnaround kém |
+
+## Khi job có I/O
+
+Các ví dụ trên giả định job chỉ dùng CPU. Thực tế job xen kẽ CPU và I/O, và scheduler xử lý bằng một quy ước đơn giản: **coi mỗi CPU burst là một job riêng**.
+
+A là task tương tác: chạy 10 ms rồi chờ I/O 10 ms, lặp lại 5 lần. B là task tính toán cần 50 ms liên tục. Với STCF, mỗi burst 10 ms của A là một "job 10 ms", ngắn hơn phần còn lại của B, nên A luôn được ưu tiên khi nó thức dậy:
+
+```text
+tệ (chạy A xong hết rồi mới tới B):
+CPU:  |A |  |A |  |A |  |A |  |A |──────── B ────────|
+đĩa:  |  |A |  |A |  |A |  |A |  |
+      CPU ngồi không trong lúc A chờ đĩa                  → tổng 140 ms
+
+tốt (coi mỗi burst là một job):
+CPU:  |A |B |A |B |A |B |A |B |A |B |
+đĩa:  |  |A |  |A |  |A |  |A |  |
+      B dùng CPU đúng lúc A đang chờ đĩa                  → tổng 100 ms
+```
+
+Đây là **overlap**: CPU và thiết bị I/O làm việc cùng lúc. Nó cũng giải thích vì sao ưu tiên task I/O-bound là đúng đắn chứ không phải thiên vị: chúng dùng rất ít CPU, và cho chúng chạy sớm giúp thiết bị I/O luôn có việc.
+
+## Đoán độ dài job
+
+SJF và STCF cần biết CPU burst kế tiếp dài bao lâu. Không biết trước được, nhưng đoán được từ quá khứ: một task vừa có các burst ngắn thì burst tiếp theo nhiều khả năng cũng ngắn.
+
+Cách kinh điển là **exponential averaging**:
+
+```text
+τ(n+1) = α · t(n) + (1 − α) · τ(n)
+
+t(n)   : độ dài thật của burst vừa xong
+τ(n)   : giá trị đã đoán cho burst đó
+τ(n+1) : giá trị đoán cho burst kế tiếp
+α      : từ 0 tới 1, trọng số của quá khứ gần
+```
+
+Với `α = 0.5` và giá trị đoán ban đầu `τ(0) = 10`:
+
+| Burst thứ | Đã đoán `τ` | Thực tế `t` | Đoán cho lần sau |
 |---|---|---|---|
-| FCFS (FIFO) | Ai đến trước chạy trước, đến xong | Đơn giản | Job ngắn kẹt sau job dài (convoy effect) |
-| SJF | Chạy job ngắn nhất trước | Turnaround trung bình tốt nhất nếu mọi job đến cùng lúc | Phải biết trước độ dài job |
-| STCF | SJF nhưng được giành CPU (preemptive) khi có job còn ít việc hơn | Xử lý được job đến muộn | Vẫn cần biết độ dài, response kém |
-| Round Robin | Mỗi job chạy một <Term>time slice</Term> rồi nhường | Response time tốt, công bằng | Turnaround tệ, phụ thuộc độ dài time slice |
+| 0 | 10 | 6 | 0.5 · 6 + 0.5 · 10 = 8 |
+| 1 | 8 | 4 | 0.5 · 4 + 0.5 · 8 = 6 |
+| 2 | 6 | 6 | 0.5 · 6 + 0.5 · 6 = 6 |
+| 3 | 6 | 13 | 0.5 · 13 + 0.5 · 6 = 9.5 |
+| 4 | 9.5 | 13 | 0.5 · 13 + 0.5 · 9.5 = 11.25 |
 
-<Expand title="Ví dụ: cùng 3 job, FCFS và SJF chênh nhau hơn 2 lần">
+Giá trị đoán bám theo hành vi thật với một độ trễ. `α` gần 1 thì phản ứng nhanh nhưng dễ bị một burst bất thường đánh lừa; `α` gần 0 thì ổn định nhưng chậm thích nghi. Khai triển công thức ra sẽ thấy burst càng cũ thì trọng số càng giảm theo cấp số nhân, nên mới có tên như vậy.
 
-Ba job A, B, C đến cùng lúc `t = 0`. A cần 100s, B và C mỗi job 10s.
+Kỹ thuật này vượt xa scheduling: TCP dùng đúng công thức đó để ước lượng round-trip time, và các hệ thống giám sát dùng nó để làm mượt số đo.
 
-```text
-FCFS (A, B, C):  A xong 100, B xong 110, C xong 120  → turnaround TB = (100+110+120)/3 = 110
-SJF  (B, C, A):  B xong  10, C xong  20, A xong 120  → turnaround TB = (10+20+120)/3  = 50
-```
+## Priority scheduling
 
-Chỉ đổi thứ tự mà turnaround trung bình giảm từ 110 xuống 50. Nhưng nếu A là chương trình người dùng đang chờ phản hồi, SJF bắt họ chờ 20s mới thấy gì.
+Gắn cho mỗi task một độ ưu tiên và luôn chạy task ưu tiên cao nhất. SJF là một trường hợp riêng: độ ưu tiên là nghịch đảo của độ dài dự đoán.
 
-</Expand>
+Hai vấn đề kinh điển:
 
-<Expand title="Ví dụ: Round Robin đổi turnaround lấy response">
+**Starvation.** Task ưu tiên thấp có thể không bao giờ được chạy nếu luôn có task ưu tiên cao hơn. Cách chữa là **aging**: task chờ càng lâu thì độ ưu tiên càng được nâng dần, tới lúc nó đủ cao để được chạy.
 
-Ba job, mỗi job 5s, đến cùng lúc. Time slice 1s.
+**Priority inversion.** Task ưu tiên cao bị chặn gián tiếp bởi task ưu tiên thấp, thông qua một lock:
 
 ```text
-SJF: A chạy 0–5, B 5–10, C 10–15   → response TB = (0+5+10)/3 = 5s
-RR : A B C A B C ... mỗi lượt 1s   → response TB = (0+1+2)/3  = 1s
+L (thấp)  giữ lock M
+H (cao)   thức dậy, cần lock M → phải chờ L nhả
+M (vừa)   thức dậy, không cần lock → giật CPU của L vì M ưu tiên hơn L
+
+Kết quả: L không chạy được nên không nhả lock, H chờ L, còn M chạy thoải mái.
+Task ưu tiên cao nhất bị task ưu tiên vừa chặn vô thời hạn.
 ```
 
-Response tốt hơn 5 lần, nhưng cả ba job đều kết thúc gần cuối (13, 14, 15s) nên turnaround tệ hơn SJF.
+Đây là bug đã làm tàu Mars Pathfinder liên tục tự khởi động lại trên sao Hoả năm 1997: một task quan trọng bị chặn đủ lâu để bộ giám sát kết luận hệ thống treo. Cách sửa (gửi từ Trái Đất lên) là bật **priority inheritance**: khi H phải chờ lock do L giữ, L tạm thời được nâng lên độ ưu tiên của H, nên M không giật được CPU của L nữa. L chạy, nhả lock, trở về độ ưu tiên cũ, và H chạy tiếp. Mutex của Linux hỗ trợ cơ chế này (`PTHREAD_PRIO_INHERIT`).
 
-Chọn time slice cũng là đánh đổi: ngắn thì phản hồi nhanh nhưng context switch chiếm phần lớn thời gian; dài thì ngược lại. Time slice thường dài gấp nhiều lần chi phí một lần context switch để chi phí đó được "chia nhỏ" ra.
+## MLFQ: học từ hành vi
 
-</Expand>
+Multi-Level Feedback Queue giải cùng lúc hai vấn đề: muốn turnaround tốt như SJF mà không biết độ dài job, và muốn response tốt như RR. Ý tưởng: **quan sát task chạy rồi tự điều chỉnh độ ưu tiên của nó**.
 
-## MLFQ: học từ hành vi thay vì đoán trước
+Có nhiều hàng đợi, mỗi hàng một mức ưu tiên. Bộ luật (theo OSTEP):
 
-Vấn đề chung của SJF/STCF là OS **không biết** job dài bao lâu. Multi-Level Feedback Queue (MLFQ) giải bằng cách quan sát:
+1. Nếu ưu tiên của A cao hơn B thì A chạy, B không chạy.
+2. Nếu A và B cùng mức thì chạy Round Robin giữa chúng.
+3. Task mới vào được đặt ở hàng **cao nhất**.
+4. Khi một task dùng hết **tổng** phần thời gian được cấp ở một mức (bất kể nó đã nhường CPU bao nhiêu lần), nó bị hạ xuống một mức.
+5. Sau mỗi chu kỳ `S`, đưa **mọi** task về hàng cao nhất (priority boost).
 
-1. Có nhiều hàng đợi với độ ưu tiên khác nhau; luôn chạy job ở hàng ưu tiên cao nhất, cùng hàng thì Round Robin.
-2. Job mới vào hàng cao nhất (giả định nó ngắn hoặc tương tác).
-3. Job dùng hết phần thời gian được cấp ở một mức thì bị hạ một bậc (có vẻ là job tính toán dài).
-4. Định kỳ đưa mọi job về hàng cao nhất (priority boost) để job dài không bị bỏ đói (<Term>starvation</Term>).
+Luật 3 là một canh bạc: chưa biết gì về task mới thì cứ coi nó là ngắn. Nếu đúng, nó xong nhanh ở hàng cao, giống SJF. Nếu sai, nó dùng hết phần thời gian và rơi dần xuống, lộ ra là task dài.
 
-Luật 3 tính **tổng** thời gian đã dùng ở mỗi mức, không reset khi job tự nhường CPU. Nếu không, một chương trình có thể cố tình nhường CPU ngay trước khi hết time slice để mãi ở hàng ưu tiên cao (gaming the scheduler).
+```text
+Q2 (cao)   |A|        |B|     |B|     |B|
+Q1         |  |A|A|       |      |       |
+Q0 (thấp)  |      |A A A|  |A A A|  |A A A A A ...
+            A đến     B đến (tương tác): chạy ngắn rồi chờ I/O, luôn ở Q2
+            A tính toán dài: rơi dần xuống Q0, chạy khi B đang chờ
+```
 
-Kết quả: job tương tác (chạy ngắn rồi chờ I/O) ở hàng cao, phản hồi nhanh; job tính toán dài chìm xuống hàng thấp, vẫn chạy khi CPU rảnh. Windows và các BSD dùng biến thể của MLFQ.
+Mỗi luật tồn tại để vá một lỗ hổng cụ thể:
+
+- **Luật 4 tính tổng thời gian, không reset khi task nhường CPU.** Nếu chỉ hạ bậc khi task dùng trọn một time slice, một chương trình có thể cố tình gọi một I/O vô nghĩa ngay trước khi hết lượt để ở mãi hàng cao và chiếm gần hết CPU. Đó là gaming the scheduler.
+- **Luật 5 chống starvation và sửa phán đoán sai.** Không có boost, task dài ở hàng thấp sẽ đói nếu có đủ nhiều task tương tác. Ngoài ra một task có thể đổi hành vi: tính toán một lúc rồi chuyển sang tương tác. Boost cho nó cơ hội được đánh giá lại.
+
+MLFQ có nhiều tham số phải chỉnh: bao nhiêu hàng, time slice mỗi hàng (thường hàng thấp có time slice dài hơn, vì task ở đó là task tính toán, đổi qua lại nhiều chỉ tốn công), chu kỳ boost `S`. Không có bộ giá trị nào đúng cho mọi workload; chúng được chỉnh bằng kinh nghiệm. Windows, macOS và các BSD dùng những biến thể của ý tưởng này: độ ưu tiên động, tăng cho task vừa chờ I/O xong, giảm cho task ngốn CPU.
+
+## Proportional share: chia theo tỉ lệ
+
+Một họ scheduler khác đặt mục tiêu khác hẳn: không tối ưu turnaround hay response, mà bảo đảm **mỗi task nhận đúng phần CPU của nó**.
+
+**Lottery scheduling.** Mỗi task giữ một số vé. Mỗi lượt, scheduler bốc ngẫu nhiên một vé; chủ vé được chạy. Task giữ 75 trong 100 vé sẽ chạy khoảng 75% thời gian. Đơn giản, không cần lưu trạng thái gì cho mỗi task, nhưng chỉ đúng tỉ lệ khi xét đủ lâu.
+
+**Stride scheduling.** Phiên bản tất định. Mỗi task có một `stride` tỉ lệ nghịch với số vé, và một bộ đếm `pass`. Luôn chạy task có `pass` nhỏ nhất, rồi cộng `stride` vào `pass` của nó. Task nhiều vé có stride nhỏ nên được chọn thường xuyên hơn, và tỉ lệ đúng tuyệt đối sau mỗi chu kỳ.
+
+Stride scheduling chính là ý tưởng lõi của scheduler Linux.
+
+## Linux chia CPU thế nào
+
+### Các scheduling class
+
+Linux không có một thuật toán mà có nhiều **scheduling class** xếp theo thứ bậc. Kernel luôn hỏi class cao nhất trước; chỉ khi class đó không có task nào sẵn sàng mới hỏi class kế tiếp.
+
+| Class | Policy | Dùng cho | Cách chọn |
+|---|---|---|---|
+| Deadline | `SCHED_DEADLINE` | Task có hạn chót cứng | Earliest Deadline First |
+| Real-time | `SCHED_FIFO`, `SCHED_RR` | Âm thanh, điều khiển thiết bị | Độ ưu tiên cố định 1 tới 99; cao hơn luôn thắng |
+| Fair | `SCHED_OTHER` (mặc định), `SCHED_BATCH`, `SCHED_IDLE` | Gần như mọi chương trình thông thường | CFS, từ kernel 6.6 là EEVDF |
+
+Một task `SCHED_FIFO` chạy vòng lặp vô hạn sẽ chiếm trọn một core và mọi task thông thường trên core đó đói. Vì thế cần quyền root để đặt policy real-time, và kernel mặc định giữ lại 5% thời gian cho các class thấp hơn để bạn còn đăng nhập vào mà giết nó.
+
+### CFS: Completely Fair Scheduler
+
+CFS là scheduler mặc định của Linux từ 2.6.23 (2007) tới 6.5. Mục tiêu của nó là mô phỏng một CPU lý tưởng chạy mọi task **đồng thời**, mỗi task với tốc độ tỉ lệ với trọng số của nó. CPU thật chỉ chạy được một task một lúc, nên CFS theo dõi task nào đang bị thiệt nhất so với lý tưởng và cho nó chạy.
+
+**vruntime.** Mỗi task có một bộ đếm `vruntime` (virtual runtime), tính bằng nano giây. Khi task chạy, `vruntime` của nó tăng lên. Quy tắc chọn rất đơn giản: **luôn chạy task có `vruntime` nhỏ nhất.**
+
+**Trọng số từ nice.** Mỗi task có giá trị `nice` từ −20 (ưu tiên nhất) tới +19 (nhường nhất), mặc định 0. Kernel đổi nice thành `weight` qua một bảng cố định, thiết kế sao cho mỗi bậc nice chênh nhau khoảng 1.25 lần:
+
+| nice | −20 | −10 | −5 | 0 | 5 | 10 | 19 |
+|---|---|---|---|---|---|---|---|
+| weight | 88761 | 9548 | 3121 | 1024 | 335 | 110 | 15 |
+
+`vruntime` tăng **chậm hơn** với task có weight lớn:
+
+```text
+vruntime += thời_gian_thật_đã_chạy × (1024 / weight)
+```
+
+Task nice 0 chạy 10 ms thì `vruntime` tăng 10 ms. Task nice 5 (weight 335) chạy 10 ms thì `vruntime` tăng khoảng 30.6 ms, nên nó nhanh chóng "trông có vẻ đã chạy nhiều" và phải nhường. Đây đúng là stride scheduling, với `vruntime` là `pass`.
+
+**Phần CPU mỗi task nhận.** Khi tất cả đều muốn chạy liên tục, mỗi task nhận phần bằng weight của nó chia cho tổng weight:
+
+```text
+A nice 0  (1024), B nice 5 (335):
+  A: 1024 / (1024 + 335) = 75.3%
+  B:  335 / (1024 + 335) = 24.7%
+```
+
+Ý nghĩa của nice vì thế là **tương đối**: nice 5 không có nghĩa là "được 25% CPU". Nếu chỉ có một mình trên máy, task nice 19 vẫn được 100%.
+
+Kiểm chứng bằng một CFS thu nhỏ:
+
+```python
+import heapq
+
+NICE_0_WEIGHT = 1024
+
+
+def cfs(tasks, total_ms, tick_ms=1):
+    """tasks: {tên: weight}. Mỗi tick chọn task có vruntime nhỏ nhất, cho chạy tick_ms."""
+    heap = [(0.0, name) for name in tasks]          # (vruntime, tên); kernel dùng red-black tree
+    heapq.heapify(heap)
+    ran = dict.fromkeys(tasks, 0)
+
+    for _ in range(0, total_ms, tick_ms):
+        vruntime, name = heapq.heappop(heap)        # task "thiệt thòi" nhất
+        ran[name] += tick_ms
+        vruntime += tick_ms * NICE_0_WEIGHT / tasks[name]   # weight lớn thì vruntime tăng chậm
+        heapq.heappush(heap, (vruntime, name))
+    return ran
+
+
+tasks = {"A (nice 0)": 1024, "B (nice 5)": 335, "C (nice 10)": 110}
+print(cfs(tasks, total_ms=10_000))
+```
+
+```text
+A (nice 0)   weight=1024  chạy  6970 ms =  69.7%   (lý thuyết  69.7%)
+B (nice 5)   weight=335   chạy  2281 ms =  22.8%   (lý thuyết  22.8%)
+C (nice 10)  weight=110   chạy   749 ms =   7.5%   (lý thuyết   7.5%)
+```
+
+Hai chục dòng, không có khái niệm "độ ưu tiên" hay "hàng đợi nhiều mức" nào, và tỉ lệ ra đúng tới từng phần nghìn.
+
+**Cấu trúc dữ liệu.** Kernel giữ các task sẵn sàng trong một **red-black tree** sắp theo `vruntime`. Task cần chạy tiếp là nút trái nhất (kernel cache sẵn con trỏ tới nó), thêm hoặc bớt một task tốn `O(log n)`.
+
+**Time slice.** CFS không có time slice cố định. Nó đặt một khoảng mục tiêu gọi là `sched_latency` (cỡ vài mili giây tới vài chục mili giây tuỳ số core) trong đó **mọi** task sẵn sàng nên được chạy một lần, rồi chia khoảng đó theo weight. Có 2 task cùng weight thì mỗi task một nửa; có 100 task thì mỗi lượt sẽ quá ngắn, nên có một sàn `min_granularity` để context switch không nuốt hết CPU.
+
+**Task vừa thức dậy.** Một task ngủ 10 giây có `vruntime` tụt lại rất xa. Nếu để nguyên, khi thức dậy nó sẽ độc chiếm CPU cho tới khi đuổi kịp. CFS xử lý bằng cách đặt lại `vruntime` của task thức dậy về gần giá trị nhỏ nhất hiện có trong cây (trừ đi một khoản thưởng nhỏ). Kết quả: task tương tác thức dậy được chạy gần như ngay, nhưng không tích luỹ được "tín dụng" vô hạn. Đây là cách CFS đạt được hiệu ứng của MLFQ (ưu ái task I/O-bound) mà không cần đoán task thuộc loại nào.
+
+### EEVDF: người kế nhiệm CFS
+
+Từ kernel 6.6 (2023), class fair chuyển sang **EEVDF** (Earliest Eligible Virtual Deadline First). Phần chia theo weight giữ nguyên; thứ thay đổi là cách chọn task kế tiếp.
+
+CFS có một điểm yếu: nó chỉ biết task nào thiệt nhất, không biết task nào **gấp** nhất. Muốn một task nhạy với độ trễ được chạy sớm, người ta phải dùng nhiều heuristic chồng lên nhau. EEVDF đưa độ trễ vào chính thuật toán bằng hai khái niệm:
+
+- **Lag**: chênh lệch giữa thời gian CPU task **lẽ ra** được nhận (theo CPU lý tưởng) và thời gian nó **thực** nhận. Lag không âm nghĩa là task đang bị nợ; task đó **eligible** (đủ điều kiện chạy). Lag âm nghĩa là nó đã chạy quá phần, phải chờ.
+- **Virtual deadline**: thời điểm task nên nhận xong lượt kế tiếp của mình, tính bằng thời điểm nó eligible cộng với độ dài lượt chạy yêu cầu chia cho weight.
+
+Quy tắc: **trong các task eligible, chạy task có virtual deadline sớm nhất.** Một task xin lượt chạy ngắn sẽ có deadline gần hơn nên được chạy sớm hơn, nhưng mỗi lần chạy ít hơn; tổng phần CPU của nó không đổi. Nhờ vậy "muốn phản hồi nhanh" và "muốn nhiều CPU" trở thành hai núm chỉnh độc lập, điều CFS không làm được gọn gàng.
+
+### Nhiều core
+
+Mọi thứ ở trên nói về một hàng đợi. Máy thật có nhiều core, và điều đó thêm ba vấn đề.
+
+**Mỗi core một runqueue.** Một hàng đợi chung cho mọi core cần một lock mà core nào cũng tranh, không mở rộng được. Linux cho mỗi core một runqueue riêng với lock riêng.
+
+**Cache affinity.** Task vừa chạy trên core 3 có dữ liệu nằm nóng trong cache của core 3. Chuyển nó sang core 5 nghĩa là bắt đầu lại với cache lạnh. Scheduler vì thế cố giữ task trên core cũ.
+
+**Load balancing.** Nhưng nếu giữ quá chặt, có thể core 0 có 8 task chờ trong khi core 1 ngồi không. Kernel định kỳ so sánh tải giữa các core và **migrate** bớt task từ core bận sang core rảnh; một core sắp rảnh cũng chủ động kéo việc từ core khác về. Cân bằng giữa "giữ cache nóng" và "không để core nào rảnh" là một trong những phần phức tạp nhất của scheduler, và còn phức tạp hơn trên máy NUMA, nơi bộ nhớ gần core này nhưng xa core kia.
+
+Bạn ép được một task vào những core nhất định bằng **CPU affinity**:
+
+```bash
+taskset -c 0,1 ./server        # chỉ cho chạy trên core 0 và 1
+taskset -cp 2-5 4211           # đổi affinity của process đang chạy có PID 4211
+```
+
+### Công cụ và cách quan sát
+
+```bash
+nice -n 10 ./batch-job         # chạy với nice 10 (nhường CPU cho task khác)
+renice -n 5 -p 4211            # đổi nice của process đang chạy
+chrt -f 50 ./audio-engine      # chạy với SCHED_FIFO, ưu tiên 50 (cần root)
+chrt -p 4211                   # xem policy hiện tại của một process
+
+cat /proc/4211/sched           # vruntime, số lần context switch, thời gian chờ...
+pidstat -w 1                   # context switch tự nguyện và không tự nguyện mỗi giây
+vmstat 1                       # cột r: số task đang chờ CPU; cột cs: context switch mỗi giây
+```
+
+**Load average** (ba số trong `uptime`, `top`) là số task trung bình đang chạy hoặc chờ CPU trong 1, 5 và 15 phút gần nhất. Trên Linux nó tính cả task đang chờ I/O đĩa. Cách đọc: so với số core. Load 8 trên máy 16 core là thong thả; load 8 trên máy 2 core nghĩa là trung bình 6 task luôn phải xếp hàng.
+
+### cgroup: scheduling cho container
+
+Container không phải máy ảo; chúng là process bình thường trên cùng kernel, được gom nhóm bằng **cgroup**. Scheduler chia CPU **giữa các nhóm** trước, rồi mới chia giữa các task trong nhóm. Hai núm chỉnh chính (cgroup v2):
+
+| File | Ý nghĩa | Kubernetes đặt từ |
+|---|---|---|
+| `cpu.weight` | Trọng số tương đối của nhóm khi có tranh chấp, giống nice nhưng cho cả nhóm | `resources.requests.cpu` |
+| `cpu.max` | Trần cứng: được dùng tối đa bao nhiêu micro giây CPU trong mỗi chu kỳ | `resources.limits.cpu` |
+
+`cpu.max` là nguồn của một hiện tượng hay gây bối rối: **CPU throttling**. Đặt limit `500m` (nửa core) nghĩa là `cpu.max = 50000 100000`: trong mỗi chu kỳ 100 ms, nhóm được chạy tổng cộng 50 ms CPU. Nếu service có 8 thread cùng bận, chúng tiêu hết 50 ms đó chỉ trong hơn 6 ms đồng hồ thật, rồi **cả nhóm bị dừng** trong hơn 93 ms còn lại của chu kỳ.
+
+```text
+0 ms        6 ms                                                100 ms
+|▓▓▓▓▓▓▓▓▓▓▓|░░░░░░░░░░░░░░░░░░░░░░ bị throttle ░░░░░░░░░░░░░░░░░░|
+ 8 thread chạy                không thread nào được chạy
+```
+
+Một request rơi vào khoảng bị dừng sẽ chậm thêm tới gần 100 ms, dù mức dùng CPU **trung bình** trông rất thấp. Triệu chứng là p99 latency xấu trong khi dashboard CPU không có gì đáng ngờ. Kiểm tra bằng:
+
+```bash
+cat /sys/fs/cgroup/cpu.stat
+# nr_periods 51234      số chu kỳ đã qua
+# nr_throttled 8421     số chu kỳ bị throttle
+# throttled_usec ...    tổng thời gian bị dừng
+```
+
+Tỉ lệ `nr_throttled / nr_periods` cao là dấu hiệu limit quá thấp so với số thread, hoặc số thread quá nhiều so với limit.
 
 ## Lưu ý
 
-- Không có thuật toán "tốt nhất": tối ưu turnaround thì hy sinh response và ngược lại. Câu hỏi đúng là *workload này cần gì*.
-- Job thực tế còn chờ I/O. Khi một job chờ đĩa/mạng, scheduler cho job khác chạy, nên CPU và I/O chạy chồng lên nhau (overlap).
-- Linux không dùng MLFQ: từ 2.6.23 dùng CFS (chia CPU theo tỷ lệ, dựa trên `vruntime`), từ 6.6 chuyển sang EEVDF. Cả hai thuộc nhóm proportional-share scheduling.
+- **Không có thuật toán tốt nhất.** Tối ưu turnaround thì hy sinh response và ngược lại. Câu hỏi đúng luôn là workload này cần gì.
+- **Scheduler không tạo ra CPU.** Khi tổng nhu cầu vượt số core, mọi chính sách chỉ quyết định ai chịu thiệt. Chỉnh nice không cứu được một máy quá tải.
+- **nice là tương đối, không phải tuyệt đối.** Nó chỉ có tác dụng khi có tranh chấp, và chỉ so với các task khác đang muốn chạy.
+- **Nhiều thread hơn số core không nhanh hơn với việc thuần CPU.** Thread thừa chỉ thêm context switch và làm lạnh cache. Trong container có CPU limit còn tệ hơn, vì chúng tiêu hết quota nhanh hơn và gây throttling.
+- **Real-time không có nghĩa là nhanh.** Nó có nghĩa là có **bảo đảm** về thời hạn. Task `SCHED_FIFO` viết ẩu có thể treo cả máy.
+- **Load average cao không nhất thiết là thiếu CPU.** Trên Linux nó gồm cả task chờ đĩa. Xem thêm `vmstat` (cột `r` và `wa`) để biết đang nghẽn ở đâu.
+- **Độ trễ do scheduling là có thật và đo được.** Thời gian một task sẵn sàng nhưng chưa được chạy (run queue latency) cộng thẳng vào latency của request. Khi p99 xấu mà CPU trung bình thấp, hãy nghi ngờ throttling hoặc quá nhiều task tranh một core trước khi nghi ngờ mã của mình.

@@ -3,7 +3,10 @@
   "pages": [
     "process-thread",
     "cpu-scheduling",
+    "synchronization",
+    "deadlock",
     "virtual-memory",
-    "deadlock"
+    "file-systems",
+    "io-devices"
   ]
 }

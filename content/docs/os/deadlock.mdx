@@ -1,76 +1,570 @@
 ---
 title: Deadlock
-description: Bốn điều kiện để các thread chờ nhau mãi mãi, và cách phá từng điều kiện.
-status: reviewed
+description: Vì sao các thread chờ nhau mãi mãi, bốn điều kiện tạo ra deadlock, cách phòng bằng thứ tự lock, cách tránh bằng Banker's algorithm, và cách database phát hiện rồi tự gỡ.
+status: draft
 tags: [os, concurrency]
 authors: [tranquocvy]
 references:
   - title: "OSTEP — Chapter 32: Common Concurrency Problems"
     url: https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf
     kind: book
+    note: bốn điều kiện, các cách phòng và ví dụ từ bug thật
   - title: "Operating System Concepts (Silberschatz) — Chapter 8: Deadlocks"
     kind: book
-  - title: "Coffman, Elphick, Shoshani (1971) — System Deadlocks"
+    note: resource-allocation graph, Banker's algorithm và ví dụ 5 process dùng trong bài
+  - title: "Coffman, Elphick, Shoshani — System Deadlocks (ACM Computing Surveys, 1971)"
     url: https://dl.acm.org/doi/10.1145/356586.356588
     kind: paper
+    note: bài báo gốc nêu bốn điều kiện
+  - title: "PostgreSQL Documentation — Explicit Locking: Deadlocks"
+    url: https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-DEADLOCKS
+    kind: web
+  - title: "MySQL Reference Manual — Deadlocks in InnoDB"
+    url: https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks.html
+    kind: web
+  - title: "Linux kernel documentation — Runtime locking correctness validator (lockdep)"
+    url: https://docs.kernel.org/locking/lockdep-design.html
+    kind: web
 ---
 
 ## Ý chính
 
-<Term>Deadlock</Term> xảy ra khi một nhóm <Term>thread</Term> đứng chờ nhau theo vòng tròn: mỗi thread giữ một tài nguyên và chờ tài nguyên mà thread khác đang giữ. Không ai nhả, không ai chạy tiếp được, chương trình treo mà không báo lỗi gì.
+<Term>Deadlock</Term> là trạng thái trong đó một nhóm <Term>thread</Term> (hoặc process, hoặc transaction) chờ nhau thành vòng tròn: mỗi bên giữ một tài nguyên và chờ tài nguyên mà bên khác trong nhóm đang giữ. Không bên nào tiến được, nên không bên nào nhả, nên chờ mãi mãi.
 
-Ví dụ kinh điển với hai <Term>mutex</Term>:
+Điểm làm deadlock khác các bug khác: chương trình không crash, không báo lỗi, không dùng CPU. Nó chỉ đứng yên.
 
-```text
-Thread 1:  lock(A);  lock(B);  ...
-Thread 2:  lock(B);  lock(A);  ...
-```
+Có ba cách đối phó, và hệ thống thật chọn tuỳ theo bối cảnh:
 
-Nếu Thread 1 vừa giữ A thì bị chuyển sang Thread 2, Thread 2 giữ B, giờ Thread 1 chờ B và Thread 2 chờ A, mãi mãi. Lỗi này chỉ xảy ra khi thứ tự xen kẽ "đúng xui", nên có thể chạy hàng nghìn lần không gặp rồi đột nhiên treo trên production.
-
-## Bốn điều kiện (Coffman)
-
-Deadlock chỉ xảy ra khi **cả bốn** điều kiện cùng đúng. Phá được một là đủ.
-
-| Điều kiện | Nghĩa | Cách phá |
+| Chiến lược | Ý tưởng | Ai dùng |
 |---|---|---|
-| Mutual exclusion | Tài nguyên chỉ một thread dùng tại một lúc | Dùng cấu trúc lock-free (atomic, CAS) khi có thể |
-| Hold-and-wait | Đang giữ tài nguyên mà vẫn xin thêm | Xin tất cả tài nguyên cùng một lúc |
-| No preemption | Không ai giật được tài nguyên khỏi thread đang giữ | `trylock`: không lấy được thì nhả hết rồi thử lại |
-| Circular wait | Có vòng chờ A → B → … → A | **Luôn khoá theo một thứ tự cố định** |
+| **Prevention** (phòng) | Thiết kế để một trong bốn điều kiện cần không bao giờ xảy ra | Mã ứng dụng, kernel: quy ước thứ tự lock |
+| **Avoidance** (tránh) | Trước mỗi lần cấp tài nguyên, kiểm tra xem cấp xong có còn lối thoát không | Hiếm dùng; có giá trị về mặt lý thuyết |
+| **Detection và recovery** (phát hiện rồi gỡ) | Cứ để xảy ra, tìm vòng chờ, huỷ một bên | Database |
 
-## Cách xử lý trong thực tế
+Bài này cần hiểu <Term>mutex</Term> trước; xem [Synchronization](/docs/os/synchronization).
 
-**Khoá theo thứ tự (lock ordering)** là cách phổ biến nhất. Nếu mọi thread luôn `lock(A)` trước `lock(B)` thì không thể có vòng chờ. Khi hai lock được truyền vào hàm theo thứ tự bất kỳ, có thể sắp theo địa chỉ bộ nhớ của lock để mọi nơi khoá cùng thứ tự.
+## Ví dụ nhỏ nhất
 
-<Expand title="Ví dụ: chuyển tiền giữa hai tài khoản">
+Hai thread, hai mutex, lấy theo thứ tự ngược nhau:
 
-```text
-transfer(from, to, amount):
-    lock(from); lock(to)      // deadlock nếu đồng thời transfer(X, Y) và transfer(Y, X)
+```c
+#include <pthread.h>
+#include <stdio.h>
+#include <unistd.h>
+
+static pthread_mutex_t A = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t B = PTHREAD_MUTEX_INITIALIZER;
+
+static void *thread1(void *arg) {
+    pthread_mutex_lock(&A);
+    usleep(1000);                     // nới rộng khe hở để deadlock gần như chắc chắn xảy ra
+    pthread_mutex_lock(&B);           // chờ thread2 nhả B
+    puts("thread1 có cả hai lock");
+    pthread_mutex_unlock(&B);
+    pthread_mutex_unlock(&A);
+    return NULL;
+}
+
+static void *thread2(void *arg) {
+    pthread_mutex_lock(&B);
+    usleep(1000);
+    pthread_mutex_lock(&A);           // chờ thread1 nhả A
+    puts("thread2 có cả hai lock");
+    pthread_mutex_unlock(&A);
+    pthread_mutex_unlock(&B);
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t1, t2;
+    pthread_create(&t1, NULL, thread1, NULL);
+    pthread_create(&t2, NULL, thread2, NULL);
+    pthread_join(t1, NULL);           // không bao giờ trở về
+    pthread_join(t2, NULL);
+    return 0;
+}
 ```
 
-Sửa bằng cách khoá theo thứ tự cố định, ví dụ theo id tài khoản:
+Diễn biến:
 
 ```text
-transfer(from, to, amount):
-    first, second = sort_by_id(from, to)
-    lock(first); lock(second)
-    from.balance -= amount; to.balance += amount
-    unlock(second); unlock(first)
+thread1                          thread2
+lock(A)   ✓ giữ A
+                                 lock(B)   ✓ giữ B
+lock(B)   ✗ B đang bị giữ, ngủ
+                                 lock(A)   ✗ A đang bị giữ, ngủ
+
+thread1 giữ A, chờ B.  thread2 giữ B, chờ A.  Không ai thức dậy nữa.
 ```
 
-Giờ cả hai luồng đều khoá tài khoản có id nhỏ hơn trước, nên không thể giữ chéo nhau.
+Bỏ hai dòng `usleep` đi thì chương trình **thường** chạy xong bình thường: thread1 lấy được cả A lẫn B trước khi thread2 kịp bắt đầu. Deadlock chỉ xảy ra khi hai thread xen kẽ đúng vào khe hở giữa hai lệnh `lock`. Đây là điều làm deadlock nguy hiểm trong thực tế: mã sai chạy đúng hàng triệu lần trong test, rồi treo trên production dưới tải cao, khi số lần thử đủ lớn để trúng khe hở.
 
-</Expand>
+Trong mã thật, hai lệnh `lock` hiếm khi nằm cạnh nhau lộ liễu như vậy. Chúng thường bị giấu sau các lớp gọi hàm: hàm `f` giữ lock của module X rồi gọi vào module Y, nơi lấy lock của Y; ở chỗ khác, một hàm của Y giữ lock của Y rồi gọi ngược về X. Không ai nhìn thấy cả hai lock trong cùng một màn hình.
 
-Các hướng khác:
+## Bốn điều kiện cần
 
-- **Tránh (avoidance)**: OS biết trước nhu cầu tối đa của mỗi thread và chỉ cấp tài nguyên khi trạng thái vẫn "an toàn", tiêu biểu là thuật toán Banker's. Ít dùng vì hiếm khi biết trước nhu cầu.
-- **Phát hiện rồi khôi phục (detection & recovery)**: cho phép deadlock xảy ra, định kỳ tìm vòng trong đồ thị chờ rồi huỷ một bên. Database làm vậy: phát hiện deadlock giữa hai transaction thì rollback một transaction.
+Deadlock chỉ xảy ra khi **cả bốn** điều kiện sau cùng đúng (Coffman và cộng sự, 1971):
+
+| Điều kiện | Nghĩa là | Trong ví dụ trên |
+|---|---|---|
+| **Mutual exclusion** | Tài nguyên chỉ một bên dùng được tại một thời điểm | Mutex chỉ một thread giữ được |
+| **Hold and wait** | Bên đang giữ tài nguyên vẫn được xin thêm và chờ | thread1 giữ A trong lúc chờ B |
+| **No preemption** | Không thể giật tài nguyên khỏi bên đang giữ; nó phải tự nhả | Không ai ép được thread2 nhả B |
+| **Circular wait** | Có một vòng: T1 chờ T2, T2 chờ T3, ..., Tn chờ T1 | thread1 chờ thread2, thread2 chờ thread1 |
+
+Bốn điều kiện này là **cần**, nên phá được một cái là không thể có deadlock. Toàn bộ nhóm kỹ thuật prevention là đi phá từng điều kiện.
+
+## Nhìn deadlock bằng đồ thị
+
+**Resource-allocation graph** vẽ tình trạng của hệ thống: hình tròn là thread, hình vuông là tài nguyên, mũi tên từ tài nguyên tới thread nghĩa là "đang được giữ bởi", mũi tên từ thread tới tài nguyên nghĩa là "đang chờ".
+
+```text
+            giữ                         chờ
+   [ A ] ─────────► ( T1 ) ─────────────────────► [ B ]
+     ▲                                              │
+     │ chờ                                          │ giữ
+     │                                              ▼
+     └──────────────────────────────────────────  ( T2 )
+```
+
+Đi theo mũi tên: T1 → B → T2 → A → T1. Có **chu trình**.
+
+- Nếu mỗi loại tài nguyên chỉ có một đơn vị (như mutex): có chu trình **khi và chỉ khi** có deadlock.
+- Nếu một loại tài nguyên có nhiều đơn vị (ví dụ 3 kết nối trong pool): chu trình là điều kiện cần nhưng chưa đủ, vì một thread ngoài chu trình có thể nhả một đơn vị và gỡ được vòng chờ.
+
+Khi chỉ quan tâm ai chờ ai, bỏ các nút tài nguyên đi sẽ được **wait-for graph**: T1 → T2 nghĩa là T1 đang chờ thứ T2 giữ. Database dùng đúng đồ thị này để phát hiện deadlock, sẽ nói ở dưới.
+
+## Prevention: phá một trong bốn điều kiện
+
+### Phá circular wait bằng thứ tự lock
+
+Đây là kỹ thuật quan trọng nhất và phổ biến nhất. Quy định một **thứ tự toàn cục** cho mọi lock, và mọi thread chỉ được lấy lock theo thứ tự tăng dần.
+
+Nếu luôn lấy A trước B thì ví dụ ở trên không thể deadlock: thread nào lấy được A trước sẽ lấy tiếp B, thread kia chờ ngay ở A và **chưa giữ gì** trong lúc chờ.
+
+Vì sao nó đúng trong trường hợp tổng quát: giả sử có chu trình T1 chờ T2 chờ ... chờ Tn chờ T1. Mỗi thread đang chờ một lock **lớn hơn** mọi lock nó đang giữ (vì nó lấy theo thứ tự tăng). Đi một vòng quanh chu trình thì thứ hạng lock phải tăng mãi rồi quay về điểm đầu, mâu thuẫn.
+
+Trường hợp khó hơn là khi thứ tự không cố định trong mã nguồn. Ví dụ chuyển tiền:
+
+```c
+struct account {
+    pthread_mutex_t lock;
+    long balance;
+};
+
+// SAI: thứ tự lock phụ thuộc vào tham số
+void transfer(struct account *from, struct account *to, long amount) {
+    pthread_mutex_lock(&from->lock);
+    pthread_mutex_lock(&to->lock);
+    from->balance -= amount;
+    to->balance   += amount;
+    pthread_mutex_unlock(&to->lock);
+    pthread_mutex_unlock(&from->lock);
+}
+```
+
+Một thread gọi `transfer(x, y, 10)` và thread khác gọi `transfer(y, x, 20)` cùng lúc là đủ để deadlock, dù cả hai chạy **cùng một hàm**. Cách sửa là tự tạo ra một thứ tự ổn định, ví dụ theo địa chỉ bộ nhớ hoặc theo ID tài khoản:
+
+```c
+void transfer(struct account *from, struct account *to, long amount) {
+    if (from == to)
+        return;
+
+    // Luôn khoá tài khoản có địa chỉ nhỏ hơn trước, bất kể chiều chuyển tiền.
+    struct account *first  = from < to ? from : to;
+    struct account *second = from < to ? to   : from;
+
+    pthread_mutex_lock(&first->lock);
+    pthread_mutex_lock(&second->lock);
+    from->balance -= amount;
+    to->balance   += amount;
+    pthread_mutex_unlock(&second->lock);
+    pthread_mutex_unlock(&first->lock);
+}
+```
+
+Trong hệ thống lớn, thứ tự lock được viết thành quy ước và kiểm tra bằng công cụ. Kernel Linux có **lockdep**: mỗi khi một thread lấy lock B trong lúc đang giữ lock A, lockdep ghi nhận quan hệ "A trước B". Nếu sau này thấy bất kỳ đường chạy nào lấy A trong lúc giữ B, nó báo ngay, **kể cả khi deadlock chưa từng thật sự xảy ra**. Đó là ý tưởng mạnh: không cần chờ trúng khe hở, chỉ cần hai thứ tự mâu thuẫn từng được quan sát thấy. ThreadSanitizer làm điều tương tự cho chương trình user mode (cảnh báo `lock-order-inversion`).
+
+### Phá hold and wait
+
+**Lấy tất cả cùng lúc.** Dùng một lock lớn bao ngoài việc lấy các lock nhỏ, để không ai chen vào giữa. Đơn giản nhưng giảm tính song song, và phải biết trước mình cần những lock nào.
+
+**Trylock và lùi lại.** `pthread_mutex_trylock` không chờ: nếu lock đang bị giữ, nó trả về lỗi ngay. Dùng nó để không bao giờ vừa giữ vừa chờ:
+
+```c
+#include <pthread.h>
+#include <sched.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+void lock_both(pthread_mutex_t *a, pthread_mutex_t *b) {
+    for (;;) {
+        pthread_mutex_lock(a);
+        if (pthread_mutex_trylock(b) == 0)
+            return;                         // có cả hai
+        pthread_mutex_unlock(a);            // không lấy được b: nhả a, không giữ gì trong lúc chờ
+        usleep(rand() % 1000);              // lùi lại một khoảng ngẫu nhiên rồi thử lại
+    }
+}
+```
+
+Khoảng lùi ngẫu nhiên là bắt buộc. Thiếu nó sẽ có <Term>livelock</Term>: hai thread lặp đi lặp lại cùng một điệu nhảy (lấy một lock, thất bại ở lock thứ hai, nhả, thử lại) hoàn toàn đồng bộ với nhau. Cả hai đều **đang chạy**, đều đốt CPU, và không ai tiến lên. Giống hai người gặp nhau trong hành lang hẹp, cùng bước sang trái rồi cùng bước sang phải.
+
+C++ gói sẵn kỹ thuật này: `std::scoped_lock lk(m1, m2);` lấy nhiều mutex bằng một thuật toán tránh deadlock, không phụ thuộc thứ tự bạn viết.
+
+### Phá no preemption
+
+Cho phép việc chờ bị huỷ: lấy lock với **timeout** (`pthread_mutex_timedlock`, `tryLock(timeout)` trong Java), hết giờ thì nhả mọi thứ đang giữ và làm lại từ đầu. Database làm đúng điều này ở mức transaction: `lock_timeout` trong PostgreSQL, `innodb_lock_wait_timeout` trong MySQL.
+
+Timeout không chữa được nguyên nhân, nhưng biến "treo vĩnh viễn" thành "một lỗi có thể thử lại", và điều đó thường đủ để hệ thống tự hồi phục.
+
+### Phá mutual exclusion
+
+Nếu không có lock thì không có deadlock. Dùng cấu trúc lock-free, dữ liệu bất biến, hoặc cho mỗi thread một bản dữ liệu riêng và trao đổi qua hàng đợi. Không phải lúc nào cũng làm được, và lock-free có độ khó riêng của nó.
+
+### So sánh
+
+| Phá điều kiện | Kỹ thuật | Chi phí |
+|---|---|---|
+| Circular wait | Thứ tự lock toàn cục | Cần kỷ luật trong cả codebase; khó khi lock nằm sau nhiều lớp trừu tượng |
+| Hold and wait | Lấy tất cả một lúc; trylock và lùi lại | Giảm song song; nguy cơ livelock |
+| No preemption | Timeout rồi thử lại | Phải viết được đường lui và thử lại an toàn |
+| Mutual exclusion | Lock-free, bất biến, truyền thông điệp | Khó, không áp dụng được mọi nơi |
+
+## Avoidance: Banker's algorithm
+
+Prevention cấm hẳn một số cách dùng tài nguyên. **Avoidance** mềm hơn: cho phép mọi thứ, nhưng trước mỗi lần cấp, kiểm tra xem cấp xong hệ thống có còn ở **trạng thái an toàn** không. Nếu không, bắt bên xin phải chờ dù tài nguyên đang rảnh.
+
+Thuật toán kinh điển là **Banker's algorithm** của Dijkstra. Tên gọi từ hình ảnh ngân hàng: không bao giờ cho vay tới mức không còn đủ tiền để đáp ứng trọn vẹn ít nhất một khách hàng.
+
+### Trạng thái an toàn
+
+Mỗi process khai báo trước số tài nguyên **tối đa** nó có thể cần. Một trạng thái là **an toàn** nếu tồn tại một thứ tự chạy các process sao cho mỗi process, khi tới lượt, có thể được cấp đủ tới mức tối đa của nó (bằng tài nguyên đang rảnh cộng với những gì các process trước nó đã trả lại), chạy xong, và trả lại tất cả.
+
+- An toàn thì chắc chắn không deadlock.
+- Không an toàn **chưa chắc** deadlock (các process có thể không xin tới mức tối đa), nhưng hệ thống không còn bảo đảm được gì.
+
+### Ví dụ tính tay
+
+Năm process, ba loại tài nguyên A, B, C với tổng số 10, 5, 7 đơn vị:
+
+| | Allocation (đang giữ) | Max (tối đa cần) | Need = Max − Allocation |
+|---|---|---|---|
+| P0 | 0 1 0 | 7 5 3 | 7 4 3 |
+| P1 | 2 0 0 | 3 2 2 | 1 2 2 |
+| P2 | 3 0 2 | 9 0 2 | 6 0 0 |
+| P3 | 2 1 1 | 2 2 2 | 0 1 1 |
+| P4 | 0 0 2 | 4 3 3 | 4 3 1 |
+
+Đang rảnh: `Available = (3, 3, 2)`.
+
+Tìm thứ tự an toàn bằng cách lặp: tìm process có `Need ≤ Available`, giả định nó chạy xong và trả lại mọi thứ.
+
+```text
+Available = (3,3,2)
+P1: Need (1,2,2) ≤ (3,3,2) ✓  → xong, trả (2,0,0)  → Available = (5,3,2)
+P3: Need (0,1,1) ≤ (5,3,2) ✓  → xong, trả (2,1,1)  → Available = (7,4,3)
+P4: Need (4,3,1) ≤ (7,4,3) ✓  → xong, trả (0,0,2)  → Available = (7,4,5)
+P0: Need (7,4,3) ≤ (7,4,5) ✓  → xong, trả (0,1,0)  → Available = (7,5,5)
+P2: Need (6,0,0) ≤ (7,5,5) ✓  → xong, trả (3,0,2)  → Available = (10,5,7)
+```
+
+Thứ tự `P1, P3, P4, P0, P2` tồn tại, nên trạng thái an toàn.
+
+### Cài đặt
+
+```python
+def is_safe(available, allocation, need):
+    """Trả về (True, thứ tự an toàn) hoặc (False, các process không thể hoàn thành)."""
+    work = list(available)                       # tài nguyên đang rảnh trong kịch bản giả định
+    finished = [False] * len(allocation)
+    order = []
+
+    progressed = True
+    while progressed:
+        progressed = False
+        for i, done in enumerate(finished):
+            if done:
+                continue
+            if all(n <= w for n, w in zip(need[i], work)):       # đủ để Pi chạy tới cùng
+                work = [w + a for w, a in zip(work, allocation[i])]   # Pi xong, trả lại mọi thứ
+                finished[i] = True
+                order.append(i)
+                progressed = True
+
+    if all(finished):
+        return True, order
+    return False, [i for i, done in enumerate(finished) if not done]
+
+
+def request(pid, req, available, allocation, need):
+    """Thử cấp req cho process pid. Chỉ cấp nếu trạng thái sau đó vẫn an toàn."""
+    if any(r > n for r, n in zip(req, need[pid])):
+        return "từ chối: xin vượt quá mức tối đa đã khai báo"
+    if any(r > a for r, a in zip(req, available)):
+        return "phải chờ: hiện không đủ tài nguyên rảnh"
+
+    # cấp thử
+    new_available = [a - r for a, r in zip(available, req)]
+    new_allocation = [row[:] for row in allocation]
+    new_need = [row[:] for row in need]
+    new_allocation[pid] = [a + r for a, r in zip(allocation[pid], req)]
+    new_need[pid] = [n - r for n, r in zip(need[pid], req)]
+
+    safe, info = is_safe(new_available, new_allocation, new_need)
+    if not safe:
+        return f"phải chờ: cấp xong sẽ không an toàn (kẹt: {['P%d' % i for i in info]})"
+
+    available[:] = new_available                 # an toàn: cấp thật
+    allocation[pid] = new_allocation[pid]
+    need[pid] = new_need[pid]
+    return f"cấp: thứ tự an toàn {['P%d' % i for i in info]}"
+```
+
+Chạy với dữ liệu ở trên, rồi thử vài yêu cầu:
+
+```text
+trạng thái ban đầu: (True, [1, 3, 4, 0, 2])
+P1 xin (1,0,2): cấp: thứ tự an toàn ['P1', 'P3', 'P4', 'P0', 'P2']
+available = [2, 3, 0]
+P4 xin (3,3,0): phải chờ: hiện không đủ tài nguyên rảnh
+P0 xin (0,2,0): phải chờ: cấp xong sẽ không an toàn (kẹt: ['P0', 'P1', 'P2', 'P3', 'P4'])
+P0 xin (0,1,0): cấp: thứ tự an toàn ['P1', 'P3', 'P4', 'P0', 'P2']
+```
+
+Dòng thứ tư là điểm đáng chú ý. Sau khi cấp cho P1, còn rảnh `(2, 3, 0)`. P0 xin `(0, 2, 0)`: tài nguyên **đang có sẵn**, nhưng nếu cấp thì còn `(2, 1, 0)`, và không process nào có `Need` nằm trong mức đó. Không ai chắc chắn hoàn thành được, nên thuật toán bắt P0 chờ. Còn xin `(0, 1, 0)` thì được, vì vẫn còn đủ để P1 hoàn thành và mở đường cho những process còn lại.
+
+### Vì sao hầu như không ai dùng
+
+- Mỗi process phải khai báo trước mức tối đa. Chương trình thật không biết trước điều đó.
+- Số process và số tài nguyên phải cố định trong lúc tính.
+- Mỗi lần cấp phải chạy thuật toán `O(m · n²)` (với `n` process, `m` loại tài nguyên).
+- Nó thận trọng quá mức: từ chối nhiều yêu cầu mà thực tế sẽ không dẫn tới deadlock.
+
+Banker's algorithm vẫn đáng học vì khái niệm **trạng thái an toàn**: thay vì hỏi "bây giờ có kẹt không", hỏi "từ đây còn đường ra không". Ý tưởng kiểm tra trước khi cam kết đó xuất hiện lại trong admission control, trong việc đặt chỗ tài nguyên của các scheduler cụm máy, và trong cách thiết kế hệ thống không tự đẩy mình vào thế bí.
+
+## Detection và recovery: cách của database
+
+Database không thể dùng thứ tự lock: nó không biết trước một transaction sẽ đụng vào những hàng nào, theo thứ tự nào. Vì vậy nó chọn cách thứ ba: **cứ để deadlock xảy ra, phát hiện, rồi huỷ một bên**.
+
+### Deadlock giữa hai transaction
+
+Hai phiên làm việc cùng chuyển tiền theo hai chiều ngược nhau:
+
+```sql
+-- Phiên 1                                    -- Phiên 2
+BEGIN;                                        BEGIN;
+UPDATE accounts SET balance = balance - 10
+ WHERE id = 1;       -- khoá hàng 1
+                                              UPDATE accounts SET balance = balance - 20
+                                               WHERE id = 2;       -- khoá hàng 2
+UPDATE accounts SET balance = balance + 10
+ WHERE id = 2;       -- chờ phiên 2
+                                              UPDATE accounts SET balance = balance + 20
+                                               WHERE id = 1;       -- chờ phiên 1 → DEADLOCK
+```
+
+PostgreSQL trả về cho một trong hai phiên:
+
+```text
+ERROR:  deadlock detected
+DETAIL:  Process 4211 waits for ShareLock on transaction 1057; blocked by process 4212.
+         Process 4212 waits for ShareLock on transaction 1056; blocked by process 4211.
+HINT:  See server log for query details.
+```
+
+Transaction bị chọn làm nạn nhân bị rollback toàn bộ, lock của nó được nhả, và transaction kia chạy tiếp.
+
+### Phát hiện bằng wait-for graph
+
+Database duy trì wait-for graph giữa các transaction và tìm chu trình trong đó. Với lock độc quyền, mỗi transaction chờ nhiều nhất một transaction khác, nên tìm chu trình chỉ là đi theo chuỗi:
+
+```python
+def find_cycle(waits_for):
+    """waits_for: {thread: thread nó đang chờ}. Trả về một chu trình nếu có."""
+    for start in waits_for:
+        path, node = [], start
+        while node in waits_for and node not in path:
+            path.append(node)
+            node = waits_for[node]
+        if node in path:
+            return path[path.index(node):] + [node]
+    return None
+
+
+print(find_cycle({"T1": "T2", "T2": "T3", "T3": "T1", "T4": "T1"}))   # ['T1', 'T2', 'T3', 'T1']
+print(find_cycle({"T1": "T2", "T2": "T3"}))                           # None
+```
+
+Trong ví dụ đầu, T4 chờ T1 nhưng không nằm trong chu trình; nó chỉ là nạn nhân bị kẹt theo. Huỷ một trong T1, T2, T3 là đủ gỡ cho cả T4.
+
+Hai hệ quản trị phổ biến làm hơi khác nhau:
+
+| | PostgreSQL | MySQL InnoDB |
+|---|---|---|
+| Khi nào kiểm tra | Sau khi một transaction đã chờ lock quá `deadlock_timeout` (mặc định 1 giây) | Ngay khi một transaction bắt đầu phải chờ |
+| Lý do | Tìm chu trình tốn công, mà phần lớn lần chờ lock tự hết trong vài mili giây | Phát hiện sớm, đổi lại tốn công kiểm tra mỗi lần chờ |
+| Chọn nạn nhân | Transaction đang chạy việc kiểm tra | Transaction đã sửa ít hàng nhất (rollback rẻ nhất) |
+| Xem thông tin | Log của server; view `pg_locks`, `pg_stat_activity` | `SHOW ENGINE INNODB STATUS` (mục LATEST DETECTED DEADLOCK) |
+
+### Ứng dụng phải làm gì
+
+Deadlock trong database là **sự kiện bình thường**, không phải bug của database. Ứng dụng có hai việc:
+
+1. **Thử lại transaction bị huỷ.** Mã lỗi là `40P01` trên PostgreSQL, `1213` trên MySQL. Thử lại toàn bộ transaction từ đầu, không phải chỉ câu lệnh cuối, vì mọi thay đổi trước đó đã bị rollback.
+2. **Giảm tần suất** bằng chính nguyên tắc thứ tự lock: cập nhật các hàng theo một thứ tự nhất quán (ví dụ luôn theo `id` tăng dần), giữ transaction ngắn, và không chờ người dùng nhập liệu giữa transaction.
+
+Trong ví dụ chuyển tiền, nếu cả hai phiên đều khoá hàng có `id` nhỏ hơn trước thì không bao giờ deadlock. Một cách gọn là khoá trước cả hai hàng theo thứ tự cố định:
+
+```sql
+BEGIN;
+SELECT id FROM accounts WHERE id IN (1, 2) ORDER BY id FOR UPDATE;   -- luôn khoá 1 rồi mới 2
+UPDATE accounts SET balance = balance - 10 WHERE id = 1;
+UPDATE accounts SET balance = balance + 10 WHERE id = 2;
+COMMIT;
+```
+
+### Vì sao OS không làm như database
+
+Huỷ một transaction là an toàn vì database **rollback** được: mọi thay đổi của nó được hoàn lại như chưa từng xảy ra. Một thread thông thường không có khả năng đó. Giết một thread đang giữ mutex để lại dữ liệu sửa dở và một mutex không ai nhả. Vì vậy OS đa dụng không tự gỡ deadlock giữa các thread của bạn.
+
+## Ostrich algorithm: lờ nó đi
+
+Đây là chiến lược của Linux, Windows, macOS đối với deadlock trong chương trình ứng dụng: không phòng, không tránh, không phát hiện. Lý do là kinh tế: phòng hoặc phát hiện cho mọi loại tài nguyên trong mọi chương trình rất đắt, còn deadlock tương đối hiếm, và khi xảy ra thì người dùng tự giết chương trình rồi chạy lại. Trách nhiệm được đẩy cho người viết chương trình.
+
+Ngoại lệ là bên trong kernel: mã kernel tuân theo thứ tự lock nghiêm ngặt, có lockdep kiểm tra, vì deadlock trong kernel là treo cả máy.
+
+Một số runtime phát hiện được trường hợp đơn giản nhất. Go báo `fatal error: all goroutines are asleep - deadlock!` khi **mọi** goroutine đều đang chờ. Nó không thấy được deadlock giữa hai goroutine trong khi goroutine thứ ba vẫn chạy.
+
+## Anh em của deadlock
+
+| | Trạng thái của thread | Có tiến triển không | Nguyên nhân |
+|---|---|---|---|
+| **Deadlock** | Blocked, không dùng CPU | Không, vĩnh viễn | Vòng chờ khép kín |
+| **Livelock** | Running, đốt CPU | Không | Các bên liên tục phản ứng với nhau rồi cùng thử lại |
+| **<Term>Starvation</Term>** | Ready hoặc blocked | Hệ thống có, riêng một bên thì không | Chính sách không công bằng: luôn có ai đó được ưu tiên hơn |
+| **Priority inversion** | Thread ưu tiên cao bị blocked | Có, nhưng chậm một cách không kiểm soát | Thread ưu tiên thấp giữ lock, thread ưu tiên vừa chiếm CPU |
+
+Cách phân biệt nhanh khi một service "đứng": nhìn CPU. Gần 0% là deadlock (hoặc đang chờ I/O). 100% là livelock hoặc vòng lặp vô hạn.
+
+## Bài toán Dining Philosophers
+
+Năm triết gia ngồi quanh bàn tròn, giữa mỗi hai người có một chiếc nĩa (năm nĩa). Mỗi người lặp lại: suy nghĩ, rồi ăn. Muốn ăn cần **cả hai** nĩa bên trái và bên phải.
+
+```text
+            P0
+       f4        f0
+    P4              P1
+       f3        f1
+         P3  f2  P2
+```
+
+Lời giải ngây thơ: mỗi người lấy nĩa bên trái rồi lấy nĩa bên phải.
+
+```c
+#include <pthread.h>
+
+#define N 5
+static pthread_mutex_t fork_lock[N];
+
+static void *philosopher(void *arg) {
+    int i = *(int *)arg;
+    int left = i, right = (i + 1) % N;
+
+    for (;;) {
+        think();
+        pthread_mutex_lock(&fork_lock[left]);
+        pthread_mutex_lock(&fork_lock[right]);
+        eat();
+        pthread_mutex_unlock(&fork_lock[right]);
+        pthread_mutex_unlock(&fork_lock[left]);
+    }
+}
+```
+
+Nếu cả năm người cùng cầm nĩa bên trái một lúc, mỗi người giữ một nĩa và chờ nĩa bên phải, thứ đang nằm trong tay người kế bên. Vòng chờ khép kín quanh bàn. Cả bốn điều kiện đều thoả.
+
+Ba cách sửa, mỗi cách phá một điều kiện khác nhau:
+
+**Thứ tự lock (phá circular wait).** Luôn lấy nĩa có số nhỏ hơn trước. Với P0 tới P3 thì đó vẫn là nĩa trái; riêng P4 (trái là f4, phải là f0) phải lấy f0 trước. Chỉ một người đổi thứ tự là đủ phá vòng.
+
+```c
+int first  = left < right ? left : right;
+int second = left < right ? right : left;
+pthread_mutex_lock(&fork_lock[first]);
+pthread_mutex_lock(&fork_lock[second]);
+```
+
+**Giới hạn số người ngồi vào bàn (phá khả năng tạo vòng đủ lớn).** Dùng một semaphore khởi tạo N − 1. Khi chỉ tối đa bốn người cùng cố lấy nĩa, luôn có ít nhất một người lấy được cả hai.
+
+```c
+sem_wait(&seats);                          // tối đa N - 1 người
+pthread_mutex_lock(&fork_lock[left]);
+pthread_mutex_lock(&fork_lock[right]);
+eat();
+pthread_mutex_unlock(&fork_lock[right]);
+pthread_mutex_unlock(&fork_lock[left]);
+sem_post(&seats);
+```
+
+**Lấy cả hai hoặc không lấy gì (phá hold and wait).** Dùng một mutex chung và condition variable: triết gia chỉ cầm nĩa khi cả hai cùng rảnh, nếu không thì chờ mà không giữ gì.
+
+Bài toán này không phải về triết gia. Nó là mô hình của mọi tình huống trong đó mỗi bên cần đồng thời nhiều tài nguyên dùng chung với hàng xóm: transaction cần nhiều hàng, service cần nhiều kết nối, thread cần nhiều lock.
+
+## Deadlock không chỉ ở mutex
+
+Bất cứ thứ gì có thể chờ đều có thể deadlock. Một số dạng hay gặp mà không có mutex nào lộ ra trong mã:
+
+**Tự khoá mình.** Một thread khoá một mutex thường hai lần là tự treo. Hay gặp khi hàm công khai giữ lock rồi gọi một hàm công khai khác của cùng đối tượng. Mutex đệ quy (recursive) cho phép điều này, nhưng thường che giấu một thiết kế chưa rõ ràng về việc ai giữ lock.
+
+**Hai pipe cùng đầy.** Process cha ghi một lượng lớn dữ liệu vào stdin của con, định ghi xong mới đọc stdout. Con vừa đọc vừa ghi kết quả ra stdout. Bộ đệm pipe stdout đầy (thường 64 KB trên Linux), con ngủ chờ cha đọc. Cha đang ngủ chờ con đọc tiếp stdin. Đây là lý do tài liệu `subprocess` của Python dặn dùng `communicate()` thay vì tự `write` rồi `read`.
+
+**Thread pool chờ chính mình.** Một task trong pool gửi task con vào cùng pool rồi chờ kết quả. Nếu mọi thread của pool đều đang chạy những task cha như vậy, không còn thread nào để chạy task con. Tài nguyên bị giữ ở đây là chính các thread.
+
+**Connection pool.** Một request giữ một kết nối database rồi, trong lúc đó, xin thêm kết nối thứ hai từ cùng pool. Dưới tải cao, mọi kết nối đều bị giữ bởi các request đang chờ kết nối thứ hai.
+
+**Chờ condition variable trong khi giữ lock khác.** `pthread_cond_wait` chỉ nhả mutex được truyền cho nó. Nếu thread còn giữ một mutex thứ hai, mutex đó bị giữ suốt lúc ngủ, và nếu thread sẽ đánh thức nó cần đúng mutex ấy thì cả hai kẹt.
+
+**Giữa các service.** Service A gọi đồng bộ sang B, B trong lúc xử lý lại gọi đồng bộ về A, và cả hai có giới hạn số request xử lý đồng thời. Khi cả hai đầy, mọi request đều chờ một chỗ trống ở bên kia. Không lock nào tham gia, nhưng cấu trúc y hệt.
+
+## Chẩn đoán một chương trình đang treo
+
+Dấu hiệu: process còn sống, CPU gần 0%, không có tiến triển. Việc cần làm là xem **mỗi thread đang đứng ở đâu**.
+
+```bash
+# C/C++: gắn gdb vào process đang chạy và in stack của mọi thread
+gdb -p 4211 -batch -ex "thread apply all bt"
+```
+
+```text
+Thread 2 (LWP 4213):
+#0  __lll_lock_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#1  pthread_mutex_lock () from /lib/x86_64-linux-gnu/libc.so.6
+#2  thread1 (arg=0x0) at deadlock.c:11        ← đang chờ lock B
+Thread 3 (LWP 4214):
+#0  __lll_lock_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#1  pthread_mutex_lock () from /lib/x86_64-linux-gnu/libc.so.6
+#2  thread2 (arg=0x0) at deadlock.c:21        ← đang chờ lock A
+```
+
+Hai thread cùng nằm trong `pthread_mutex_lock` là dấu hiệu rõ. Trong gdb, `print A` hiện field `__owner` là TID của thread đang giữ, từ đó dựng lại được vòng chờ.
+
+| Môi trường | Công cụ |
+|---|---|
+| C, C++ | `gdb -p <pid>`, `thread apply all bt` |
+| Java | `jstack <pid>`: tự phân tích và in "Found one Java-level deadlock" kèm vòng chờ |
+| Go | Gửi `SIGQUIT` (hoặc endpoint pprof `goroutine?debug=2`) để in stack mọi goroutine |
+| Python | `py-spy dump --pid <pid>` |
+| PostgreSQL | `pg_stat_activity` kết hợp `pg_locks`; hàm `pg_blocking_pids(pid)` cho biết ai đang chặn ai |
+| MySQL | `SHOW ENGINE INNODB STATUS`, bảng `performance_schema.data_lock_waits` |
+| Phát hiện sớm khi test | ThreadSanitizer (`-fsanitize=thread`), lockdep trong kernel |
 
 ## Lưu ý
 
-- **Deadlock ≠ livelock ≠ starvation.** Deadlock: mọi thread đứng yên. Livelock: các thread vẫn chạy nhưng liên tục nhường nhau nên không ai tiến triển (hay gặp khi dùng `trylock` rồi thử lại cùng nhịp; thêm thời gian chờ ngẫu nhiên để tránh). <Term>Starvation</Term>: hệ thống vẫn chạy nhưng một thread mãi không đến lượt.
-- Giữ lock càng ngắn càng tốt và tránh gọi hàm không rõ bên trong (callback, I/O) khi đang giữ lock: hàm đó có thể xin lock khác theo thứ tự ngược.
-- Deadlock không chỉ có ở mutex: hai process chờ nhau qua pipe, hai service gọi chéo nhau đồng bộ cũng có thể kẹt theo cùng một kiểu vòng chờ.
+- **Deadlock không xảy ra mỗi lần chạy.** Mã có thứ tự lock sai có thể chạy đúng hàng triệu lần. Test không lộ ra không có nghĩa là không có.
+- **Cách phòng thực dụng nhất là thứ tự lock nhất quán**, được viết thành quy ước và kiểm tra bằng công cụ, cộng với việc giữ số lock lồng nhau ở mức ít nhất có thể. Mã chỉ giữ một lock tại một thời điểm thì không thể deadlock vì lock.
+- **Đừng gọi mã lạ khi đang giữ lock.** Callback, listener, phương thức ảo: bạn không biết chúng sẽ lấy lock gì. Đây là nguồn phổ biến nhất của thứ tự lock mâu thuẫn.
+- **Timeout là lưới an toàn, không phải lời giải.** Nó biến treo thành lỗi, nhưng nguyên nhân vẫn còn đó và sẽ tái diễn.
+- **Trong database, deadlock là chuyện thường ngày.** Viết mã thử lại ngay từ đầu, và thử lại cả transaction.
+- **Trylock mà không có khoảng lùi ngẫu nhiên là đổi deadlock lấy livelock.**
+- **Trạng thái không an toàn không đồng nghĩa với deadlock.** Nó chỉ có nghĩa là không còn bảo đảm. Đây là khác biệt giữa avoidance (không bao giờ bước vào vùng không an toàn) và detection (bước vào thoải mái, kẹt thì gỡ).

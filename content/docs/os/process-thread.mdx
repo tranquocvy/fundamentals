@@ -1,50 +1,558 @@
 ---
 title: Process vs Thread
-description: Hai đơn vị thực thi cơ bản và khác nhau ở đâu.
-status: reviewed
+description: Process và thread là gì bên trong kernel, được tạo ra thế nào, chia sẻ gì với nhau, và vì sao lựa chọn giữa hai thứ này quyết định kiến trúc của cả một hệ thống.
+status: draft
 tags: [os, concurrency]
 authors: [tranquocvy]
 references:
-  - title: "Operating Systems: Three Easy Pieces (OSTEP) — Abstraction: The Process"
+  - title: "OSTEP — Chapter 4: The Abstraction: The Process"
     url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-intro.pdf
     kind: book
-  - title: "Operating System Concepts (Silberschatz) — Chapter 4: Threads & Concurrency"
+  - title: "OSTEP — Chapter 5: Interlude: Process API"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-api.pdf
+    kind: book
+    note: fork, exec, wait và lý do tách fork khỏi exec
+  - title: "OSTEP — Chapter 6: Mechanism: Limited Direct Execution"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-mechanisms.pdf
+    kind: book
+    note: user mode, kernel mode, trap và context switch
+  - title: "OSTEP — Chapter 26: Concurrency: An Introduction"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/threads-intro.pdf
+    kind: book
+  - title: "Linux man-pages — clone(2)"
+    url: https://man7.org/linux/man-pages/man2/clone.2.html
+    kind: web
+    note: các cờ CLONE_* quyết định process con chia sẻ gì với cha
+  - title: "Operating System Concepts (Silberschatz) — Chapter 3: Processes, Chapter 4: Threads & Concurrency"
     kind: book
 ---
 
 ## Ý chính
 
-Một **process** là chương trình đang chạy, có <Term>address space</Term> riêng. Một **thread** là đơn vị thực thi nằm *bên trong* process, các thread trong cùng process chia sẻ address space.
+Một <Term>process</Term> là một chương trình đang chạy, cùng với mọi thứ OS cấp cho nó: một <Term>address space</Term> riêng, các file đang mở, quyền hạn, và ít nhất một luồng thực thi. Một <Term>thread</Term> là một luồng thực thi nằm **bên trong** process: nó có stack và bộ register riêng, nhưng dùng chung address space và tài nguyên với các thread khác của process đó.
 
-## So sánh
+Nói gọn: **process là đơn vị sở hữu tài nguyên và cô lập, thread là đơn vị được CPU chạy.** Mọi khác biệt còn lại (chi phí tạo, chi phí chuyển đổi, cách giao tiếp, cách hỏng) đều suy ra từ câu này.
 
-| | Process | Thread |
-|---|---|---|
-| Bộ nhớ | Riêng biệt | Chia sẻ heap, code, data |
-| Chi phí tạo / context switch | Nặng | Nhẹ hơn |
-| Giao tiếp | IPC (pipe, socket, shared memory) | Đọc/ghi trực tiếp biến chung |
-| Lỗi | Crash không ảnh hưởng process khác | Một thread crash có thể kéo cả process |
+Bài này đi từ dưới lên: process trông thế nào trong bộ nhớ và trong kernel, nó được tạo ra bằng gì, thread thêm vào điều gì, Linux thực sự cài hai khái niệm này ra sao, và cuối cùng là các hệ thống thật (PostgreSQL, Nginx, Chrome, Redis) chọn bên nào và vì sao.
 
-## Vì sao chia sẻ bộ nhớ lại nguy hiểm
+## Từ program tới process
 
-Khi nhiều thread cùng ghi một biến, kết quả phụ thuộc thứ tự xen kẽ — gọi là <Term>race condition</Term>.
+Một **program** là file nằm trên đĩa: mã máy, dữ liệu khởi tạo sẵn, bảng symbol. Nó không làm gì cả. Khi bạn chạy nó, OS tạo ra một process:
 
-<Expand title="Ví dụ: counter++ bị xen kẽ">
+1. Tạo một address space mới, trống.
+2. Ánh xạ mã máy và dữ liệu của file vào address space đó (không nhất thiết đọc hết vào RAM ngay, xem bài [Virtual Memory](/docs/os/virtual-memory)).
+3. Cấp một stack, đặt các tham số dòng lệnh và biến môi trường lên đó.
+4. Mở sẵn ba <Term>file descriptor</Term>: 0 (stdin), 1 (stdout), 2 (stderr).
+5. Đặt program counter vào điểm bắt đầu của chương trình và cho nó chạy.
 
-`counter++` thực ra gồm 3 bước: đọc, cộng, ghi. Hai thread có thể xen kẽ như sau:
+Cùng một program có thể chạy thành nhiều process cùng lúc. Mở ba cửa sổ terminal là có ba process `bash`, mỗi cái có bộ nhớ riêng, không biết gì về nhau.
+
+### Address space của một process
+
+Trên Linux x86-64, address space của một process được chia vùng như sau (địa chỉ tăng dần từ dưới lên):
 
 ```text
-Thread A: đọc counter (=5)
-Thread B: đọc counter (=5)
-Thread A: ghi counter = 6
-Thread B: ghi counter = 6   // mất một lần tăng
+địa chỉ cao
+┌──────────────────────────┐
+│ kernel space             │  process không được đụng vào
+├──────────────────────────┤
+│ stack                    │  biến cục bộ, địa chỉ trả về; mọc XUỐNG
+│          ↓               │
+│                          │
+│          ↑               │
+│ vùng mmap                │  thư viện dùng chung (.so), file ánh xạ, malloc cỡ lớn
+│                          │
+│          ↑               │
+│ heap                     │  malloc/new; mọc LÊN
+├──────────────────────────┤
+│ bss                      │  biến toàn cục chưa khởi tạo (toàn số 0)
+│ data                     │  biến toàn cục đã khởi tạo
+│ text                     │  mã máy, chỉ đọc + thực thi
+└──────────────────────────┘
+địa chỉ thấp
 ```
 
-Kỳ vọng là 7 nhưng kết quả là 6. Cách xử lý: mutex, atomic operation.
+Bạn có thể tự nhìn thấy các vùng này. File `/proc/<pid>/maps` liệt kê mọi vùng nhớ của một process:
+
+```bash
+$ cat /proc/self/maps
+55d0c8a4b000-55d0c8a4d000 r--p 00000000 08:02 1573  /usr/bin/cat
+55d0c8a4d000-55d0c8a52000 r-xp 00002000 08:02 1573  /usr/bin/cat      # text
+55d0c8a55000-55d0c8a56000 rw-p 00009000 08:02 1573  /usr/bin/cat      # data
+55d0c9f2a000-55d0c9f4b000 rw-p 00000000 00:00 0     [heap]
+7f3a1c000000-7f3a1c1c0000 r-xp 00028000 08:02 2210  /usr/lib/libc.so.6
+7ffd4b6e1000-7ffd4b702000 rw-p 00000000 00:00 0     [stack]
+```
+
+Cột thứ hai là quyền: `r` đọc, `w` ghi, `x` thực thi, `p` là private (ghi vào không ảnh hưởng process khác). Vùng text có `r-x` nhưng không có `w`: chương trình không tự sửa được mã của mình. Vùng stack và heap có `rw-` nhưng không có `x`: dữ liệu không chạy được như mã, một lớp phòng thủ chống tấn công chèn mã.
+
+Tất cả các địa chỉ trên là **địa chỉ ảo**. Hai process có thể cùng thấy biến của mình ở địa chỉ `0x55d0c8a55010`, nhưng đó là hai ô RAM vật lý khác nhau. Đây chính là sự cô lập: một process không có cách nào gọi tên bộ nhớ của process khác.
+
+### Kernel lưu gì về một process
+
+Với mỗi process, kernel giữ một cấu trúc dữ liệu thường gọi là <Term>PCB</Term> (process control block). Trên Linux đó là `struct task_struct`, dài hàng trăm field. Những field quan trọng nhất:
+
+| Nhóm | Nội dung | Dùng để làm gì |
+|---|---|---|
+| Định danh | PID, PID của process cha, user ID, group ID | Phân quyền, gửi signal, dựng cây process |
+| Trạng thái | running, sleeping, zombie... | Scheduler biết có nên chọn nó không |
+| CPU context | Giá trị các register lúc bị dừng: program counter, stack pointer, register chung | Để chạy tiếp đúng chỗ đã dừng |
+| Bộ nhớ | Con trỏ tới page table và danh sách các vùng nhớ | Dịch địa chỉ ảo sang vật lý |
+| File | Bảng file descriptor: mỗi số trỏ tới một file, socket hay pipe đang mở | `read(3, ...)` biết 3 là cái gì |
+| Scheduling | Độ ưu tiên, thời gian đã chạy | Chia CPU công bằng |
+| Signal | Handler nào cho signal nào, signal nào đang chờ | Xử lý Ctrl+C, `kill` |
+
+Điểm cần nhớ: **process không chỉ là bộ nhớ**. Nó là toàn bộ bảng trên. Khi nói "tạo process tốn kém", cái tốn là dựng lại gần như cả bảng này.
+
+### User mode và kernel mode
+
+Process không được tự ý đọc đĩa, gửi gói tin hay cấp thêm bộ nhớ. CPU có (ít nhất) hai chế độ:
+
+- **User mode**: chế độ process chạy bình thường. Các lệnh đặc quyền (truy cập thiết bị, sửa page table) bị cấm.
+- <Term>Kernel mode</Term>: chế độ kernel chạy, làm được mọi thứ.
+
+Muốn nhờ kernel làm gì, process thực hiện một <Term>system call</Term>: đặt số hiệu của dịch vụ vào register rồi chạy một lệnh đặc biệt (`syscall` trên x86-64). CPU chuyển sang kernel mode, nhảy tới một địa chỉ mà kernel đã đăng ký trước, kernel làm việc được nhờ rồi trả quyền lại. `read`, `write`, `fork`, `mmap` đều là system call. Bạn xem được chúng bằng `strace`:
+
+```bash
+$ strace -c ls > /dev/null    # đếm system call mà ls thực hiện
+```
+
+Cơ chế này quan trọng cho phần sau: mỗi lần vào kernel đều có chi phí, và context switch chỉ xảy ra được khi kernel đang nắm quyền.
+
+## Vòng đời của process
+
+### Các trạng thái
+
+Tại mỗi thời điểm, một process ở một trong các trạng thái sau:
+
+```text
+            được scheduler chọn
+   ┌───────┐ ────────────────► ┌─────────┐   exit()   ┌────────┐
+   │ ready │                   │ running │ ─────────► │ zombie │
+   └───────┘ ◄──────────────── └─────────┘            └────────┘
+       ▲      hết time slice        │
+       │      hoặc bị chiếm quyền   │ chờ I/O, chờ lock, sleep()
+       │                            ▼
+       │    I/O xong, có lock  ┌─────────┐
+       └────────────────────── │ blocked │
+                               └─────────┘
+```
+
+- **Ready**: chạy được, chỉ thiếu CPU. Nằm trong hàng đợi của <Term>scheduler</Term>.
+- **Running**: đang chiếm một CPU core.
+- **Blocked** (còn gọi là sleeping, waiting): đang chờ một sự kiện, ví dụ dữ liệu từ đĩa hoặc mạng. Có cho CPU nó cũng không làm gì được, nên scheduler bỏ qua.
+- **Zombie**: đã chạy xong nhưng process cha chưa đọc kết quả. Nói kỹ ở dưới.
+
+Phân biệt ready và blocked là điều làm multitasking có lợi: khi một process chờ đĩa mất 5 ms, CPU chạy được hàng triệu lệnh của process khác thay vì ngồi không.
+
+### Tạo process: fork, exec, wait
+
+Trên Unix, tạo process mới gồm hai bước tách rời, và sự tách rời này là có chủ ý.
+
+`fork()` tạo ra một bản sao gần như y hệt của process đang gọi nó. Process con có address space giống hệt cha (cùng mã, cùng giá trị biến, cùng vị trí đang chạy), cùng các file đang mở. Khác biệt duy nhất nhìn thấy được: `fork()` trả về `0` trong process con và trả về PID của con trong process cha.
+
+`exec()` thay toàn bộ nội dung address space của process hiện tại bằng một program khác. PID giữ nguyên, file descriptor đang mở giữ nguyên, nhưng mã và dữ liệu là của program mới.
+
+`wait()` cho process cha chờ con kết thúc và lấy mã thoát.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+int main(void) {
+    int x = 100;
+    pid_t pid = fork();                 // từ đây có HAI process cùng chạy đoạn mã bên dưới
+
+    if (pid < 0) {                      // fork thất bại (hết bộ nhớ, quá giới hạn số process)
+        perror("fork");
+        exit(1);
+    }
+    if (pid == 0) {                     // nhánh của process con
+        x += 1;                         // chỉ sửa bản sao của con
+        printf("con : pid=%d x=%d\n", getpid(), x);
+        execlp("ls", "ls", "-l", (char *)NULL);   // biến thành chương trình ls
+        perror("execlp");               // chỉ chạy tới đây nếu exec thất bại
+        _exit(127);
+    }
+
+    int status;                         // nhánh của process cha
+    waitpid(pid, &status, 0);           // chờ con xong
+    printf("cha : pid=%d x=%d, con thoát với mã %d\n",
+           getpid(), x, WEXITSTATUS(status));
+    return 0;
+}
+```
+
+Kết quả:
+
+```text
+con : pid=4212 x=101
+(danh sách file do ls in ra)
+cha : pid=4211 x=100, con thoát với mã 0
+```
+
+`x` của cha vẫn là 100. Con sửa `x` của **nó**; hai process không chia sẻ bộ nhớ.
+
+<Expand title="Vì sao tách fork và exec thay vì một lệnh 'tạo process chạy program X'">
+
+Khoảng trống giữa `fork()` và `exec()` là chỗ process con, vẫn đang chạy mã của cha, kịp sắp xếp môi trường cho program sắp chạy. Đây là cách shell làm được redirect và pipe mà program bên trong không cần biết gì.
+
+Khi bạn gõ `ls > out.txt`, shell làm:
+
+```c
+pid_t pid = fork();
+if (pid == 0) {
+    int fd = open("out.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    dup2(fd, 1);          // file descriptor 1 (stdout) giờ trỏ vào out.txt
+    close(fd);
+    execlp("ls", "ls", (char *)NULL);
+}
+waitpid(pid, NULL, 0);
+```
+
+`ls` cứ ghi vào file descriptor 1 như mọi khi. Nó không hề biết đó là file chứ không phải màn hình, vì bảng file descriptor được giữ nguyên qua `exec()`. Pipe `a | b` cũng làm tương tự: shell tạo một pipe, fork hai lần, nối stdout của `a` và stdin của `b` vào hai đầu pipe rồi mới exec.
+
+Windows chọn hướng ngược lại: `CreateProcess()` nhận một lúc hơn chục tham số để mô tả mọi thứ cần sắp xếp. Mạnh tương đương nhưng API phức tạp hơn nhiều.
 
 </Expand>
 
-## Khi nào dùng cái nào
+### Copy-on-write: vì sao fork không chậm như bạn nghĩ
 
-- Cần cô lập, an toàn → process.
-- Cần chia sẻ dữ liệu nhanh, chi phí thấp → thread (và chấp nhận phải đồng bộ).
+Sao chép toàn bộ address space nghe rất đắt: một process dùng 2 GB mà fork thì phải chép 2 GB? Và thường ngay sau đó con gọi `exec()`, vứt hết bản sao đi.
+
+Kernel không chép thật. Nó dùng <Term>copy-on-write</Term> (COW):
+
+1. Khi fork, kernel chỉ sao chép **page table** của cha cho con. Cả hai page table trỏ tới cùng các trang RAM vật lý.
+2. Mọi trang ghi được bị đánh dấu **chỉ đọc** trong cả hai page table.
+3. Khi một bên ghi vào một trang, CPU báo lỗi bảo vệ. Kernel nhận ra đây là trang COW, cấp một trang mới, chép nội dung 4 KB sang, sửa page table của bên vừa ghi để trỏ vào trang mới với quyền ghi, rồi cho chạy lại lệnh ghi.
+
+Kết quả: fork chỉ tốn công chép page table (tỉ lệ với lượng bộ nhớ đã ánh xạ, nhưng nhỏ hơn dữ liệu thật khoảng 500 lần), và chỉ những trang thật sự bị sửa mới bị nhân đôi.
+
+COW không chỉ là mẹo tối ưu. Redis dùng nó để chụp snapshot: khi cần lưu dữ liệu xuống đĩa, Redis fork một process con. Con nhìn thấy đúng trạng thái bộ nhớ tại thời điểm fork và thong thả ghi ra file, trong khi cha tiếp tục phục vụ request; trang nào cha sửa thì kernel tự nhân đôi. Cái giá: nếu trong lúc đó cha ghi rất nhiều, bộ nhớ dùng thật có thể tăng gần gấp đôi.
+
+### Zombie và orphan
+
+Khi một process kết thúc, kernel giải phóng bộ nhớ và đóng file của nó, nhưng **giữ lại** một mẩu PCB chứa mã thoát, vì process cha có thể muốn hỏi "con tôi chết thế nào". Process ở trạng thái này gọi là <Term>zombie process</Term>. Nó biến mất hẳn khi cha gọi `wait()`.
+
+- Cha không bao giờ gọi `wait()` thì zombie tích lại. Mỗi zombie không tốn RAM đáng kể nhưng chiếm một PID, và số PID có hạn. Trong `ps`, chúng hiện với trạng thái `Z` hoặc chữ `<defunct>`.
+- Cha chết trước con thì con thành **orphan**. Kernel giao nó cho process `init` (PID 1, trên máy hiện đại là `systemd`), và `init` luôn gọi `wait()` cho mọi con nuôi.
+
+Đây là lý do container cần một process PID 1 biết dọn zombie: nếu ứng dụng của bạn là PID 1 trong container, sinh process con mà không `wait()`, zombie sẽ tích lại. Docker có cờ `--init` để chèn một init tối giản làm việc đó.
+
+## Thread: nhiều luồng thực thi trong một process
+
+### Vì sao cần thread
+
+Giả sử một web server phải phục vụ 1000 kết nối cùng lúc, và muốn tận dụng 8 core. Dùng 1000 process thì được, nhưng:
+
+- Mỗi process có address space riêng, nên dữ liệu chung (cache, cấu hình, connection pool) phải nhân bản hoặc chia sẻ qua cơ chế riêng.
+- Chuyển CPU giữa hai process đắt hơn (xem phần context switch).
+- Tạo và huỷ process tốn nhiều công hơn.
+
+Thread giải quyết bằng cách cho nhiều luồng thực thi sống trong **cùng một** address space.
+
+### Thread chia sẻ gì, giữ riêng gì
+
+| Dùng chung giữa các thread của một process | Riêng của mỗi thread |
+|---|---|
+| Text (mã máy) | Program counter |
+| Data, bss (biến toàn cục) | Các register |
+| Heap (mọi thứ `malloc` ra) | Stack (biến cục bộ, chuỗi lời gọi hàm) |
+| Bảng file descriptor | Thread ID |
+| PID, quyền hạn, thư mục hiện tại | `errno`, thread-local storage |
+| Signal handler | Signal mask |
+
+Address space của process có ba thread trông như sau:
+
+```text
+┌──────────────────────────┐
+│ stack của thread 1       │
+├──────────────────────────┤
+│ stack của thread 2       │   mỗi thread một stack, nằm trong vùng mmap
+├──────────────────────────┤
+│ stack của thread 3       │
+├──────────────────────────┤
+│ heap                     │   CHUNG
+│ data, bss                │   CHUNG
+│ text                     │   CHUNG
+└──────────────────────────┘
+```
+
+Lưu ý một điều hay bị hiểu sai: stack là "riêng" theo nghĩa mỗi thread **dùng** một stack khác nhau, không phải theo nghĩa được bảo vệ. Mọi stack đều nằm trong cùng address space. Nếu thread 1 đưa địa chỉ một biến cục bộ cho thread 2, thread 2 đọc và ghi được biến đó. Không có bức tường nào giữa các thread.
+
+### Tạo thread với pthread
+
+```c
+#include <pthread.h>
+#include <stdio.h>
+
+static int shared = 0;                       // biến toàn cục: mọi thread thấy chung
+
+static void *worker(void *arg) {
+    int id = *(int *)arg;                    // biến cục bộ: nằm trên stack riêng
+    shared += 10;
+    printf("thread %d: shared=%d, địa chỉ biến cục bộ=%p\n", id, shared, (void *)&id);
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t[2];
+    int ids[2] = {1, 2};
+
+    for (int i = 0; i < 2; i++)
+        pthread_create(&t[i], NULL, worker, &ids[i]);
+    for (int i = 0; i < 2; i++)
+        pthread_join(t[i], NULL);            // tương đương wait() cho thread
+
+    printf("main: shared=%d\n", shared);
+    return 0;
+}
+```
+
+```text
+$ gcc -pthread demo.c -o demo && ./demo
+thread 1: shared=10, địa chỉ biến cục bộ=0x7f1c5a7fde44
+thread 2: shared=20, địa chỉ biến cục bộ=0x7f1c59ffce44
+main: shared=20
+```
+
+Hai địa chỉ biến cục bộ cách nhau `0x801000` byte, tức 8 MB cộng một trang 4 KB: 8 MB là kích thước stack mặc định của mỗi thread trên Linux, còn trang thừa là guard page không có quyền truy cập, đặt giữa hai stack để một stack tràn sẽ gây lỗi ngay thay vì âm thầm ghi đè stack bên cạnh. 8 MB này là địa chỉ ảo được đặt chỗ, RAM thật chỉ bị dùng khi stack mọc tới. Dù vậy, đây là một lý do không thể tạo vài trăm nghìn thread: mỗi cái vẫn cần kernel giữ một PCB, một kernel stack, và một khoảng địa chỉ.
+
+So với ví dụ fork ở trên: ở đó con sửa `x` mà cha không thấy. Ở đây thread sửa `shared` và mọi thread khác thấy ngay. Đó là toàn bộ sự khác biệt, nhìn từ phía người lập trình.
+
+### Linux cài process và thread ra sao
+
+Trong kernel Linux **không có hai loại đối tượng** process và thread. Chỉ có một loại: **task**, mỗi task một `task_struct`. Khác biệt giữa "process mới" và "thread mới" chỉ là task mới **chia sẻ những gì** với task tạo ra nó, và điều đó được chọn bằng các cờ khi gọi system call `clone()`:
+
+| Cờ của `clone()` | Chia sẻ | `fork()` | `pthread_create()` |
+|---|---|---|---|
+| `CLONE_VM` | Address space (cùng page table) | không | có |
+| `CLONE_FILES` | Bảng file descriptor | không (chép bản sao) | có |
+| `CLONE_FS` | Thư mục hiện tại, umask | không | có |
+| `CLONE_SIGHAND` | Bảng signal handler | không | có |
+| `CLONE_THREAD` | Cùng thread group, tức cùng PID nhìn từ ngoài | không | có |
+
+`fork()` là `clone()` không chia sẻ gì. `pthread_create()` là `clone()` chia sẻ gần như tất cả. Ở giữa còn những tổ hợp khác; container dùng thêm các cờ `CLONE_NEW*` để task mới có namespace riêng.
+
+Hệ quả về định danh: mỗi task có một ID riêng trong kernel, gọi là **TID**. Thứ mà `getpid()` trả về là **TGID** (thread group ID), bằng TID của thread đầu tiên. Vì vậy mọi thread trong một process trả về cùng một PID. Xem bằng mắt:
+
+```bash
+$ ps -eLf | head -3
+UID    PID   PPID   LWP  C NLWP STIME TTY   TIME     CMD
+mysql  812      1   812  0   37 09:12 ?     00:00:01 /usr/sbin/mysqld
+mysql  812      1   840  0   37 09:12 ?     00:00:00 /usr/sbin/mysqld
+```
+
+Cột `PID` giống nhau (812), cột `LWP` (lightweight process, chính là TID) khác nhau, `NLWP` cho biết process có 37 thread. Thư mục `/proc/812/task/` chứa một thư mục con cho mỗi thread.
+
+## Context switch
+
+<Term>Context switch</Term> là việc kernel dừng một task đang chạy trên CPU và cho task khác chạy thay. Nó xảy ra khi task hết <Term>time slice</Term> (ngắt từ timer), khi task tự block (chờ I/O, chờ lock), hoặc khi một task ưu tiên cao hơn vừa sẵn sàng.
+
+### Các bước
+
+1. CPU đang chạy task A ở user mode. Một ngắt timer hoặc system call đưa CPU vào kernel mode; phần cứng tự lưu program counter và vài register của A lên **kernel stack** của A.
+2. Scheduler quyết định chuyển sang task B.
+3. Kernel lưu các register còn lại của A vào `task_struct` của A.
+4. Kernel nạp các register của B từ `task_struct` của B, và đổi stack pointer sang kernel stack của B.
+5. **Nếu B thuộc address space khác A** (tức khác process): đổi register trỏ tới page table (CR3 trên x86-64) sang page table của B.
+6. Trở về user mode. CPU tiếp tục chạy B đúng tại chỗ B bị dừng lần trước.
+
+Từ góc nhìn của A và B, không có gì xảy ra: mỗi bên chỉ thấy mình chạy liên tục, đôi lúc chậm đi một cách khó hiểu.
+
+### Chi phí thật nằm ở đâu
+
+Chi phí **trực tiếp** (lưu, nạp register, chạy scheduler) cỡ một vài micro giây trên phần cứng hiện đại. Nghe có vẻ rẻ, nhưng chi phí **gián tiếp** thường lớn hơn:
+
+- **TLB**: <Term>TLB</Term> cache kết quả dịch địa chỉ ảo sang vật lý. Khi đổi address space, các mục cũ không còn đúng. CPU hiện đại gắn nhãn address space (PCID trên x86-64) để không phải xoá sạch, nhưng task mới vẫn khởi đầu với ít mục hữu ích và chịu một loạt TLB miss.
+- **CPU cache**: dữ liệu của A đang nằm nóng trong cache L1/L2. B chạy sẽ đẩy chúng ra. Khi A quay lại, nó chịu cache miss cho tới khi làm nóng lại. Một cache miss xuống RAM tốn cỡ 100 ns, gấp khoảng 100 lần một lần truy cập L1.
+- **Branch predictor** và các bộ dự đoán khác cũng phải học lại.
+
+Đây là chỗ thread rẻ hơn process: chuyển giữa hai thread **cùng process** bỏ qua bước 5. Page table không đổi, TLB còn nguyên giá trị. Phần cache thì vẫn mất như nhau nếu hai thread làm việc trên dữ liệu khác nhau.
+
+Bạn đo được số context switch của một process:
+
+```bash
+$ grep ctxt /proc/812/status
+voluntary_ctxt_switches:        15234     # tự nhường: block vì I/O, lock, sleep
+nonvoluntary_ctxt_switches:     412       # bị chiếm quyền: hết time slice
+
+$ vmstat 1          # cột "cs": số context switch mỗi giây của cả máy
+```
+
+Số `nonvoluntary` cao bất thường nghĩa là có nhiều task tranh CPU hơn số core. Số `voluntary` rất cao ở một service thường là dấu hiệu tranh chấp lock hoặc I/O quá vụn.
+
+### So sánh chi phí
+
+| | Process | Thread |
+|---|---|---|
+| Tạo mới | Chép page table, bảng file descriptor, dựng PCB đầy đủ | Cấp stack và PCB, còn lại dùng chung |
+| Context switch | Đổi page table, TLB mất hiệu quả | Giữ nguyên page table và TLB |
+| Bộ nhớ thêm cho mỗi đơn vị | Page table riêng, các trang bị COW nhân đôi | Một stack (mặc định đặt chỗ 8 MB địa chỉ ảo) |
+| Chia sẻ dữ liệu | Phải qua IPC | Đọc ghi trực tiếp |
+| Khi một đơn vị hỏng | Chỉ nó chết | Cả process chết |
+
+## Mô hình thread: kernel thread, user thread và hơn nữa
+
+Thread nói ở trên là **kernel thread**: kernel biết từng cái và scheduler của kernel lập lịch cho từng cái. Đây là mô hình **1:1** (một thread của chương trình ứng với một task trong kernel), được Linux, Windows, macOS dùng cho thread thông thường.
+
+Ưu điểm: thread này block thì thread khác vẫn chạy, và nhiều thread chạy song song thật trên nhiều core. Nhược điểm: tạo và chuyển đổi đều phải vào kernel, và mỗi thread tốn tài nguyên kernel, nên vài chục nghìn thread là bắt đầu khó chịu.
+
+Mô hình khác là để **runtime của ngôn ngữ** tự lập lịch trong user mode, không cần kernel biết:
+
+| Mô hình | Ý tưởng | Ưu | Nhược | Ví dụ |
+|---|---|---|---|---|
+| 1:1 | Mỗi thread là một kernel thread | Song song thật, block độc lập | Nặng, khó tạo hàng trăm nghìn | pthread, `std::thread`, Java platform thread |
+| N:1 | Nhiều thread ứng dụng trên một kernel thread | Chuyển đổi cực rẻ (chỉ là đổi stack trong user mode) | Một system call block là đứng cả chùm; không dùng được nhiều core | Green thread đời đầu của Java, nhiều thư viện coroutine |
+| M:N | M thread ứng dụng trên N kernel thread | Rẻ như N:1, song song như 1:1 | Runtime phức tạp | Goroutine của Go, virtual thread của Java 21, Erlang process |
+
+Goroutine là ví dụ dễ thấy nhất của M:N. Mỗi goroutine khởi đầu với stack chỉ vài KB và tự lớn dần, nên một chương trình Go chạy hàng trăm nghìn goroutine là chuyện thường. Runtime của Go chạy chúng trên một số kernel thread cỡ bằng số core. Khi một goroutine sắp gọi một system call có thể block, runtime tách kernel thread đó ra và dùng kernel thread khác chạy tiếp các goroutine còn lại; với I/O mạng, runtime dùng cơ chế báo sự kiện của kernel (epoll trên Linux) nên goroutine "block" mà không kernel thread nào block thật.
+
+`async/await` trong JavaScript, Python, Rust, C# là một hướng khác tới cùng mục tiêu: thay vì cho mỗi việc một stack riêng, compiler biến hàm thành một state machine, và một event loop chạy tiếp các state machine khi I/O của chúng sẵn sàng.
+
+Điều cần nhớ: dù runtime làm gì ở trên, thứ **thực sự chạy trên CPU** luôn là kernel thread. Mọi mô hình khác là cách sắp xếp công việc lên một số kernel thread có hạn.
+
+## Cái giá của bộ nhớ chung: race condition
+
+Chia sẻ address space làm giao tiếp giữa các thread nhanh tới mức miễn phí. Nó cũng là nguồn gốc của loại bug khó nhất trong lập trình.
+
+```c
+#include <pthread.h>
+#include <stdio.h>
+
+static long counter = 0;
+
+static void *worker(void *arg) {
+    for (int i = 0; i < 1000000; i++)
+        counter++;
+    return NULL;
+}
+
+int main(void) {
+    pthread_t a, b;
+    pthread_create(&a, NULL, worker, NULL);
+    pthread_create(&b, NULL, worker, NULL);
+    pthread_join(a, NULL);
+    pthread_join(b, NULL);
+    printf("counter = %ld (mong đợi 2000000)\n", counter);
+    return 0;
+}
+```
+
+```text
+$ gcc -O0 -pthread race.c -o race
+$ ./race
+counter = 1183402 (mong đợi 2000000)
+$ ./race
+counter = 1094517 (mong đợi 2000000)
+```
+
+Mỗi lần chạy ra một số khác nhau, và hầu như không bao giờ đúng. Lý do là `counter++` không phải một thao tác. Compiler dịch nó thành ba lệnh máy:
+
+```asm
+mov  rax, QWORD PTR counter[rip]   ; 1. đọc counter từ RAM vào register
+add  rax, 1                        ; 2. cộng 1 trong register
+mov  QWORD PTR counter[rip], rax   ; 3. ghi register trở lại RAM
+```
+
+Mỗi thread có bộ register riêng. Nếu hai thread xen kẽ nhau giữa các bước:
+
+```text
+Thread A                      Thread B                     counter trong RAM
+đọc counter → rax = 5                                      5
+                              đọc counter → rax = 5        5
+cộng → rax = 6                                             5
+                              cộng → rax = 6               5
+ghi counter = 6                                            6
+                              ghi counter = 6              6   ← mất một lần tăng
+```
+
+Hai lần tăng, kết quả chỉ tăng một. Đây là <Term>race condition</Term>: kết quả phụ thuộc vào thứ tự xen kẽ mà chương trình không kiểm soát. Trên máy nhiều core, hai thread còn chạy **đồng thời thật sự**, không cần context switch nào để xen kẽ.
+
+Loại bug này đáng sợ vì ba lý do. Nó không xảy ra mỗi lần chạy. Nó thường biến mất khi bạn thêm `printf` hoặc chạy trong debugger (vì thời gian thay đổi). Và nó có thể không xuất hiện trong test nhưng xuất hiện dưới tải thật.
+
+Cách sửa là bảo đảm đoạn đọc-sửa-ghi chạy trọn vẹn, không bị xen vào: dùng <Term>mutex</Term>, hoặc dùng lệnh atomic của CPU. Cả hai, cùng condition variable và semaphore, là nội dung bài [Synchronization](/docs/os/synchronization).
+
+Với process, bug này không thể xảy ra theo cách đó: hai process không có biến chung để mà giẫm lên nhau. Cô lập là an toàn mặc định; chia sẻ là thứ phải xin.
+
+## IPC: process nói chuyện với nhau thế nào
+
+Vì address space tách biệt, các process muốn trao đổi dữ liệu phải nhờ kernel. Các cơ chế đó gọi chung là <Term>IPC</Term> (inter-process communication).
+
+| Cơ chế | Cách hoạt động | Hợp với | Lưu ý |
+|---|---|---|---|
+| Pipe | Một bộ đệm trong kernel, một đầu ghi, một đầu đọc, dữ liệu là dòng byte | Cha với con, chuỗi lệnh shell | Một chiều; chỉ dùng giữa các process có họ hàng |
+| Named pipe (FIFO) | Pipe có tên trong filesystem | Hai process không họ hàng trên cùng máy | Vẫn một chiều |
+| Unix domain socket | Socket nhưng chỉ trong một máy | Client và server cùng máy (ứng dụng nói với PostgreSQL, Docker CLI nói với daemon) | Hai chiều; truyền được cả file descriptor |
+| TCP/UDP socket | Qua network stack | Khác máy, hoặc muốn một giao thức cho mọi trường hợp | Chậm hơn Unix socket vì đi qua toàn bộ TCP/IP |
+| Shared memory | Hai process ánh xạ cùng các trang RAM vật lý vào address space của mình | Lượng dữ liệu lớn, cần tốc độ | Nhanh nhất vì không chép qua kernel; nhưng lại phải tự đồng bộ như thread |
+| Message queue | Hàng đợi tin nhắn có ranh giới do kernel giữ | Trao đổi theo từng tin | Ít dùng trực tiếp; thường dùng broker ở tầng ứng dụng |
+| Signal | Kernel ngắt process để báo một sự kiện | Báo "dừng lại", "nạp lại cấu hình" | Gần như không mang dữ liệu |
+
+Ví dụ pipe giữa cha và con:
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+int main(void) {
+    int fd[2];
+    pipe(fd);                           // fd[0]: đầu đọc, fd[1]: đầu ghi
+
+    if (fork() == 0) {                  // process con: đọc
+        close(fd[1]);                   // đóng đầu không dùng
+        char buf[64];
+        ssize_t n = read(fd[0], buf, sizeof buf - 1);   // block tới khi có dữ liệu
+        buf[n] = '\0';
+        printf("con nhận: %s\n", buf);
+        _exit(0);
+    }
+
+    close(fd[0]);                       // process cha: ghi
+    const char *msg = "xin chào từ cha";
+    write(fd[1], msg, strlen(msg));
+    close(fd[1]);                       // báo hết dữ liệu (đầu đọc sẽ nhận EOF)
+    wait(NULL);
+    return 0;
+}
+```
+
+Hai chi tiết đáng chú ý. Thứ nhất, pipe hoạt động được là nhờ fork chép bảng file descriptor: sau fork, cả hai process đều giữ cả hai đầu. Thứ hai, phải đóng đầu không dùng; nếu process cha quên đóng `fd[1]` thì một vòng lặp `read()` ở phía con sẽ không bao giờ thấy EOF, vì kernel thấy vẫn còn ai đó giữ đầu ghi.
+
+Mọi cơ chế trừ shared memory đều **chép dữ liệu hai lần**: từ process gửi vào kernel, rồi từ kernel sang process nhận, cộng thêm system call ở mỗi đầu. So với hai thread chỉ việc trao nhau một con trỏ, đây là cái giá của sự cô lập.
+
+## Chọn process hay thread: các hệ thống thật làm gì
+
+Câu hỏi không phải "cái nào tốt hơn" mà là "ở đây cô lập đáng giá bao nhiêu, và chia sẻ đáng giá bao nhiêu".
+
+| Hệ thống | Lựa chọn | Lý do |
+|---|---|---|
+| Chrome | Nhiều process: mỗi site một renderer process | Một trang crash hoặc bị khai thác lỗ hổng không kéo theo cả trình duyệt và không đọc được dữ liệu của trang khác. Đổi lại tốn RAM. |
+| PostgreSQL | Một process cho mỗi kết nối, dùng shared memory cho buffer cache | Một backend hỏng không làm hỏng dữ liệu của backend khác. Đổi lại mỗi kết nối đắt, nên thực tế luôn cần connection pool. |
+| MySQL | Một thread cho mỗi kết nối | Kết nối rẻ hơn, chia sẻ cache dễ hơn. Đổi lại một lỗi bộ nhớ có thể làm sập cả server. |
+| Nginx | Vài worker process, mỗi worker một event loop xử lý hàng nghìn kết nối | Không tốn một thread cho mỗi kết nối; worker hỏng thì master sinh worker mới. |
+| Redis | Một thread xử lý mọi lệnh | Không cần lock nào trên dữ liệu; mọi lệnh tự nhiên là atomic. Đổi lại một lệnh chậm chặn tất cả. |
+| Ứng dụng Go, Java | Một process, rất nhiều thread hoặc goroutine | Chia sẻ dữ liệu trong bộ nhớ là nhu cầu chính; cô lập đẩy lên tầng container. |
+| CPython | Muốn tận dụng nhiều core cho việc tính toán thì thường phải dùng nhiều process | Global interpreter lock chỉ cho một thread chạy bytecode Python tại một thời điểm, nên thread chỉ giúp với việc chờ I/O. |
+
+Một vài quy tắc rút ra:
+
+- **Cần chịu lỗi và bảo mật giữa các phần** (chạy mã không tin cậy, plugin, tab trình duyệt): process. Ranh giới address space là ranh giới duy nhất mà phần cứng bảo đảm.
+- **Cần chia sẻ nhiều trạng thái thay đổi liên tục** (cache trong bộ nhớ, cấu trúc dữ liệu chung): thread, và chấp nhận trả giá bằng đồng bộ.
+- **Việc chủ yếu là chờ I/O** (web server, proxy): event loop hoặc thread nhẹ kiểu M:N thường tốt hơn cả hai; số kernel thread chỉ cần cỡ số core.
+- **Việc chủ yếu là tính toán**: số thread chạy song song nên xấp xỉ số core. Nhiều hơn chỉ thêm context switch.
+
+Hai lựa chọn này cũng không loại trừ nhau. Nginx và PostgreSQL là nhiều process, mỗi process lại có thể có nhiều thread; Chrome là nhiều process, mỗi process hàng chục thread.
+
+## Lưu ý
+
+- **"Thread nhẹ hơn process" đúng, nhưng không miễn phí.** Mỗi kernel thread vẫn có PCB, kernel stack và một khoảng địa chỉ cho stack. Tạo một thread cho mỗi request rồi huỷ là lãng phí; thread pool tồn tại vì thế.
+- **Nhiều thread hơn số core không làm việc tính toán nhanh hơn.** Với việc thuần CPU, thread thừa chỉ thêm context switch và làm lạnh cache. Nhiều thread chỉ có lợi khi phần lớn thời gian chúng đang block.
+- **Một thread hỏng là cả process hỏng.** Truy cập bộ nhớ sai trong một thread khiến kernel gửi SIGSEGV và giết toàn bộ process, kể cả các thread đang làm việc đúng.
+- **`fork()` trong process đa thread là cái bẫy.** Process con chỉ có **một** thread (thread đã gọi fork), nhưng mang theo bản sao bộ nhớ của mọi thread khác, kể cả các mutex đang bị khoá bởi những thread không còn tồn tại. Nếu con cần đúng mutex đó, nó treo vĩnh viễn. Quy tắc an toàn: sau fork trong chương trình đa thread, chỉ gọi `exec()`.
+- **Concurrency khác parallelism.** Concurrency là xử lý nhiều việc xen kẽ nhau, làm được trên một core. Parallelism là nhiều việc chạy cùng một thời điểm, cần nhiều core. Race condition xuất hiện ngay cả khi chỉ có concurrency.
+- **Zombie không "giết" được bằng `kill`.** Nó đã chết rồi. Muốn dọn, process cha phải `wait()`, hoặc cha phải kết thúc để `init` nhận nuôi và dọn.

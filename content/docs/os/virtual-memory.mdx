@@ -1,83 +1,614 @@
 ---
 title: Virtual Memory
-description: Mỗi process tưởng mình có cả bộ nhớ riêng; paging, page table và TLB biến ảo tưởng đó thành thật.
-status: reviewed
+description: Mỗi process tưởng mình có cả bộ nhớ riêng. Bài này đi qua paging, page table nhiều mức, TLB, page fault, demand paging, swap và các thuật toán thay trang, kèm cách quan sát chúng trên Linux.
+status: draft
 tags: [os, memory]
 authors: [tranquocvy]
 references:
   - title: "OSTEP — Chapter 13: The Abstraction: Address Spaces"
     url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-intro.pdf
     kind: book
+  - title: "OSTEP — Chapter 15: Mechanism: Address Translation"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-mechanism.pdf
+    kind: book
+    note: base and bounds
   - title: "OSTEP — Chapter 18: Paging: Introduction"
     url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-paging.pdf
     kind: book
   - title: "OSTEP — Chapter 19: Paging: Faster Translations (TLBs)"
     url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-tlbs.pdf
     kind: book
+  - title: "OSTEP — Chapter 20: Paging: Smaller Tables"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-smalltables.pdf
+    kind: book
+    note: multi-level page table
   - title: "OSTEP — Chapter 21: Beyond Physical Memory: Mechanisms"
     url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys.pdf
+    kind: book
+  - title: "OSTEP — Chapter 22: Beyond Physical Memory: Policies"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys-policy.pdf
+    kind: book
+    note: FIFO, LRU, clock và ví dụ chuỗi tham chiếu
+  - title: "Linux kernel documentation — Overcommit Accounting"
+    url: https://docs.kernel.org/mm/overcommit-accounting.html
+    kind: web
+  - title: "Linux man-pages — proc_pid_status(5), mmap(2)"
+    url: https://man7.org/linux/man-pages/man2/mmap.2.html
+    kind: web
+  - title: "Operating System Concepts (Silberschatz) — Chapter 9: Main Memory, Chapter 10: Virtual Memory"
     kind: book
 ---
 
 ## Ý chính
 
-Mỗi <Term>process</Term> nhìn thấy một <Term>address space</Term> riêng, liền mạch, bắt đầu từ 0, như thể nó độc chiếm RAM. Thực tế RAM được chia cho nhiều process, mỗi phần nằm rải rác. <Term>Virtual memory</Term> là cơ chế OS và phần cứng (MMU) phối hợp dịch **địa chỉ ảo** mà chương trình dùng sang **địa chỉ vật lý** trong RAM, ở **mỗi** lần truy cập bộ nhớ.
+Mỗi <Term>process</Term> nhìn thấy một <Term>address space</Term> riêng, liền mạch và rất lớn, như thể nó độc chiếm bộ nhớ của máy. Thực tế RAM vật lý được chia cho nhiều process, mỗi phần nằm rải rác ở những chỗ không liên quan gì tới nhau, và một phần có thể còn chưa nằm trong RAM. <Term>Virtual memory</Term> là cơ chế để OS và phần cứng phối hợp duy trì ảo tưởng đó: ở **mỗi** lần chương trình truy cập bộ nhớ, **địa chỉ ảo** mà nó dùng được dịch sang **địa chỉ vật lý** trong RAM.
 
-Ba lợi ích chính:
+Ba thứ có được từ một lớp gián tiếp này:
 
-- **Cô lập**: process này không đọc/ghi được bộ nhớ của process khác.
-- **Dễ lập trình**: mọi chương trình đều thấy address space giống nhau, không cần biết mình nằm đâu trong RAM.
-- **Vượt quá RAM**: phần ít dùng có thể nằm trên đĩa (swap) và chỉ nạp vào khi cần.
+- **Cô lập.** Process không có cách nào gọi tên bộ nhớ của process khác hay của kernel. Đây là nền của mọi bảo đảm về bảo mật và ổn định trên máy nhiều chương trình.
+- **Đơn giản cho chương trình.** Mọi chương trình thấy cùng một bố cục bộ nhớ, không cần biết mình nằm đâu trong RAM hay RAM còn bao nhiêu.
+- **Linh hoạt cho OS.** Vì chương trình chỉ thấy địa chỉ ảo, OS tự do quyết định trang nào nằm ở đâu, lúc nào mới cấp thật, trang nào chia sẻ giữa nhiều process, trang nào đẩy ra đĩa.
 
-## Paging: chia thành các trang cố định
+Cái giá: mỗi lần truy cập bộ nhớ phải qua một bước dịch. Phần lớn bài này là về việc làm cho bước dịch đó đủ nhanh và đủ gọn.
 
-Address space được chia thành các <Term>page</Term> kích thước cố định (thường 4 KB), RAM chia thành các khung (frame) cùng kích thước. Một địa chỉ ảo tách làm hai phần:
+## Từ địa chỉ vật lý tới paging
+
+Để thấy vì sao thiết kế hiện tại lại như vậy, đi nhanh qua những cách đã bị thay thế.
+
+**Dùng thẳng địa chỉ vật lý.** Chương trình được biên dịch để chạy ở một địa chỉ cố định trong RAM. Hai chương trình không chạy cùng lúc được nếu trùng địa chỉ, và một con trỏ sai ghi đè lên chương trình khác hoặc lên OS.
+
+**Base and bounds.** CPU có hai register: `base` (process bắt đầu ở đâu trong RAM) và `bounds` (dài bao nhiêu). Mọi địa chỉ chương trình dùng được cộng thêm `base`, và bị từ chối nếu vượt `bounds`. Đã có cô lập và chương trình không cần biết vị trí thật. Nhưng mỗi process phải chiếm một khối RAM **liền nhau**, kể cả khoảng trống rất lớn giữa heap và stack.
+
+**Segmentation.** Mỗi vùng (code, heap, stack) có cặp base/bounds riêng, nên khoảng trống ở giữa không tốn RAM. Vấn đề còn lại: các segment có kích thước khác nhau, cấp phát và giải phóng nhiều lần thì RAM bị xé thành những lỗ nhỏ không dùng được. Tổng RAM rảnh còn 1 GB nhưng không có khối liền nào đủ 100 MB. Đây là **external fragmentation**.
+
+**Paging.** Bỏ hẳn kích thước thay đổi: chia cả address space lẫn RAM thành những mảnh **cùng kích thước cố định**. Bất kỳ mảnh RAM rảnh nào cũng dùng được cho bất kỳ mảnh nào của bất kỳ process nào, nên external fragmentation biến mất. Đổi lại là **internal fragmentation** (xin 1 byte vẫn tốn cả một trang) và một bảng ánh xạ lớn. Mọi OS hiện đại dùng paging.
+
+## Paging
+
+### Page, frame và cách tách địa chỉ
+
+Address space chia thành các <Term>page</Term>, RAM chia thành các **frame** cùng kích thước. Kích thước chuẩn là 4 KB (xem trên máy bạn bằng `getconf PAGESIZE`).
+
+Một địa chỉ ảo gồm hai phần: số thứ tự trang (**VPN**, virtual page number) và vị trí trong trang (**offset**). Dịch địa chỉ là thay VPN bằng số thứ tự frame (**PFN**, physical frame number); offset giữ nguyên, vì page và frame cùng kích thước.
 
 ```text
-địa chỉ ảo  = [ VPN (số trang ảo) | offset trong trang ]
-địa chỉ thật = [ PFN (số khung vật lý) | offset giữ nguyên ]
+địa chỉ ảo     = [ VPN | offset ]
+                    │       │
+              tra page table │ (giữ nguyên)
+                    ▼       ▼
+địa chỉ vật lý = [ PFN | offset ]
 ```
 
-Với trang 4 KB = 2¹² byte, offset chiếm 12 bit thấp. OS lưu cho mỗi process một <Term>page table</Term> ánh xạ VPN → PFN, kèm các bit:
+Trang 4 KB = 2¹² byte nên offset chiếm 12 bit thấp. Vì 12 bit là đúng ba chữ số hex, có thể tách bằng mắt:
 
-| Bit | Ý nghĩa |
-|---|---|
-| valid | trang này có thuộc address space không |
-| present | trang đang ở RAM hay đã bị đẩy ra đĩa |
-| protection | được đọc / ghi / thực thi không |
-| dirty | đã bị ghi kể từ lúc nạp vào (phải ghi lại đĩa khi đẩy ra) |
-| accessed | gần đây có được dùng không (giúp chọn trang để đẩy ra) |
+```text
+địa chỉ ảo:  0x0000_3ABC
+                   │ └── offset = 0xABC
+                   └──── VPN    = 0x3
 
-<Expand title="Ví dụ: vì sao page table phẳng lại quá to">
+page table của process:  VPN 0x3 → PFN 0x7F2
 
-Máy 32-bit, trang 4 KB: offset 12 bit, VPN 20 bit, tức 2²⁰ ≈ 1 triệu mục. Mỗi mục 4 byte → **4 MB page table cho mỗi process**, kể cả khi process chỉ dùng vài trang. 100 process là 400 MB chỉ để chứa bảng.
+địa chỉ vật lý: 0x007F_2ABC
+```
 
-Cách giải phổ biến là **multi-level page table**: chia page table thành nhiều trang và chỉ cấp phát những phần thực sự dùng. x86-64 dùng bảng 4 mức (hoặc 5 mức trên CPU mới).
+Phần cứng làm việc này là <Term>MMU</Term> (memory management unit), nằm trong CPU. Chương trình không bao giờ thấy địa chỉ vật lý; mọi con trỏ bạn in ra bằng `%p` đều là địa chỉ ảo.
+
+### Page table entry
+
+OS giữ cho mỗi process một <Term>page table</Term>: cấu trúc ánh xạ VPN sang PFN. Mỗi mục (PTE, page table entry) ngoài PFN còn mang các bit điều khiển. Trên x86-64 một PTE dài 64 bit:
+
+| Bit | Tên | Ý nghĩa |
+|---|---|---|
+| 0 | Present (P) | Trang đang nằm trong RAM. Bằng 0 thì mọi truy cập gây page fault |
+| 1 | Read/Write | Bằng 0 thì trang chỉ đọc |
+| 2 | User/Supervisor | Bằng 0 thì chỉ kernel mode truy cập được |
+| 5 | Accessed (A) | CPU tự bật khi trang được đọc hoặc ghi |
+| 6 | Dirty (D) | CPU tự bật khi trang bị ghi |
+| 7 | Page Size | Mục này trỏ thẳng tới một trang lớn (2 MB hoặc 1 GB) |
+| 12 tới 51 | PFN | Số thứ tự frame vật lý |
+| 63 | No-Execute (NX) | Bằng 1 thì không được thực thi mã trong trang này |
+
+Mỗi bit là một cơ chế:
+
+- **Present** là nền của demand paging và swap: trang có thể thuộc address space mà chưa (hoặc không còn) ở RAM.
+- **Read/Write** cho phép vùng code chỉ đọc và cài được copy-on-write.
+- **User/Supervisor** bảo vệ bộ nhớ kernel khỏi chương trình.
+- **NX** ngăn dữ liệu trên stack và heap bị chạy như mã, chặn cả một lớp tấn công chèn mã.
+- **Accessed** và **Dirty** là thông tin phần cứng cung cấp miễn phí để OS chọn trang nào nên đẩy ra đĩa, và biết trang nào phải ghi lại trước khi đẩy.
+
+### Page table phẳng quá to
+
+Cách đơn giản nhất là một mảng, VPN làm chỉ số. Thử tính kích thước:
+
+```text
+32 bit, trang 4 KB:
+  VPN 20 bit → 2²⁰ ≈ 1 triệu mục × 4 byte = 4 MB cho MỖI process
+  100 process = 400 MB chỉ để chứa bảng
+
+64 bit (dùng 48 bit địa chỉ), trang 4 KB:
+  VPN 36 bit → 2³⁶ mục × 8 byte = 512 GB cho mỗi process
+```
+
+Con số thứ hai là không thể. Trong khi đó một process thông thường chỉ dùng vài MB tới vài GB trong không gian 256 TB, tức gần như toàn bộ page table phẳng là các mục "không dùng". Cần một cấu trúc chỉ tốn chỗ cho những phần address space thật sự được dùng.
+
+### Page table nhiều mức
+
+Lời giải: biến page table thành một **cây**. Cắt VPN thành nhiều đoạn, mỗi đoạn là chỉ số ở một tầng của cây. Nhánh nào không có trang nào được dùng thì không tồn tại.
+
+x86-64 dùng 4 mức. 48 bit địa chỉ ảo chia thành:
+
+```text
+ 47        39 38        30 29        21 20        12 11           0
+┌────────────┬────────────┬────────────┬────────────┬──────────────┐
+│ PML4 index │ PDPT index │  PD index  │  PT index  │    offset    │
+│   9 bit    │   9 bit    │   9 bit    │   9 bit    │    12 bit    │
+└────────────┴────────────┴────────────┴────────────┴──────────────┘
+```
+
+Mỗi bảng ở mỗi mức có 2⁹ = 512 mục, mỗi mục 8 byte, tổng cộng đúng 4 KB: **mỗi bảng vừa khít một trang**. Đó là lý do của con số 9.
+
+Quá trình dịch (page table walk):
+
+```text
+CR3 ──► PML4 ──[index 1]──► PDPT ──[index 2]──► PD ──[index 3]──► PT ──[index 4]──► frame + offset
+(register                                                              (PTE cuối
+ giữ địa chỉ                                                            chứa PFN)
+ vật lý của PML4)
+```
+
+Register `CR3` trỏ tới bảng mức cao nhất của process đang chạy. Context switch sang process khác chỉ cần đổi `CR3`: toàn bộ ánh xạ đổi theo. Hai thread cùng process dùng chung `CR3`, nên dùng chung mọi thứ.
+
+Tách thử một địa chỉ thật:
+
+```python
+def split(vaddr):
+    """Tách địa chỉ ảo 48 bit của x86-64 thành 4 chỉ số bảng và offset."""
+    offset = vaddr & 0xFFF                # 12 bit thấp
+    pt     = (vaddr >> 12) & 0x1FF        # 9 bit: chỉ số trong Page Table
+    pd     = (vaddr >> 21) & 0x1FF        # 9 bit: chỉ số trong Page Directory
+    pdpt   = (vaddr >> 30) & 0x1FF        # 9 bit: chỉ số trong PDPT
+    pml4   = (vaddr >> 39) & 0x1FF        # 9 bit: chỉ số trong PML4
+    return pml4, pdpt, pd, pt, offset
+
+print(split(0x7F3A1C2B4ABC))   # một địa chỉ trong vùng thư viện dùng chung
+print(split(0x55D0C8A55010))   # một địa chỉ trong vùng data của chương trình
+```
+
+```text
+(254, 232, 225, 180, 2748)     # PML4[254] → PDPT[232] → PD[225] → PT[180], offset 0xABC
+(171, 323, 69, 85, 16)         # PML4[171] → PDPT[323] → PD[69]  → PT[85],  offset 0x010
+```
+
+Hai địa chỉ rơi vào hai mục PML4 khác nhau (254 và 171), tức hai nhánh tách biệt của cây ngay từ gốc. Mọi mục PML4 khác của process này có Present = 0 và không có gì bên dưới.
+
+**Tiết kiệm được bao nhiêu.** Một process nhỏ dùng ba vùng (code và heap ở thấp, thư viện ở giữa, stack ở cao) cần: 1 bảng PML4, khoảng 3 PDPT, 3 PD và vài PT. Tổng cỡ mười mấy trang, tức vài chục KB, thay cho 512 GB. Chi phí bảng tỉ lệ với lượng bộ nhớ **thật sự dùng** chứ không tỉ lệ với kích thước address space.
+
+**Cái giá.** Một lần dịch giờ cần **bốn lần đọc bộ nhớ** (mỗi mức một lần) trước khi tới được dữ liệu. Nếu mọi truy cập bộ nhớ đều phải làm thế, chương trình chậm đi năm lần. Đó là việc của TLB.
+
+Các CPU mới hỗ trợ thêm mức thứ năm (57 bit địa chỉ ảo, 128 PB) cho máy chủ có lượng bộ nhớ rất lớn.
+
+## TLB: cache của phép dịch
+
+<Term>TLB</Term> (translation lookaside buffer) là một bộ nhớ cache nhỏ, rất nhanh, nằm trong MMU, lưu các cặp VPN → PFN vừa dùng gần đây.
+
+```text
+CPU cần truy cập địa chỉ ảo
+        │
+        ▼
+   VPN có trong TLB?
+     │           │
+    có          không (TLB miss)
+     │           │
+     │           ▼
+     │      đi page table (4 lần đọc RAM), nạp kết quả vào TLB
+     │           │
+     ▼           ▼
+   ghép PFN + offset → truy cập RAM
+```
+
+Trên x86-64, khi TLB miss thì **phần cứng** tự đi page table (hardware page walker); OS không tham gia trừ khi gặp mục có Present = 0.
+
+### Vì sao một cache nhỏ lại đủ
+
+TLB chỉ có cỡ vài chục mục ở tầng nhanh nhất và một hai nghìn mục ở tầng thứ hai, nhưng tỉ lệ hit thường trên 99%. Lý do là **locality**:
+
+- **Spatial locality**: truy cập một địa chỉ thì nhiều khả năng sắp truy cập địa chỉ gần đó. Duyệt một mảng `int`, mỗi trang 4 KB chứa 1024 phần tử: phần tử đầu của trang có thể miss, 1023 phần tử sau chắc chắn hit.
+- **Temporal locality**: thứ vừa dùng thì nhiều khả năng sắp dùng lại. Biến đếm vòng lặp, đỉnh stack, mã của vòng lặp đang chạy.
+
+Ước lượng chi phí. Giả sử đọc RAM tốn 100 ns, tra TLB tốn 1 ns, và một lần đi bảng trong trường hợp xấu là 4 lần đọc RAM:
+
+```text
+thời gian trung bình = hit × (TLB + RAM) + miss × (TLB + walk + RAM)
+
+hit 99%   : 0.99  × 101 + 0.01  × 501 = 105.0 ns   (chậm hơn 5%)
+hit 99.9% : 0.999 × 101 + 0.001 × 501 = 101.4 ns   (chậm hơn 1.4%)
+không TLB :                             500   ns   (chậm hơn 5 lần)
+```
+
+(Thực tế đỡ hơn con số xấu nhất, vì các mức trên của page table thường nằm sẵn trong cache của CPU.)
+
+### Viết mã thân thiện với TLB và cache
+
+Locality không tự nhiên mà có; nó phụ thuộc cách chương trình đi qua dữ liệu.
+
+```c
+#define N 8192
+static int a[N][N];            // 256 MB; C xếp mảng hai chiều theo từng hàng
+
+// Theo hàng: đi liên tục qua bộ nhớ, 1024 phần tử liên tiếp nằm cùng một trang
+for (int i = 0; i < N; i++)
+    for (int j = 0; j < N; j++)
+        sum += a[i][j];
+
+// Theo cột: mỗi bước nhảy 8192 × 4 byte = 32 KB, tức mỗi lần truy cập là một trang khác
+for (int j = 0; j < N; j++)
+    for (int i = 0; i < N; i++)
+        sum += a[i][j];
+```
+
+Hai vòng lặp tính cùng một kết quả với cùng số phép cộng. Vòng thứ hai chậm hơn nhiều lần, vì gần như mọi truy cập đều trượt cả TLB lẫn cache dữ liệu. Đây là lý do thứ tự duyệt ma trận, cách xếp field trong struct, và việc chọn mảng thay cho linked list ảnh hưởng tới tốc độ nhiều hơn độ phức tạp thuật toán gợi ý.
+
+### TLB reach và huge page
+
+**TLB reach** là lượng bộ nhớ mà TLB phủ được: số mục nhân với kích thước trang. Với khoảng 1500 mục và trang 4 KB, đó là khoảng 6 MB. Một database có buffer pool 64 GB truy cập ngẫu nhiên sẽ trượt TLB gần như liên tục.
+
+Cách chữa là **huge page**: dùng trang 2 MB (hoặc 1 GB) thay cho 4 KB. Trong cây page table, một mục ở mức PD trỏ thẳng tới frame 2 MB, bỏ qua mức PT. Cùng 1500 mục TLB giờ phủ 3 GB, và mỗi lần đi bảng cũng ngắn hơn một mức.
+
+Trên Linux có hai cách dùng:
+
+- **Transparent Huge Pages (THP)**: kernel tự gộp các trang 4 KB liền nhau thành trang 2 MB khi có thể. Không cần sửa chương trình, nhưng việc gộp chạy ngầm có thể gây những khoảng dừng khó đoán. Nhiều database (Redis, MongoDB, Oracle) khuyên tắt THP vì lý do đó.
+- **hugetlbfs**: đặt trước một số huge page lúc khởi động và chương trình xin một cách tường minh. Dự đoán được, nhưng phải cấu hình. PostgreSQL dùng cách này qua tham số `huge_pages`.
+
+Nhược điểm của huge page: internal fragmentation lớn hơn, và copy-on-write phải chép 2 MB thay vì 4 KB cho mỗi lần ghi đầu tiên.
+
+### TLB và context switch
+
+Các mục trong TLB là của process đang chạy. Chuyển sang process khác thì chúng sai. Hai cách xử lý:
+
+- **Xoá sạch TLB** mỗi lần đổi address space. Đơn giản, nhưng process mới bắt đầu với TLB rỗng và chịu một loạt miss.
+- **Gắn nhãn**: mỗi mục TLB mang thêm một mã định danh address space (ASID; trên x86-64 gọi là PCID). Mục của nhiều process cùng tồn tại trong TLB, và chỉ mục có nhãn khớp mới được dùng. CPU và Linux hiện đại dùng cách này.
+
+Đây là một phần lý do context switch giữa hai <Term>thread</Term> cùng process rẻ hơn giữa hai process: cùng address space thì TLB giữ nguyên giá trị.
+
+Trên máy nhiều core còn một chi phí nữa: khi kernel đổi một ánh xạ (ví dụ thu hồi quyền ghi của một trang), nó phải báo cho **mọi core** đang chạy thread của process đó xoá mục TLB tương ứng, bằng cách gửi ngắt liên core. Thao tác này gọi là **TLB shootdown**, và nó là lý do `munmap` hay `mprotect` gọi dồn dập trong chương trình đa thread lại đắt bất ngờ.
+
+## Page fault
+
+<Term>Page fault</Term> xảy ra khi CPU cố truy cập một địa chỉ mà PTE của nó không cho phép: Present = 0, hoặc ghi vào trang chỉ đọc, hoặc user mode đụng vào trang của kernel. CPU dừng lệnh đang chạy, chuyển sang kernel mode và gọi trình xử lý page fault của OS, kèm địa chỉ gây lỗi (trong register `CR2`).
+
+Tên gọi dễ gây hiểu lầm: page fault **không phải lỗi**. Nó là cách phần cứng báo cho OS rằng "ở đây cần anh làm gì đó". OS dùng nó để cài gần như mọi tính năng thú vị của virtual memory.
+
+### Ba loại
+
+| Loại | Chuyện gì xảy ra | OS làm gì | Chi phí |
+|---|---|---|---|
+| **Minor** (soft) | Trang hợp lệ nhưng chưa có ánh xạ; không cần đọc đĩa | Cấp một frame (hoặc dùng frame đã có trong RAM), sửa PTE | Cỡ micro giây |
+| **Major** (hard) | Trang hợp lệ nhưng nội dung nằm trên đĩa | Đọc từ file hoặc swap vào RAM, sửa PTE; process ngủ trong lúc chờ | Cỡ trăm micro giây (SSD) tới chục mili giây (HDD) |
+| **Invalid** | Địa chỉ không thuộc vùng nào của process, hoặc vi phạm quyền | Gửi `SIGSEGV`: chương trình chết với "Segmentation fault" | — |
+
+### Các bước xử lý
+
+1. CPU lưu trạng thái, vào kernel, gọi trình xử lý page fault.
+2. Kernel tra danh sách các vùng nhớ của process (thứ bạn thấy trong `/proc/<pid>/maps`). Địa chỉ không nằm trong vùng nào, hoặc thao tác không khớp quyền của vùng: gửi `SIGSEGV`.
+3. Địa chỉ hợp lệ: tìm một frame rảnh. Nếu không còn, chọn một trang để thu hồi (phần thay trang ở dưới).
+4. Điền nội dung: toàn số 0 (bộ nhớ mới xin), đọc từ file (code, file ánh xạ), đọc từ swap (trang từng bị đẩy ra), hoặc chép từ trang cũ (copy-on-write).
+5. Cập nhật PTE: gán PFN, bật Present và các quyền.
+6. Trở về user mode và **chạy lại đúng lệnh vừa lỗi**. Lần này nó thành công. Chương trình không biết gì.
+
+### Segmentation fault dưới góc nhìn này
+
+`SIGSEGV` chỉ là page fault mà kernel không tìm ra cách giải quyết hợp lệ:
+
+- **Dereference con trỏ NULL**: địa chỉ 0 (và vùng thấp quanh nó) cố ý không bao giờ được ánh xạ, đúng để lỗi này bị bắt ngay.
+- **Tràn stack**: đệ quy quá sâu chạm vào guard page ở cuối stack.
+- **Ghi vào hằng chuỗi**: `char *s = "abc"; s[0] = 'x';` ghi vào vùng chỉ đọc.
+- **Dùng bộ nhớ đã `free`**: chỉ lỗi nếu allocator đã trả vùng đó về cho OS. Nếu chưa, chương trình âm thầm đọc ghi vào dữ liệu của thứ khác, tệ hơn nhiều.
+
+Điểm cuối đáng nhớ: MMU kiểm tra theo **trang**, không theo từng biến. Ghi quá cuối một mảng 10 byte thường không gây segfault, vì byte thứ 11 vẫn nằm trong một trang hợp lệ. Đó là lý do lỗi tràn bộ đệm vừa khó phát hiện vừa nguy hiểm, và là lý do có công cụ như AddressSanitizer.
+
+## Demand paging: chỉ cấp khi dùng tới
+
+<Term>Demand paging</Term> là nguyên tắc: OS không nạp hay cấp một trang cho tới khi chương trình thật sự chạm vào nó.
+
+### Chạy một program
+
+Khi `exec()` một file thực thi 50 MB, kernel không đọc 50 MB vào RAM. Nó chỉ **ghi nhận** rằng vùng địa chỉ này ứng với đoạn này của file, và để mọi PTE ở trạng thái Present = 0. Lệnh đầu tiên chạy gây page fault; kernel nạp trang đó. Hàm nào không bao giờ được gọi thì không bao giờ tốn RAM. Chương trình khởi động nhanh, và mã xử lý lỗi hiếm gặp không chiếm bộ nhớ.
+
+### malloc không cấp RAM
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static void show(const char *label) {
+    char cmd[128];
+    snprintf(cmd, sizeof cmd, "grep -E 'VmSize|VmRSS' /proc/%d/status", getpid());
+    printf("--- %s\n", label);
+    fflush(stdout);
+    system(cmd);
+}
+
+int main(void) {
+    show("mới khởi động");
+
+    size_t size = 1UL << 30;              // 1 GB
+    char *p = malloc(size);
+    show("sau malloc 1 GB");
+
+    memset(p, 1, size / 2);               // chạm vào nửa đầu
+    show("sau khi ghi 512 MB");
+
+    free(p);
+    return 0;
+}
+```
+
+Kết quả trên một máy Linux có dạng:
+
+```text
+--- mới khởi động
+VmSize:     2644 kB
+VmRSS:      1280 kB
+--- sau malloc 1 GB
+VmSize:  1051224 kB        ← địa chỉ ảo tăng 1 GB
+VmRSS:      1408 kB        ← RAM thật gần như không đổi
+--- sau khi ghi 512 MB
+VmSize:  1051224 kB
+VmRSS:    525696 kB        ← giờ mới tốn 512 MB RAM
+```
+
+- **VmSize** (còn gọi VSZ) là tổng địa chỉ ảo đã được đặt chỗ.
+- **VmRSS** (resident set size) là số trang thật sự đang nằm trong RAM.
+
+`malloc` 1 GB chỉ xin kernel một khoảng **địa chỉ**. RAM chỉ được cấp theo từng trang 4 KB, mỗi trang qua một minor page fault, vào lần đầu tiên trang đó bị chạm tới. `memset` 512 MB gây khoảng 131 nghìn page fault.
+
+Hệ quả thực tế: VSZ gần như vô nghĩa khi đánh giá một process tốn bao nhiêu bộ nhớ. Một chương trình Go hay Java thường có VSZ hàng chục GB vì runtime đặt chỗ trước các khoảng địa chỉ lớn. Thứ đáng nhìn là RSS.
+
+### Chia sẻ trang giữa các process
+
+Vì ánh xạ là gián tiếp, nhiều page table có thể trỏ vào **cùng một frame**:
+
+- **Thư viện dùng chung.** Mã của `libc` nằm trong RAM một lần và được ánh xạ chỉ đọc vào mọi process dùng nó.
+- **Copy-on-write sau `fork()`.** Cha và con dùng chung mọi trang ở chế độ chỉ đọc; lần ghi đầu tiên gây page fault và kernel mới chép trang đó. Chi tiết ở bài [Process vs Thread](/docs/os/process-thread).
+- **Zero page.** Trang mới xin mà chỉ được đọc thì kernel ánh xạ tới một trang toàn số 0 dùng chung; chỉ khi ghi mới cấp trang riêng.
+- **Shared memory.** Hai process cố ý ánh xạ cùng các frame để trao đổi dữ liệu không qua kernel.
+
+Vì chia sẻ, cộng RSS của mọi process sẽ ra con số lớn hơn RAM đang dùng. **PSS** (proportional set size, xem trong `/proc/<pid>/smaps_rollup`) chia đều mỗi trang dùng chung cho các process cùng dùng nó, nên cộng lại được.
+
+### mmap: file như bộ nhớ
+
+`mmap()` gắn một file vào address space. Đọc ghi file trở thành đọc ghi bộ nhớ; page fault lo việc nạp từ đĩa.
+
+```c
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+int fd = open("data.bin", O_RDONLY);
+struct stat st;
+fstat(fd, &st);
+
+// Ánh xạ cả file. Chưa có byte nào được đọc từ đĩa.
+unsigned char *data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+
+unsigned char b = data[1000000];      // page fault → kernel đọc đúng trang chứa byte này
+
+munmap(data, st.st_size);
+close(fd);
+```
+
+Có hai loại ánh xạ, và sự khác nhau quyết định chuyện gì xảy ra khi thiếu RAM:
+
+| | File-backed | Anonymous |
+|---|---|---|
+| Nội dung ban đầu | Từ một file | Toàn số 0 |
+| Ví dụ | Mã chương trình, thư viện, file `mmap` | Heap, stack |
+| Khi cần thu hồi, trang sạch | Vứt đi; cần thì đọc lại từ file | Không có "bản gốc" để đọc lại |
+| Khi cần thu hồi, trang đã sửa | Ghi lại vào file rồi vứt | Phải ghi ra **swap** |
+
+Các trang file-backed đang nằm trong RAM tạo thành **page cache**, cũng là cache mà `read()` và `write()` thông thường dùng. Đó là lý do đọc một file lần thứ hai nhanh hơn hẳn lần đầu, và lý do Linux "dùng hết RAM" để cache file: RAM rảnh là RAM lãng phí, và các trang cache sạch thu hồi được ngay khi cần.
+
+### malloc lấy bộ nhớ từ đâu
+
+`malloc` không phải system call. Nó là một thư viện quản lý bộ nhớ trong user mode, xin các khối lớn từ kernel rồi tự chia nhỏ:
+
+- Yêu cầu nhỏ: cắt từ heap, vùng được nới rộng bằng system call `brk`.
+- Yêu cầu lớn (mặc định từ 128 KB với glibc): gọi `mmap` xin một vùng anonymous riêng, và `free` sẽ trả thẳng về kernel bằng `munmap`.
+
+Vì allocator giữ lại bộ nhớ đã `free` để tái sử dụng, RSS của một process thường không giảm ngay sau khi nó giải phóng dữ liệu. Phần bị kẹt giữa các khối còn dùng không trả lại được: đó là fragmentation ở mức allocator, lý do tồn tại của jemalloc và tcmalloc.
+
+## Khi RAM không đủ
+
+### Swap
+
+Khi RAM cạn, kernel phải thu hồi trang. Trang file-backed sạch thì vứt được. Trang anonymous thì phải ghi ra **swap** (một phân vùng hoặc file trên đĩa) trước, đánh dấu PTE là Present = 0 kèm vị trí trong swap. Lần truy cập sau gây major page fault và trang được đọc ngược vào.
+
+Chênh lệch tốc độ là thứ quyết định mọi thứ ở đây:
+
+```text
+truy cập RAM        ~100 ns
+đọc từ SSD NVMe     ~100 µs     gấp ~1 000 lần
+đọc từ HDD          ~10 ms      gấp ~100 000 lần
+```
+
+Chỉ cần một phần nghìn số truy cập gây major fault trên HDD là chương trình chậm đi cả trăm lần. Vì vậy chọn **trang nào** để đẩy ra là quyết định quan trọng nhất.
+
+### Thuật toán thay trang
+
+Mục tiêu: đẩy ra trang mà tương lai ít cần tới nhất.
+
+| Thuật toán | Đẩy trang nào | Nhận xét |
+|---|---|---|
+| **OPT** | Trang mà lần dùng kế tiếp xa nhất trong tương lai | Tối ưu, nhưng cần biết tương lai. Chỉ dùng làm mốc so sánh |
+| **FIFO** | Trang vào RAM lâu nhất | Đơn giản; đẩy cả trang đang được dùng liên tục |
+| **LRU** | Trang lâu không được dùng nhất | Dùng quá khứ đoán tương lai, nhờ locality. Gần tối ưu nhưng đắt: phải cập nhật thứ tự ở **mỗi** lần truy cập bộ nhớ |
+| **Clock** | Quét vòng; trang có bit Accessed = 1 thì tắt bit và bỏ qua, trang có Accessed = 0 thì đẩy | Xấp xỉ LRU bằng một bit do phần cứng tự bật. Rẻ |
+
+Cài cả bốn để so sánh:
+
+```python
+from collections import OrderedDict, deque
+
+
+def fifo(refs, frames):
+    mem, queue, faults = set(), deque(), 0
+    for p in refs:
+        if p in mem:
+            continue
+        faults += 1
+        if len(mem) == frames:
+            mem.discard(queue.popleft())  # đẩy trang vào RAM lâu nhất
+        mem.add(p)
+        queue.append(p)
+    return faults
+
+
+def lru(refs, frames):
+    mem, faults = OrderedDict(), 0        # thứ tự: lâu không dùng nhất ở đầu
+    for p in refs:
+        if p in mem:
+            mem.move_to_end(p)            # vừa dùng: chuyển về cuối
+            continue
+        faults += 1
+        if len(mem) == frames:
+            mem.popitem(last=False)       # đẩy trang lâu không dùng nhất
+        mem[p] = True
+    return faults
+
+
+def clock(refs, frames):
+    pages = [None] * frames               # vòng tròn các frame
+    used = [False] * frames               # bit accessed của từng frame
+    hand, faults = 0, 0
+    for p in refs:
+        if p in pages:
+            used[pages.index(p)] = True   # phần cứng tự bật bit accessed
+            continue
+        faults += 1
+        while used[hand]:                 # trang vừa được dùng: cho cơ hội thứ hai
+            used[hand] = False
+            hand = (hand + 1) % frames
+        pages[hand] = p                   # thay trang tại vị trí kim
+        used[hand] = True
+        hand = (hand + 1) % frames
+    return faults
+
+
+def opt(refs, frames):
+    mem, faults = set(), 0
+    for i, p in enumerate(refs):
+        if p in mem:
+            continue
+        faults += 1
+        if len(mem) == frames:
+            future = refs[i + 1:]
+            # đẩy trang mà lần dùng kế tiếp xa nhất (hoặc không bao giờ dùng lại)
+            victim = max(mem, key=lambda q: future.index(q) if q in future else len(future) + 1)
+            mem.discard(victim)
+        mem.add(p)
+    return faults
+```
+
+Chạy trên chuỗi tham chiếu kinh điển `7 0 1 2 0 3 0 4 2 3 0 3 2 1 2 0 1 7 0 1` (20 lần truy cập), đếm số page fault:
+
+| | 3 frame | 4 frame | 5 frame |
+|---|---|---|---|
+| FIFO | 15 | 10 | 9 |
+| Clock | 14 | 9 | 9 |
+| LRU | 12 | 8 | 7 |
+| OPT | 9 | 8 | 7 |
+
+LRU bám sát OPT. Clock nằm giữa FIFO và LRU với chi phí gần bằng FIFO, nên là điểm cân bằng mà hệ thống thật chọn.
+
+<Expand title="Belady's anomaly: thêm RAM mà nhiều page fault hơn">
+
+Trực giác nói rằng nhiều frame hơn thì ít page fault hơn. Với FIFO điều đó không luôn đúng. Chuỗi `1 2 3 4 1 2 5 1 2 3 4 5`:
+
+| | 3 frame | 4 frame |
+|---|---|---|
+| FIFO | 9 | **10** |
+| LRU | 10 | 8 |
+| OPT | 7 | 6 |
+
+FIFO với 4 frame gây nhiều fault hơn với 3 frame. Lý do: FIFO quyết định theo thời điểm trang **vào** RAM, không liên quan gì tới việc trang có đang được dùng không, nên tập trang nó giữ với 4 frame không nhất thiết chứa tập trang nó giữ với 3 frame.
+
+LRU và OPT không bao giờ gặp hiện tượng này. Chúng có **stack property**: tập trang trong RAM với `n` frame luôn là tập con của tập trang với `n + 1` frame, nên thêm frame chỉ có thể giữ thêm trang chứ không làm mất trang nào.
 
 </Expand>
 
-## TLB: cache cho phép dịch địa chỉ
+### Linux làm thế nào
 
-Nếu mỗi lần truy cập bộ nhớ lại phải đọc page table (cũng nằm trong RAM) thì mọi thao tác chậm ít nhất gấp đôi. <Term>TLB</Term> là một cache nhỏ trong MMU lưu các cặp VPN → PFN vừa dùng:
+Linux không chạy LRU chính xác (quá đắt) mà xấp xỉ bằng các danh sách:
 
-- **TLB hit**: dịch ngay trong phần cứng, gần như không tốn thêm thời gian.
-- **TLB miss**: phải tra page table, rồi lưu kết quả vào TLB.
+- Mỗi loại trang (anonymous và file-backed) có một danh sách **active** và một danh sách **inactive**. Trang mới vào inactive; được truy cập lần nữa thì lên active. Kernel thu hồi từ đuôi của inactive, và định kỳ hạ các trang ở active không được dùng xuống inactive. Bit Accessed trong PTE là tín hiệu "được dùng". Về bản chất là thuật toán clock với hai mức.
+- Các kernel mới có thêm **Multi-Gen LRU**, chia trang thành nhiều thế hệ theo độ gần đây thay vì chỉ hai mức.
+- Thread kernel `kswapd` chạy nền, bắt đầu thu hồi khi RAM rảnh tụt dưới một ngưỡng, để các lần cấp phát thông thường không phải chờ. Nếu RAM cạn nhanh hơn `kswapd` dọn kịp, chính process đang xin bộ nhớ phải tự dừng lại mà thu hồi (**direct reclaim**), và đó là lúc độ trễ tăng vọt.
+- Tham số `vm.swappiness` (0 tới 200, mặc định 60) chỉnh mức kernel sẵn lòng đẩy trang anonymous ra swap so với vứt trang file cache. Giá trị thấp nghĩa là ưu tiên giữ bộ nhớ của chương trình và hy sinh cache file.
 
-TLB hiệu quả nhờ **locality**: chương trình thường truy cập các địa chỉ gần nhau (duyệt mảng) và lặp lại địa chỉ vừa dùng (biến trong vòng lặp). Khi context switch, mục TLB của process cũ không còn đúng cho process mới, nên OS phải xoá TLB hoặc gắn nhãn ASID (address space ID) cho từng mục.
+### Thrashing
 
-## Page fault: khi trang không ở RAM
+Khi tổng bộ nhớ các process đang **tích cực dùng** vượt quá RAM, hệ thống rơi vào <Term>thrashing</Term>: mỗi process vừa được chạy đã gây page fault, phải chờ đĩa nạp trang vào, và để có chỗ thì một trang của process khác bị đẩy ra, thứ mà process đó sắp cần ngay. CPU gần như rảnh, đĩa hoạt động hết công suất, không việc gì tiến triển.
 
-Truy cập một trang có `present = 0` gây ra <Term>page fault</Term>. CPU dừng lệnh đó và chuyển cho OS:
+Khái niệm đi kèm là **working set**: tập các trang một process dùng trong một khoảng thời gian gần đây. Chừng nào tổng working set của mọi process vừa trong RAM, hệ thống chạy tốt. Vượt ngưỡng đó, hiệu năng không giảm từ từ mà sụp đổ.
 
-1. Tìm trang trên đĩa (swap).
-2. Nếu RAM đầy, chọn một trang để đẩy ra (nếu `dirty` thì ghi lại đĩa trước).
-3. Nạp trang cần vào RAM, cập nhật page table.
-4. Chạy lại đúng lệnh vừa lỗi.
+Nhận diện bằng `vmstat 1`: cột `si` và `so` (swap in, swap out) liên tục khác 0, cột `wa` (CPU chờ I/O) cao, cột `us` thấp. Cách chữa duy nhất là giảm nhu cầu bộ nhớ (chạy ít process hơn, giảm kích thước cache trong ứng dụng) hoặc thêm RAM.
 
-Đọc đĩa chậm hơn RAM hàng nghìn tới hàng trăm nghìn lần, nên chọn trang nào để đẩy ra rất quan trọng. LRU (đẩy trang lâu không dùng nhất) tốt nhưng đắt; OS thực tế dùng xấp xỉ như thuật toán clock dựa trên bit `accessed`.
+### Overcommit và OOM killer
+
+Vì bộ nhớ chỉ được cấp khi chạm tới, Linux mặc định cho phép các process xin tổng cộng **nhiều hơn** RAM cộng swap. Đó là **overcommit**, và nó hợp lý: phần lớn bộ nhớ được xin không bao giờ được dùng hết, và `fork()` của một process lớn sẽ không thể thực hiện nếu kernel đòi đủ chỗ cho một bản sao trọn vẹn.
+
+| `vm.overcommit_memory` | Hành vi |
+|---|---|
+| 0 (mặc định) | Heuristic: từ chối những yêu cầu lớn một cách lộ liễu, còn lại cho qua |
+| 1 | Luôn cho. `malloc` gần như không bao giờ trả về NULL |
+| 2 | Tính sổ nghiêm ngặt: tổng cam kết không vượt swap cộng một tỉ lệ RAM (`vm.overcommit_ratio`, mặc định 50%). Vượt thì `malloc` thất bại |
+
+Mặt trái: kernel có thể đã hứa nhiều hơn mình có. Khi các process thật sự dùng tới và không còn gì để thu hồi, kernel gọi **OOM killer**: chọn một process (theo điểm `oom_score`, đại khái là process dùng nhiều bộ nhớ nhất) và giết nó bằng `SIGKILL` để giải phóng RAM.
+
+Hai hệ quả cần biết:
+
+- Trên Linux mặc định, kiểm tra `malloc` trả về NULL **không** bảo vệ được bạn khỏi hết bộ nhớ. `malloc` thành công; process chết sau đó, lúc ghi vào bộ nhớ, và có thể không phải process gây ra vấn đề.
+- Trong container, giới hạn bộ nhớ của cgroup (`memory.max`) có OOM killer riêng: container vượt giới hạn thì process trong nó bị giết dù máy còn dư RAM. Kubernetes báo trạng thái `OOMKilled`. Xem bằng `dmesg | grep -i oom` hoặc `journalctl -k`.
+
+Điều chỉnh mức ưu tiên bị giết qua `/proc/<pid>/oom_score_adj` (từ −1000, không bao giờ giết, tới 1000).
+
+## Quan sát trên Linux
+
+```bash
+getconf PAGESIZE                     # kích thước trang, thường 4096
+
+cat /proc/4211/maps                  # các vùng nhớ: địa chỉ, quyền, file ánh xạ
+cat /proc/4211/smaps_rollup          # Rss, Pss, Swap... đã cộng gộp
+grep -E 'VmSize|VmRSS|VmSwap' /proc/4211/status
+
+ps -o pid,vsz,rss,min_flt,maj_flt,cmd -p 4211    # bộ nhớ ảo, RSS, số page fault
+/usr/bin/time -v ./prog              # "Major/Minor page faults", "Maximum resident set size"
+
+free -h                              # tổng quan RAM
+vmstat 1                             # si/so: swap in/out mỗi giây; wa: CPU chờ I/O
+perf stat -e dTLB-load-misses,page-faults ./prog   # đếm TLB miss và page fault
+```
+
+Đọc `free -h` cho đúng:
+
+```text
+               total        used        free      shared  buff/cache   available
+Mem:            31Gi        9.2Gi       1.1Gi       412Mi        21Gi        21Gi
+Swap:          8.0Gi          0B       8.0Gi
+```
+
+`free` chỉ còn 1.1 GB không có nghĩa máy sắp hết RAM. 21 GB nằm ở `buff/cache` là page cache, thu hồi được ngay khi chương trình cần. Cột cần nhìn là **`available`**: ước lượng lượng RAM có thể cấp cho chương trình mới mà không phải swap.
 
 ## Lưu ý
 
-- "Page fault" không phải lỗi chương trình. Đó là sự kiện bình thường; chỉ khi truy cập trang `valid = 0` (không thuộc address space) thì OS mới báo lỗi, ví dụ segmentation fault.
-- **Thrashing**: khi tổng bộ nhớ các process đang dùng vượt xa RAM, hệ thống dành gần hết thời gian để đổi trang ra vào đĩa và gần như đứng yên. Cách xử lý là giảm số process chạy cùng lúc hoặc thêm RAM.
-- Virtual memory không chỉ để "có thêm RAM": cô lập giữa các process mới là lý do chính nó có mặt trên mọi OS hiện đại.
+- **Page fault là cơ chế, không phải lỗi.** Chương trình khoẻ mạnh gây hàng nghìn minor fault mỗi giây. Chỉ major fault dồn dập mới là dấu hiệu thiếu RAM.
+- **VSZ không phải lượng RAM đang dùng.** Nhìn RSS, hoặc PSS khi có nhiều process chia sẻ trang.
+- **RAM "free" thấp trên Linux là bình thường.** Nhìn cột `available`.
+- **Virtual memory không chủ yếu để "có thêm RAM".** Cô lập, chia sẻ trang, cấp phát lười và `mmap` mới là lý do nó có mặt ở mọi OS, kể cả trên máy tắt hẳn swap.
+- **Tắt swap không ngăn được thiếu bộ nhớ.** Không có swap, kernel chỉ còn cách vứt trang file cache (kể cả mã chương trình, sẽ phải đọc lại từ đĩa) và gọi OOM killer sớm hơn. Một ít swap cho kernel chỗ để đẩy những trang anonymous thật sự không dùng tới.
+- **Bố cục dữ liệu ảnh hưởng tới tốc độ qua TLB và cache.** Duyệt tuần tự trên mảng nhanh hơn nhiều so với nhảy ngẫu nhiên qua con trỏ, dù cùng số phép toán.
+- **MMU bảo vệ theo trang, không theo biến.** Ghi lấn sang biến bên cạnh trong cùng một trang không gây segfault. Dùng AddressSanitizer (`-fsanitize=address`) khi test để bắt những lỗi đó.
+- **`malloc` thành công không có nghĩa là có bộ nhớ.** Với overcommit mặc định, lỗi xuất hiện lúc ghi, dưới dạng OOM kill.
