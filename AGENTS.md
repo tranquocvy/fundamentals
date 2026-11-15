@@ -5,10 +5,11 @@
 Tóm tắt điều không được vi phạm:
 
 - Nội dung tiếng Việt, **giữ thuật ngữ tiếng Anh**. Không phải site luyện phỏng vấn.
-- Bài mới: `content/docs/<môn>/<slug>.mdx`, đăng ký trong `meta.json` của môn, `status: draft`, có ≥ 1 `references`. Bắt đầu từ `templates/article.mdx`.
+- Bài mới: tạo bằng `npm run new <môn> <slug>` (copy `templates/_template.mdx`, tự thêm vào `meta.json`), điền hết `TODO`, `status: draft`, có ≥ 1 `references`.
+- Thuật ngữ: dùng `<Term>tên</Term>` và thêm giải nghĩa vào `content/glossary.json` nếu chưa có. Không lặp `def` cho thuật ngữ đã có trong glossary.
 - Ký hiệu kiểu terminal (`~/`, `$`, `>`) chỉ ở các chỗ cố định đã liệt kê trong CONTRIBUTING.md. **Không** thêm `//` hay `[+]` vào heading, nút, component mới.
 - Màu dùng token (`--color-fd-*`, `--subject-accent`), không hard-code.
-- `npm run build` phải pass trước khi mở PR.
+- `npm run check` và `npm run build` phải pass trước khi mở PR (CI chạy lại cả hai).
 - Commit message theo **Conventional Commits** (`feat`, `fix`, `content`, `docs`, `style`, `refactor`, `chore`), xem mục 8 CONTRIBUTING.md. Ví dụ: `content(os): add virtual memory note`.
 
 # Fumadocs

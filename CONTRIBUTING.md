@@ -35,12 +35,16 @@ Site có chất "coder" nhưng **dùng tiết chế**. Ký hiệu kiểu termina
 
 ## 3. Các bước thêm một bài
 
-1. Tạo file `content/docs/<môn>/<slug>.mdx`. `slug` viết thường, gạch ngang, tiếng Anh: `virtual-memory.mdx`.
-2. Copy frontmatter từ [`templates/article.mdx`](templates/article.mdx) rồi điền.
-3. Thêm `<slug>` vào mảng `pages` trong `content/docs/<môn>/meta.json` (đúng thứ tự muốn hiện ở sidebar).
-4. `npm run dev`, mở `http://localhost:3000/docs/<môn>/<slug>` để xem.
-5. `npm run build` phải pass (frontmatter sai schema sẽ báo lỗi ở bước này).
-6. Commit, mở Pull Request vào `main`.
+1. Tạo bài bằng lệnh (slug viết thường, tiếng Anh, gạch ngang):
+   ```bash
+   npm run new os virtual-memory                    # tiêu đề tự sinh: "Virtual Memory"
+   npm run new os virtual-memory "Virtual Memory"   # hoặc tự đặt tiêu đề
+   ```
+   Lệnh này copy [`templates/_template.mdx`](templates/_template.mdx) thành `content/docs/os/virtual-memory.mdx` và thêm `virtual-memory` vào cuối `content/docs/os/meta.json`. Muốn đổi vị trí trong sidebar thì sửa thứ tự trong `meta.json`.
+2. Điền các dòng `TODO` trong frontmatter, viết nội dung.
+3. `npm run dev`, mở `http://localhost:3000/docs/<môn>/<slug>` để xem.
+4. `npm run check` rồi `npm run build` phải pass.
+5. Commit (Conventional Commits, mục 8), mở Pull Request vào `main`. CI sẽ tự chạy lại `check`, `types:check`, `build`; PR chỉ merge khi CI xanh. Vercel tạo link preview cho PR để xem trước.
 
 ### Frontmatter
 
@@ -64,7 +68,9 @@ Schema nằm ở `src/lib/source.ts` (`articleSchema`). Thêm field mới thì s
 ### Component dùng được trong MDX
 
 ```mdx
-<Term def="Giải nghĩa ngắn, 1 câu.">address space</Term>
+<Term>address space</Term>                 lấy giải nghĩa từ glossary (cách nên dùng)
+<Term id="process">các process</Term>      chữ hiển thị khác khoá trong glossary
+<Term def="Giải nghĩa riêng.">từ mới</Term>  giải nghĩa chỉ dùng trong bài này
 
 <Expand title="Ví dụ: counter++ bị xen kẽ">
 Nội dung markdown bình thường, có thể có code block.
@@ -72,6 +78,23 @@ Nội dung markdown bình thường, có thể có code block.
 ```
 
 Muốn thêm component mới: tạo trong `src/components/`, đăng ký ở `src/components/mdx.tsx`, cập nhật mục này.
+
+### Glossary dùng chung
+
+Giải nghĩa thuật ngữ nằm ở **một chỗ**: [`content/glossary.json`](content/glossary.json). Mọi bài dùng chung, trang `/docs/glossary` liệt kê tất cả.
+
+```json
+"virtual memory": {
+  "def": "Một câu giải nghĩa ngắn, tiếng Việt.",
+  "subject": "os",
+  "aliases": ["vm"]
+}
+```
+
+- Khoá là thuật ngữ tiếng Anh viết thường, giữ thứ tự ABC.
+- `aliases` (tuỳ chọn): các cách viết khác (số nhiều, viết tắt) để `<Term>vm</Term>` cũng tra được.
+- Dùng `<Term>` với thuật ngữ chưa có trong glossary mà không kèm `def` thì `npm run check` và build đều báo lỗi, nên CI sẽ chặn.
+- Ưu tiên thêm vào glossary thay vì `def="..."`: định nghĩa thống nhất giữa các bài.
 
 ## 4. Thêm một môn mới
 
@@ -97,7 +120,8 @@ Muốn thêm component mới: tạo trong `src/components/`, đăng ký ở `src
 - [ ] Frontmatter đủ `title`, `description`, `status: draft`, `tags`, ≥ 1 `references`
 - [ ] Thuật ngữ tiếng Anh giữ nguyên, có `<Term>` ở lần xuất hiện đầu nếu cần giải nghĩa
 - [ ] Không thêm ký hiệu `//`, `[+]` vào heading
-- [ ] `npm run build` pass
+- [ ] Thuật ngữ mới đã thêm vào `content/glossary.json`
+- [ ] `npm run check` và `npm run build` pass
 - [ ] Commit message theo Conventional Commits (mục 8)
 - [ ] Xem thử cả dark/light và màn hình hẹp
 
@@ -106,6 +130,8 @@ Muốn thêm component mới: tạo trong `src/components/`, đăng ký ở `src
 ```bash
 npm install          # cài deps
 npm run dev          # xem trước ở http://localhost:3000
+npm run new <môn> <slug>  # tạo bài mới từ template
+npm run check        # kiểm frontmatter, meta.json, glossary
 npm run build        # build tĩnh ra out/ (tự chạy scripts/fix-prefetch.mjs sau build)
 npx serve out -l 4000  # chạy bản build tĩnh
 npm run types:check  # kiểm tra type

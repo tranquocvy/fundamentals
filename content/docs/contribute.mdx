@@ -8,9 +8,9 @@ Hướng dẫn đầy đủ (quy ước viết, frontmatter, thiết kế, check
 ## Tóm tắt
 
 1. Clone repo (bạn bè được mời làm collaborator có thể commit/PR trực tiếp).
-2. Copy `templates/article.mdx` vào `content/docs/<môn>/<slug>.mdx`, điền frontmatter.
-3. Thêm `<slug>` vào `pages` trong `content/docs/<môn>/meta.json`.
-4. Dùng `<Term def="...">` cho thuật ngữ và `<Expand title="...">` cho phần mở rộng.
-5. `npm run dev` để xem trước, `npm run build` phải pass, rồi mở Pull Request.
+2. `npm run new <môn> <slug>` để tạo bài từ template (tự thêm vào `meta.json`), rồi điền các dòng `TODO`.
+3. Dùng `<Term>thuật ngữ</Term>` (giải nghĩa lấy từ [Glossary](/docs/glossary), thêm mới ở `content/glossary.json`) và `<Expand title="...">` cho phần mở rộng.
+4. `npm run dev` để xem trước; `npm run check` và `npm run build` phải pass.
+5. Mở Pull Request: CI tự kiểm tra, Vercel tạo link preview.
 
 Tên tác giả lấy tự động từ git commit đầu tiên của file. Muốn hiện avatar GitHub, thêm `authors: [github-username]` vào frontmatter.
