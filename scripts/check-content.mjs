@@ -3,8 +3,11 @@
 //  - bài trong content/docs/<môn>/ (trừ index.mdx) có ≥ 1 references, không còn "TODO" trong frontmatter
 //  - mọi mục trong meta.json trỏ tới file .mdx hoặc thư mục có thật
 //  - mọi <Term>x</Term> không kèm def/id đều có trong content/glossary.json
+//  - roadmap (content/roadmaps/*.yaml) hợp lệ, và không id node nào bị xoá/đổi tên so với nhánh gốc
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { ROADMAP_DIR, allNodes, listRoadmapSlugs, nodeIdsFromYaml, readRoadmapFile, validateRoadmap, warnRoadmap } from './roadmap-core.mjs';
 
 const ROOT = join('content', 'docs');
 const errors = [];
@@ -55,6 +58,65 @@ function checkMeta(file, dir) {
 }
 
 walk(ROOT, 0);
+checkRoadmaps();
+
+function checkRoadmaps() {
+  const subjects = [...readFileSync(join('src', 'lib', 'subjects.ts'), 'utf8').matchAll(/slug: '([^']+)'/g)].map((m) => m[1]);
+  const slugs = listRoadmapSlugs();
+  for (const slug of slugs) {
+    const file = join(ROADMAP_DIR, `${slug}.yaml`);
+    let rm;
+    try {
+      rm = readRoadmapFile(file, slug);
+    } catch (e) {
+      err(file, `YAML không hợp lệ: ${e.message.split('\n')[0]}`);
+      continue;
+    }
+    for (const e of validateRoadmap(rm, { subjects })) err(file, e);
+    for (const w of warnRoadmap(rm)) console.warn(`cảnh báo ${relative('.', file)}: ${w}`);
+  }
+
+  // Id node là khoá lưu tiến trình của người dùng: không được xoá hay đổi tên.
+  const base = baseRef();
+  if (!base) return;
+  const baseFiles = git(['ls-tree', '--name-only', base, 'content/roadmaps/']);
+  for (const path of baseFiles.split('\n').filter((f) => f.endsWith('.yaml'))) {
+    const slug = path.split('/').pop().slice(0, -'.yaml'.length);
+    const file = join(ROADMAP_DIR, `${slug}.yaml`);
+    if (!slugs.includes(slug)) {
+      err(file, `roadmap "${slug}" có trên ${base} nhưng đã bị xoá/đổi tên (URL và tiến trình người dùng sẽ hỏng).`);
+      continue;
+    }
+    const before = nodeIdsFromYaml(git(['show', `${base}:${path}`]));
+    const now = new Set(allNodes(readRoadmapFile(file, slug)).map((n) => n.id));
+    for (const id of before) {
+      if (!now.has(id)) err(file, `node "${id}" có trên ${base} nhưng đã bị xoá/đổi tên. Giữ id cũ và đặt "deprecated: true" thay vì xoá.`);
+    }
+  }
+}
+
+/**
+ * Nhánh để so sánh: ROADMAP_BASE_REF nếu đặt; PR → nhánh đích; push trong CI → commit trước;
+ * local → origin/main.
+ */
+function baseRef() {
+  const candidates = process.env.ROADMAP_BASE_REF
+    ? [process.env.ROADMAP_BASE_REF]
+    : process.env.GITHUB_BASE_REF
+    ? [`origin/${process.env.GITHUB_BASE_REF}`]
+    : process.env.GITHUB_EVENT_NAME === 'push'
+      ? ['HEAD~1']
+      : ['origin/main'];
+  return candidates.find((r) => git(['rev-parse', '--verify', '--quiet', r]) !== '');
+}
+
+function git(args) {
+  try {
+    return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return '';
+  }
+}
 
 if (errors.length) {
   console.error(`✗ check-content: ${errors.length} lỗi\n`);

@@ -20,6 +20,8 @@ Dự án mở cho mọi người cùng đóng góp: thêm bài mới, bổ sung 
 
 Thuật ngữ dùng chung giữa các bài được gom ở trang [Glossary](https://fundamentals-notes.vercel.app/docs/glossary).
 
+Các bài được xâu thành **lộ trình học** ở trang [Roadmaps](https://fundamentals-notes.vercel.app/roadmaps) (CS Fundamentals, Backend…): đánh dấu chủ đề đã học, tiến trình lưu ngay trong trình duyệt và sao lưu được bằng một mã ngắn. Mỗi roadmap là một file YAML trong `content/roadmaps/`, ai cũng có thể mở PR thêm cây mới hay thêm chủ đề.
+
 ## Đóng góp
 
 Chỉ cần biết Markdown là viết được bài. Quy trình ngắn:
@@ -56,6 +58,7 @@ Một vài nguyên tắc chính:
 content/docs/<môn>/*.mdx      bài viết
 content/docs/<môn>/meta.json  thứ tự bài trong sidebar
 content/glossary.json         giải nghĩa thuật ngữ dùng chung
+content/roadmaps/*.yaml       roadmap, mỗi file một cây
 templates/_template.mdx       khung bài mới
 src/components/               Term, Expand, GlossaryList, ...
 src/lib/subjects.ts           danh sách môn và màu accent ở trang chủ

@@ -106,6 +106,55 @@ Giải nghĩa thuật ngữ nằm ở **một chỗ**: [`content/glossary.json`]
 4. Trong `src/app/global.css`: thêm 2 dòng `html[data-subject='<slug>']` và `.dark[data-subject='<slug>']` với cùng 2 màu.
    - Màu light phải đủ tương phản trên nền `#f6f5f1`, màu dark trên nền `#0e0f13` (WCAG AA cho chữ thường: ≥ 4.5:1).
 
+## 4b. Roadmap
+
+Mỗi roadmap là **một file YAML** trong [`content/roadmaps/`](content/roadmaps). Tên file là URL: `backend.yaml` → `/roadmaps/backend`. Thêm file là có cây mới; sửa file là thêm/bớt chủ đề. Không phải viết code.
+
+```yaml
+title: Backend                       # bắt buộc
+description: Một câu mô tả cây.      # bắt buộc
+order: 2                             # tuỳ chọn, thứ tự trên trang /roadmaps
+sources:                             # ≥ 1, nguồn của KHUNG kiến thức (không copy roadmap.sh)
+  - name: OSSU Computer Science
+    url: https://github.com/ossu/computer-science
+    note: thứ tự các môn Core        # tuỳ chọn
+sections:                            # mỗi section là một "chặng" trên trục
+  - id: os                           # viết thường, gạch ngang, duy nhất trong file
+    title: Operating Systems
+    subject: os                      # tuỳ chọn, slug trong src/lib/subjects.ts → lấy màu của môn
+    description: Một câu về chặng này.
+    outcome: Giải thích được một chương trình chạy thế nào.   # tuỳ chọn, học xong chặng thì làm được gì
+    nodes:
+      - id: process-thread           # CỐ ĐỊNH MÃI MÃI (xem bên dưới)
+        title: Process vs Thread
+        article: os/process-thread   # bài trong content/docs; không có thì hiện "Viết bài này"
+        requires: [complexity]       # tuỳ chọn, id node nên học trước (cùng file, khác section được)
+        optional: true               # tuỳ chọn, chủ đề không bắt buộc
+        description: Một câu.        # tuỳ chọn
+        effort: 40                   # tuỳ chọn, số phút ước lượng; node có article thì tự tính từ độ dài bài
+        resources:                   # link ngoài; BẮT BUỘC ≥ 1 nếu node chưa có article
+          - title: "OSTEP — Chapter 4: Processes"   # có dấu ": " thì đặt trong ngoặc kép
+            url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-intro.pdf
+```
+
+**Bố cục tự sinh, không nhập toạ độ.** Trang cây vẽ mỗi chặng thành một trục với các nhánh, suy ra từ `requires`:
+
+- `requires` **đầu tiên** nằm trong cùng chặng là node cha trên bản đồ. Các `requires` còn lại, và `requires` sang chặng khác, hiện thành dòng "cần …" trên node chứ không vẽ dây. Vì vậy hãy đặt node cha chính lên đầu danh sách.
+- Trục chính là chuỗi node bắt buộc dài nhất (hoà nhau thì theo thứ tự trong file). Node bắt buộc không nằm trên trục thành nhánh rẽ phải; node `optional: true` rẽ trái với nét đứt.
+- Node gốc bắt buộc không có `requires` trong chặng được xếp nối tiếp nhau trên trục theo thứ tự trong file.
+- Mỗi chặng nên có 5–9 node, một node tương ứng một bài đọc 15–30 phút. Nhánh sâu quá 2 cấp sẽ chật trên mobile.
+- Mỗi node phải có `article` hoặc ít nhất một `resources`, để người học luôn có chỗ bắt đầu.
+
+**Quy tắc id (quan trọng):** id node là khoá lưu tiến trình trong trình duyệt người dùng. Đổi tên hay xoá id làm tiến trình của họ biến mất.
+
+- Không đổi tên, không xoá id đã merge. Muốn bỏ một node: thêm `deprecated: true` (node bị ẩn, id vẫn giữ).
+- Không đổi tên file roadmap đã merge (URL và tiến trình sẽ hỏng).
+- Node có `article` lưu tiến trình theo bài, nên học "Process vs Thread" ở cây nào thì mọi cây chứa bài đó đều hiện đã xong.
+
+`npm run check` (và CI) kiểm: YAML hợp lệ, khoá đúng tên, id duy nhất, `requires` trỏ tới node có thật, **không có vòng phụ thuộc**, `article` tồn tại, `subject` có thật, node chưa có `article` thì có `resources`, và **không id nào bị xoá so với `main`** (so với nhánh khác: `ROADMAP_BASE_REF=origin/<nhánh> npm run check`). Node có hơn một `requires` trong cùng chặng chỉ bị cảnh báo, không chặn.
+
+Khi viết bài cho một node chưa có bài: tạo bài bằng `npm run new`, rồi thêm `article: <môn>/<slug>` vào node đó trong file roadmap.
+
 ## 5. Thiết kế (đừng phá)
 
 - **Theme**: dark mặc định + light. Token màu ở đầu `src/app/global.css` (`--color-fd-*`). Không hard-code màu trong component; dùng token hoặc `var(--subject-accent)`.
@@ -121,6 +170,7 @@ Giải nghĩa thuật ngữ nằm ở **một chỗ**: [`content/glossary.json`]
 - [ ] Thuật ngữ tiếng Anh giữ nguyên, có `<Term>` ở lần xuất hiện đầu nếu cần giải nghĩa
 - [ ] Không thêm ký hiệu `//`, `[+]` vào heading
 - [ ] Thuật ngữ mới đã thêm vào `content/glossary.json`
+- [ ] Sửa roadmap: không đổi/xoá id node đã có (dùng `deprecated: true`)
 - [ ] `npm run check` và `npm run build` pass
 - [ ] Commit message theo Conventional Commits (mục 8)
 - [ ] Xem thử cả dark/light và màn hình hẹp

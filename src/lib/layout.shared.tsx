@@ -19,6 +19,7 @@ export function baseOptions({ docs = false } = {}): BaseLayoutProps {
     links: docs ? [] : [
       { text: <span className="font-mono text-sm">~/home</span>, url: '/', active: 'url' },
       { text: <span className="font-mono text-sm">/subjects</span>, url: '/docs', active: 'nested-url' },
+      { text: <span className="font-mono text-sm">/roadmaps</span>, url: '/roadmaps', active: 'nested-url' },
       { text: <span className="font-mono text-sm">/glossary</span>, url: '/docs/glossary' },
       { text: <span className="font-mono text-sm">/contribute</span>, url: '/docs/contribute' },
       { type: 'custom', secondary: true, children: <FontToggle /> },

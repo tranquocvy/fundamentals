@@ -7,6 +7,7 @@ Tóm tắt điều không được vi phạm:
 - Nội dung tiếng Việt, **giữ thuật ngữ tiếng Anh**. Không phải site luyện phỏng vấn.
 - Bài mới: tạo bằng `npm run new <môn> <slug>` (copy `templates/_template.mdx`, tự thêm vào `meta.json`), điền hết `TODO`, `status: draft`, có ≥ 1 `references`.
 - Thuật ngữ: dùng `<Term>tên</Term>` và thêm giải nghĩa vào `content/glossary.json` nếu chưa có. Không lặp `def` cho thuật ngữ đã có trong glossary.
+- Roadmap: mỗi cây là một file `content/roadmaps/<slug>.yaml` (CONTRIBUTING.md mục 4b). **Không đổi tên hay xoá id node / tên file đã có** vì đó là khoá lưu tiến trình người dùng; muốn bỏ node thì đặt `deprecated: true`. Khung roadmap phải có `sources` từ nguồn mở, không sao chép roadmap.sh.
 - Ký hiệu kiểu terminal (`~/`, `$`, `>`) chỉ ở các chỗ cố định đã liệt kê trong CONTRIBUTING.md. **Không** thêm `//` hay `[+]` vào heading, nút, component mới.
 - Màu dùng token (`--color-fd-*`, `--subject-accent`), không hard-code.
 - `npm run check` và `npm run build` phải pass trước khi mở PR (CI chạy lại cả hai).
