@@ -2,6 +2,8 @@ import data from '../../content/glossary.json';
 
 export type GlossaryEntry = {
   term: string;
+  /** cách hiển thị, vd. "TCP" cho khoá "tcp"; mặc định là chính khoá */
+  label?: string;
   def: string;
   subject?: string;
   aliases?: string[];

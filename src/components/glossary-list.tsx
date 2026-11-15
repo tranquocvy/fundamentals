@@ -10,7 +10,7 @@ export function GlossaryList() {
       {glossary.map((e) => (
         <div key={e.term} id={termAnchor(e.term)} className="scroll-mt-24 py-4 sm:grid sm:grid-cols-[12rem_1fr] sm:gap-6">
           <dt>
-            <span className="font-semibold">{e.term}</span>
+            <span className="font-semibold">{e.label ?? e.term}</span>
             {e.subject && (
               <span className="mt-0.5 block text-xs text-fd-muted-foreground">
                 {subjectTitle.get(e.subject) ?? e.subject}

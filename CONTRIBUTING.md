@@ -91,7 +91,7 @@ Giải nghĩa thuật ngữ nằm ở **một chỗ**: [`content/glossary.json`]
 }
 ```
 
-- Khoá là thuật ngữ tiếng Anh viết thường, giữ thứ tự ABC.
+- Khoá là thuật ngữ tiếng Anh viết thường, giữ thứ tự ABC. Từ viết tắt thêm `"label": "TCP"` để trang Glossary hiển thị đúng chữ hoa.
 - `aliases` (tuỳ chọn): các cách viết khác (số nhiều, viết tắt) để `<Term>vm</Term>` cũng tra được.
 - Dùng `<Term>` với thuật ngữ chưa có trong glossary mà không kèm `def` thì `npm run check` và build đều báo lỗi, nên CI sẽ chặn.
 - Ưu tiên thêm vào glossary thay vì `def="..."`: định nghĩa thống nhất giữa các bài.
