@@ -1,0 +1,49 @@
+---
+title: Process vs Thread
+description: Hai đơn vị thực thi cơ bản và khác nhau ở đâu.
+status: draft
+tags: [os, concurrency]
+references:
+  - title: "Operating Systems: Three Easy Pieces (OSTEP) — Abstraction: The Process"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-intro.pdf
+    kind: book
+  - title: "Operating System Concepts (Silberschatz) — Chapter 4: Threads & Concurrency"
+    kind: book
+---
+
+## Ý chính
+
+Một **process** là chương trình đang chạy, có <Term def="Vùng bộ nhớ ảo riêng mà process nhìn thấy; process khác không truy cập trực tiếp được.">address space</Term> riêng. Một **thread** là đơn vị thực thi nằm *bên trong* process, các thread trong cùng process chia sẻ address space.
+
+## So sánh
+
+| | Process | Thread |
+|---|---|---|
+| Bộ nhớ | Riêng biệt | Chia sẻ heap, code, data |
+| Chi phí tạo / context switch | Nặng | Nhẹ hơn |
+| Giao tiếp | IPC (pipe, socket, shared memory) | Đọc/ghi trực tiếp biến chung |
+| Lỗi | Crash không ảnh hưởng process khác | Một thread crash có thể kéo cả process |
+
+## Vì sao chia sẻ bộ nhớ lại nguy hiểm
+
+Khi nhiều thread cùng ghi một biến, kết quả phụ thuộc thứ tự xen kẽ — gọi là <Term def="Kết quả sai do nhiều thread truy cập dữ liệu chung không đồng bộ, phụ thuộc thứ tự thực thi.">race condition</Term>.
+
+<Expand title="Ví dụ: counter++ bị xen kẽ">
+
+`counter++` thực ra gồm 3 bước: đọc, cộng, ghi. Hai thread có thể xen kẽ như sau:
+
+```text
+Thread A: đọc counter (=5)
+Thread B: đọc counter (=5)
+Thread A: ghi counter = 6
+Thread B: ghi counter = 6   // mất một lần tăng
+```
+
+Kỳ vọng là 7 nhưng kết quả là 6. Cách xử lý: mutex, atomic operation.
+
+</Expand>
+
+## Khi nào dùng cái nào
+
+- Cần cô lập, an toàn → process.
+- Cần chia sẻ dữ liệu nhanh, chi phí thấp → thread (và chấp nhận phải đồng bộ).

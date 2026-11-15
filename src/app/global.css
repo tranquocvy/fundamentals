@@ -1,0 +1,102 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/preset.css';
+
+/* ---------- Design tokens (light mặc định, .dark ghi đè) ---------- */
+@theme {
+  --color-fd-background: #f6f5f1;
+  --color-fd-foreground: #16181d;
+  --color-fd-muted: #efede6;
+  --color-fd-muted-foreground: #5b6070;
+  --color-fd-popover: #fffdf6;
+  --color-fd-popover-foreground: #16181d;
+  --color-fd-card: #fffdf6;
+  --color-fd-card-foreground: #16181d;
+  --color-fd-border: #d9d7cf;
+  --color-fd-primary: var(--subject-accent);
+  --color-fd-primary-foreground: #fffdf6;
+  --color-fd-secondary: #efede6;
+  --color-fd-secondary-foreground: #16181d;
+  --color-fd-accent: #efede6;
+  --color-fd-accent-foreground: #16181d;
+  --color-fd-ring: var(--subject-accent);
+  --color-fd-overlay: hsla(0, 0%, 0%, 0.2);
+}
+
+.dark {
+  --color-fd-background: #0e0f13;
+  --color-fd-foreground: #e8e6df;
+  --color-fd-muted: #1c1f27;
+  --color-fd-muted-foreground: #9a9fae;
+  --color-fd-popover: #15171d;
+  --color-fd-popover-foreground: #e8e6df;
+  --color-fd-card: #15171d;
+  --color-fd-card-foreground: #e8e6df;
+  --color-fd-border: #272b35;
+  --color-fd-primary-foreground: #0e0f13;
+  --color-fd-secondary: #1c1f27;
+  --color-fd-secondary-foreground: #e8e6df;
+  --color-fd-accent: #1c1f27;
+  --color-fd-accent-foreground: #e8e6df;
+  --color-fd-overlay: hsla(0, 0%, 0%, 0.6);
+}
+
+@theme static {
+  --color-fd-info: oklch(62.3% 0.214 259.815);
+  --color-fd-warning: oklch(76.9% 0.188 70.08);
+  --color-fd-error: oklch(63.7% 0.237 25.331);
+  --color-fd-success: oklch(72.3% 0.219 149.579);
+  --color-fd-idea: oklch(70.5% 0.209 60.849);
+  --color-fd-diff-remove: rgba(200, 10, 100, 0.12);
+  --color-fd-diff-remove-symbol: rgb(230, 10, 100);
+  --color-fd-diff-add: rgba(14, 180, 100, 0.1);
+  --color-fd-diff-add-symbol: rgb(10, 200, 100);
+}
+
+/* ---------- Accent theo môn: light / dark ---------- */
+:root { --subject-accent: #a65400; }
+.dark { --subject-accent: #ffb454; }
+
+html[data-subject='os'] { --subject-accent: #a65400; }
+html[data-subject='networking'] { --subject-accent: #00758f; }
+html[data-subject='databases'] { --subject-accent: #6a3fc0; }
+html[data-subject='dsa'] { --subject-accent: #c0392b; }
+html[data-subject='oop'] { --subject-accent: #4a7a00; }
+html[data-subject='backend'] { --subject-accent: #b0245f; }
+html[data-subject='devops'] { --subject-accent: #00785a; }
+.dark[data-subject='os'] { --subject-accent: #ffb454; }
+.dark[data-subject='networking'] { --subject-accent: #5ccfe6; }
+.dark[data-subject='databases'] { --subject-accent: #c9a6ff; }
+.dark[data-subject='dsa'] { --subject-accent: #ff8a8a; }
+.dark[data-subject='oop'] { --subject-accent: #aad94c; }
+.dark[data-subject='backend'] { --subject-accent: #f78fb3; }
+.dark[data-subject='devops'] { --subject-accent: #7ee0c3; }
+
+/* ---------- Fonts ---------- */
+:root { --font-body: var(--font-source-serif), Georgia, serif; }
+html[data-reading-font='sans'] { --font-body: var(--font-be-vietnam), system-ui, sans-serif; }
+
+@theme inline {
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+  --font-display: var(--font-fraunces), Georgia, serif;
+}
+
+body { font-family: var(--font-body); }
+h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
+code, pre, kbd { font-family: var(--font-mono); }
+
+/* Prose: thoáng, dễ đọc */
+.prose { font-size: 1.0625rem; line-height: 1.8; }
+.prose h2::before { content: '// '; color: var(--subject-accent); font-family: var(--font-mono); font-weight: 400; }
+
+/* Hiệu ứng nhỏ */
+@keyframes blink { 50% { opacity: 0; } }
+.cursor { animation: blink 1.1s steps(1) infinite; color: var(--subject-accent); }
+@media (prefers-reduced-motion: reduce) { .cursor { animation: none; } * { transition-duration: 0s !important; } }
+
+/* Expand block */
+.expand-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.25s ease; }
+.expand-body[data-open='true'] { grid-template-rows: 1fr; }
+.expand-body > div { overflow: hidden; }
+
+.no-scrollbar { scrollbar-width: none; }
