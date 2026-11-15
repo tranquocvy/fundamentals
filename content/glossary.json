@@ -1,0 +1,32 @@
+{
+  "$comment": "Glossary dùng chung cho <Term>. Khoá = thuật ngữ tiếng Anh viết thường. Sắp xếp theo ABC. Xem CONTRIBUTING.md mục 3.",
+  "terms": {
+    "address space": {
+      "def": "Vùng bộ nhớ ảo riêng mà process nhìn thấy; process khác không truy cập trực tiếp được.",
+      "subject": "os"
+    },
+    "context switch": {
+      "def": "CPU lưu trạng thái của process/thread đang chạy rồi nạp trạng thái của cái khác để chạy tiếp.",
+      "subject": "os"
+    },
+    "mutex": {
+      "def": "Khoá loại trừ lẫn nhau: tại một thời điểm chỉ một thread được giữ khoá và vào vùng code được bảo vệ.",
+      "subject": "os",
+      "aliases": ["mutual exclusion lock"]
+    },
+    "process": {
+      "def": "Một chương trình đang chạy, có address space, tài nguyên và ít nhất một thread riêng.",
+      "subject": "os",
+      "aliases": ["processes"]
+    },
+    "race condition": {
+      "def": "Kết quả sai do nhiều thread truy cập dữ liệu chung không đồng bộ, phụ thuộc thứ tự thực thi.",
+      "subject": "os"
+    },
+    "thread": {
+      "def": "Đơn vị thực thi nhỏ nhất được lập lịch, nằm trong một process và chia sẻ address space với các thread khác.",
+      "subject": "os",
+      "aliases": ["threads"]
+    }
+  }
+}

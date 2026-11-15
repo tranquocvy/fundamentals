@@ -6,6 +6,8 @@
     "build": "next build",
     "postbuild": "node scripts/fix-prefetch.mjs",
     "dev": "next dev",
+    "new": "node scripts/new-article.mjs",
+    "check": "node scripts/check-content.mjs",
     "start": "serve out",
     "types:check": "next typegen && tsc --noEmit"
   },
