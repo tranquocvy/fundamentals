@@ -29,7 +29,7 @@ Site có chất "coder" nhưng **dùng tiết chế**. Ký hiệu kiểu termina
 - breadcrumb đường dẫn: `~/os/process-thread`
 - dòng mở đầu trang chủ: `$ cat README.md`
 - link nav: `~/home`, `/subjects`, `/contribute`; link hành động: `> bắt đầu ...`
-- nhãn `~/subjects`, số thứ tự `01 /`, tag `#os`, nhãn `draft`
+- nhãn `~/subjects`, số thứ tự `01 /`, tag `#os`, nhãn `draft`, loại nguồn `[book]` `[web]`
 
 **Không** thêm `//`, `[+]`, `$`, `>` vào tiêu đề bài, heading trong bài, nút hay component mới. Heading trong bài là chữ thường, phần trang trí (vạch accent) do CSS lo.
 

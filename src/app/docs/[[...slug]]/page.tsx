@@ -14,7 +14,6 @@ import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { getPageImageUrl, gitConfig } from '@/lib/shared';
 import { getGitInfo } from '@/lib/git';
 
-const KIND_LABEL = { book: 'Sách', web: 'Web', paper: 'Bài báo', video: 'Video' } as const;
 const fmtDate = (iso: string) =>
   new Date(iso).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
@@ -62,7 +61,7 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
             <ul className="space-y-3 text-sm">
               {page.data.references.map((r) => (
                 <li key={r.title} className="flex items-baseline gap-3">
-                  <span className="shrink-0 w-14 text-xs uppercase tracking-wide text-fd-muted-foreground">{KIND_LABEL[r.kind]}</span>
+                  <span className="shrink-0 w-14 font-mono text-xs text-fd-primary">[{r.kind}]</span>
                   <span>
                   {r.url ? (
                     <a href={r.url} target="_blank" rel="noreferrer" className="underline underline-offset-4">{r.title}</a>
