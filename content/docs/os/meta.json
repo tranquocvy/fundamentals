@@ -1,1 +1,9 @@
-{ "title": "Operating Systems", "pages": ["process-thread"] }
+{
+  "title": "Operating Systems",
+  "pages": [
+    "process-thread",
+    "cpu-scheduling",
+    "virtual-memory",
+    "deadlock"
+  ]
+}

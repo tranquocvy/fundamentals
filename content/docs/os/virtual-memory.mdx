@@ -1,0 +1,82 @@
+---
+title: Virtual Memory
+description: Mỗi process tưởng mình có cả bộ nhớ riêng; paging, page table và TLB biến ảo tưởng đó thành thật.
+status: draft
+tags: [os, memory]
+references:
+  - title: "OSTEP — Chapter 13: The Abstraction: Address Spaces"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-intro.pdf
+    kind: book
+  - title: "OSTEP — Chapter 18: Paging: Introduction"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-paging.pdf
+    kind: book
+  - title: "OSTEP — Chapter 19: Paging: Faster Translations (TLBs)"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-tlbs.pdf
+    kind: book
+  - title: "OSTEP — Chapter 21: Beyond Physical Memory: Mechanisms"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys.pdf
+    kind: book
+---
+
+## Ý chính
+
+Mỗi <Term>process</Term> nhìn thấy một <Term>address space</Term> riêng, liền mạch, bắt đầu từ 0, như thể nó độc chiếm RAM. Thực tế RAM được chia cho nhiều process, mỗi phần nằm rải rác. <Term>Virtual memory</Term> là cơ chế OS và phần cứng (MMU) phối hợp dịch **địa chỉ ảo** mà chương trình dùng sang **địa chỉ vật lý** trong RAM, ở **mỗi** lần truy cập bộ nhớ.
+
+Ba lợi ích chính:
+
+- **Cô lập**: process này không đọc/ghi được bộ nhớ của process khác.
+- **Dễ lập trình**: mọi chương trình đều thấy address space giống nhau, không cần biết mình nằm đâu trong RAM.
+- **Vượt quá RAM**: phần ít dùng có thể nằm trên đĩa (swap) và chỉ nạp vào khi cần.
+
+## Paging: chia thành các trang cố định
+
+Address space được chia thành các <Term>page</Term> kích thước cố định (thường 4 KB), RAM chia thành các khung (frame) cùng kích thước. Một địa chỉ ảo tách làm hai phần:
+
+```text
+địa chỉ ảo  = [ VPN (số trang ảo) | offset trong trang ]
+địa chỉ thật = [ PFN (số khung vật lý) | offset giữ nguyên ]
+```
+
+Với trang 4 KB = 2¹² byte, offset chiếm 12 bit thấp. OS lưu cho mỗi process một <Term>page table</Term> ánh xạ VPN → PFN, kèm các bit:
+
+| Bit | Ý nghĩa |
+|---|---|
+| valid | trang này có thuộc address space không |
+| present | trang đang ở RAM hay đã bị đẩy ra đĩa |
+| protection | được đọc / ghi / thực thi không |
+| dirty | đã bị ghi kể từ lúc nạp vào (phải ghi lại đĩa khi đẩy ra) |
+| accessed | gần đây có được dùng không (giúp chọn trang để đẩy ra) |
+
+<Expand title="Ví dụ: vì sao page table phẳng lại quá to">
+
+Máy 32-bit, trang 4 KB: offset 12 bit, VPN 20 bit, tức 2²⁰ ≈ 1 triệu mục. Mỗi mục 4 byte → **4 MB page table cho mỗi process**, kể cả khi process chỉ dùng vài trang. 100 process là 400 MB chỉ để chứa bảng.
+
+Cách giải phổ biến là **multi-level page table**: chia page table thành nhiều trang và chỉ cấp phát những phần thực sự dùng. x86-64 dùng bảng 4 mức (hoặc 5 mức trên CPU mới).
+
+</Expand>
+
+## TLB: cache cho phép dịch địa chỉ
+
+Nếu mỗi lần truy cập bộ nhớ lại phải đọc page table (cũng nằm trong RAM) thì mọi thao tác chậm ít nhất gấp đôi. <Term>TLB</Term> là một cache nhỏ trong MMU lưu các cặp VPN → PFN vừa dùng:
+
+- **TLB hit**: dịch ngay trong phần cứng, gần như không tốn thêm thời gian.
+- **TLB miss**: phải tra page table, rồi lưu kết quả vào TLB.
+
+TLB hiệu quả nhờ **locality**: chương trình thường truy cập các địa chỉ gần nhau (duyệt mảng) và lặp lại địa chỉ vừa dùng (biến trong vòng lặp). Khi context switch, mục TLB của process cũ không còn đúng cho process mới, nên OS phải xoá TLB hoặc gắn nhãn ASID (address space ID) cho từng mục.
+
+## Page fault: khi trang không ở RAM
+
+Truy cập một trang có `present = 0` gây ra <Term>page fault</Term>. CPU dừng lệnh đó và chuyển cho OS:
+
+1. Tìm trang trên đĩa (swap).
+2. Nếu RAM đầy, chọn một trang để đẩy ra (nếu `dirty` thì ghi lại đĩa trước).
+3. Nạp trang cần vào RAM, cập nhật page table.
+4. Chạy lại đúng lệnh vừa lỗi.
+
+Đọc đĩa chậm hơn RAM hàng nghìn tới hàng trăm nghìn lần, nên chọn trang nào để đẩy ra rất quan trọng. LRU (đẩy trang lâu không dùng nhất) tốt nhưng đắt; OS thực tế dùng xấp xỉ như thuật toán clock dựa trên bit `accessed`.
+
+## Lưu ý
+
+- "Page fault" không phải lỗi chương trình. Đó là sự kiện bình thường; chỉ khi truy cập trang `valid = 0` (không thuộc address space) thì OS mới báo lỗi, ví dụ segmentation fault.
+- **Thrashing**: khi tổng bộ nhớ các process đang dùng vượt xa RAM, hệ thống dành gần hết thời gian để đổi trang ra vào đĩa và gần như đứng yên. Cách xử lý là giảm số process chạy cùng lúc hoặc thêm RAM.
+- Virtual memory không chỉ để "có thêm RAM": cô lập giữa các process mới là lý do chính nó có mặt trên mọi OS hiện đại.

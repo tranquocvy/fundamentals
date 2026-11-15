@@ -9,24 +9,119 @@
       "def": "CPU lưu trạng thái của process/thread đang chạy rồi nạp trạng thái của cái khác để chạy tiếp.",
       "subject": "os"
     },
+    "deadlock": {
+      "def": "Nhóm thread chờ nhau theo vòng tròn, mỗi thread giữ một tài nguyên và chờ tài nguyên thread khác đang giữ, nên không ai chạy tiếp được.",
+      "subject": "os"
+    },
+    "dns": {
+      "label": "DNS",
+      "def": "Domain Name System: hệ thống phân cấp, phân tán dùng để đổi tên miền thành địa chỉ IP và các thông tin khác.",
+      "subject": "networking"
+    },
+    "head-of-line blocking": {
+      "def": "Một gói tin bị chậm hoặc mất làm mọi dữ liệu xếp sau nó phải chờ, dù chúng đã tới nơi.",
+      "subject": "networking"
+    },
     "mutex": {
       "def": "Khoá loại trừ lẫn nhau: tại một thời điểm chỉ một thread được giữ khoá và vào vùng code được bảo vệ.",
       "subject": "os",
-      "aliases": ["mutual exclusion lock"]
+      "aliases": [
+        "mutual exclusion lock"
+      ]
+    },
+    "page": {
+      "def": "Khối bộ nhớ ảo có kích thước cố định (thường 4 KB), đơn vị OS dùng để ánh xạ và chuyển dữ liệu giữa RAM và đĩa.",
+      "subject": "os",
+      "aliases": [
+        "pages"
+      ]
+    },
+    "page fault": {
+      "def": "Sự kiện khi chương trình truy cập một page không có trong RAM; OS nạp page đó từ đĩa rồi cho lệnh chạy lại.",
+      "subject": "os"
+    },
+    "page table": {
+      "def": "Bảng của mỗi process ánh xạ số trang ảo sang khung vật lý trong RAM, kèm các bit như present, dirty, protection.",
+      "subject": "os"
+    },
+    "port": {
+      "def": "Số 16 bit xác định chương trình nhận dữ liệu trên một máy; cặp địa chỉ IP + port xác định một đầu kết nối.",
+      "subject": "networking",
+      "aliases": [
+        "ports"
+      ]
     },
     "process": {
       "def": "Một chương trình đang chạy, có address space, tài nguyên và ít nhất một thread riêng.",
       "subject": "os",
-      "aliases": ["processes"]
+      "aliases": [
+        "processes"
+      ]
     },
     "race condition": {
       "def": "Kết quả sai do nhiều thread truy cập dữ liệu chung không đồng bộ, phụ thuộc thứ tự thực thi.",
       "subject": "os"
     },
+    "recursive resolver": {
+      "def": "Server DNS nhận truy vấn từ máy khách rồi tự đi hỏi root, TLD và authoritative server, sau đó cache kết quả.",
+      "subject": "networking",
+      "aliases": [
+        "resolver"
+      ]
+    },
+    "response time": {
+      "def": "Thời gian từ lúc job đến tới lúc nó được chạy lần đầu; quan trọng với chương trình tương tác.",
+      "subject": "os"
+    },
+    "scheduler": {
+      "def": "Phần của OS quyết định process hoặc thread nào được dùng CPU tiếp theo và trong bao lâu.",
+      "subject": "os"
+    },
+    "starvation": {
+      "def": "Một thread hoặc job mãi không được cấp tài nguyên vì luôn có thứ khác được ưu tiên hơn, dù hệ thống vẫn chạy.",
+      "subject": "os"
+    },
+    "tcp": {
+      "label": "TCP",
+      "def": "Transmission Control Protocol: giao thức transport có kết nối, đảm bảo dữ liệu tới đủ, đúng thứ tự, có điều tiết tốc độ.",
+      "subject": "networking"
+    },
     "thread": {
       "def": "Đơn vị thực thi nhỏ nhất được lập lịch, nằm trong một process và chia sẻ address space với các thread khác.",
       "subject": "os",
-      "aliases": ["threads"]
+      "aliases": [
+        "threads"
+      ]
+    },
+    "time slice": {
+      "def": "Khoảng thời gian tối đa một job được chạy liên tục trước khi scheduler chuyển sang job khác.",
+      "subject": "os",
+      "aliases": [
+        "quantum"
+      ]
+    },
+    "tlb": {
+      "label": "TLB",
+      "def": "Translation Lookaside Buffer: cache nhỏ trong MMU lưu các ánh xạ trang ảo → khung vật lý vừa dùng để dịch địa chỉ nhanh.",
+      "subject": "os"
+    },
+    "ttl": {
+      "label": "TTL",
+      "def": "Time To Live: trong DNS là số giây một bản ghi được phép nằm trong cache trước khi phải hỏi lại.",
+      "subject": "networking"
+    },
+    "turnaround time": {
+      "def": "Thời gian từ lúc job đến tới lúc job hoàn thành.",
+      "subject": "os"
+    },
+    "udp": {
+      "label": "UDP",
+      "def": "User Datagram Protocol: giao thức transport không kết nối, gửi từng gói độc lập, không đảm bảo tới nơi hay đúng thứ tự.",
+      "subject": "networking"
+    },
+    "virtual memory": {
+      "def": "Cơ chế OS và phần cứng dịch địa chỉ ảo của process sang địa chỉ vật lý, cho mỗi process một address space riêng.",
+      "subject": "os"
     }
   }
 }

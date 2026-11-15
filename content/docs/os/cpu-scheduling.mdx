@@ -1,0 +1,83 @@
+---
+title: CPU Scheduling
+description: OS chọn process nào chạy tiếp theo, đo "tốt" bằng gì, và vì sao không có thuật toán nào thắng mọi mặt.
+status: draft
+tags: [os, scheduling]
+references:
+  - title: "OSTEP — Chapter 7: Scheduling: Introduction"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched.pdf
+    kind: book
+  - title: "OSTEP — Chapter 8: Scheduling: The Multi-Level Feedback Queue"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched-mlfq.pdf
+    kind: book
+  - title: "Operating System Concepts (Silberschatz) — Chapter 5: CPU Scheduling"
+    kind: book
+---
+
+## Ý chính
+
+Khi có nhiều <Term>process</Term> sẵn sàng chạy mà chỉ có một CPU, <Term>scheduler</Term> của OS quyết định ai chạy tiếp. Mỗi lần đổi người chạy là một <Term>context switch</Term>, tốn chi phí, nên scheduler phải cân giữa hai mục tiêu thường ngược nhau:
+
+- **<Term>turnaround time</Term>** thấp: job xong càng sớm càng tốt (quan trọng với job chạy nền, batch).
+- **<Term>response time</Term>** thấp: job được chạy lần đầu càng sớm càng tốt (quan trọng với chương trình tương tác).
+
+```text
+T_turnaround = T_hoàn_thành − T_đến
+T_response   = T_chạy_lần_đầu − T_đến
+```
+
+## Các thuật toán cơ bản
+
+| Thuật toán | Ý tưởng | Mạnh | Yếu |
+|---|---|---|---|
+| FCFS (FIFO) | Ai đến trước chạy trước, đến xong | Đơn giản | Job ngắn kẹt sau job dài (convoy effect) |
+| SJF | Chạy job ngắn nhất trước | Turnaround trung bình tốt nhất nếu mọi job đến cùng lúc | Phải biết trước độ dài job |
+| STCF | SJF nhưng được giành CPU (preemptive) khi có job còn ít việc hơn | Xử lý được job đến muộn | Vẫn cần biết độ dài, response kém |
+| Round Robin | Mỗi job chạy một <Term>time slice</Term> rồi nhường | Response time tốt, công bằng | Turnaround tệ, phụ thuộc độ dài time slice |
+
+<Expand title="Ví dụ: cùng 3 job, FCFS và SJF chênh nhau hơn 2 lần">
+
+Ba job A, B, C đến cùng lúc `t = 0`. A cần 100s, B và C mỗi job 10s.
+
+```text
+FCFS (A, B, C):  A xong 100, B xong 110, C xong 120  → turnaround TB = (100+110+120)/3 = 110
+SJF  (B, C, A):  B xong  10, C xong  20, A xong 120  → turnaround TB = (10+20+120)/3  = 50
+```
+
+Chỉ đổi thứ tự mà turnaround trung bình giảm từ 110 xuống 50. Nhưng nếu A là chương trình người dùng đang chờ phản hồi, SJF bắt họ chờ 20s mới thấy gì.
+
+</Expand>
+
+<Expand title="Ví dụ: Round Robin đổi turnaround lấy response">
+
+Ba job, mỗi job 5s, đến cùng lúc. Time slice 1s.
+
+```text
+SJF: A chạy 0–5, B 5–10, C 10–15   → response TB = (0+5+10)/3 = 5s
+RR : A B C A B C ... mỗi lượt 1s   → response TB = (0+1+2)/3  = 1s
+```
+
+Response tốt hơn 5 lần, nhưng cả ba job đều kết thúc gần cuối (13, 14, 15s) nên turnaround tệ hơn SJF.
+
+Chọn time slice cũng là đánh đổi: ngắn thì phản hồi nhanh nhưng context switch chiếm phần lớn thời gian; dài thì ngược lại. Time slice thường dài gấp nhiều lần chi phí một lần context switch để chi phí đó được "chia nhỏ" ra.
+
+</Expand>
+
+## MLFQ: học từ hành vi thay vì đoán trước
+
+Vấn đề chung của SJF/STCF là OS **không biết** job dài bao lâu. Multi-Level Feedback Queue (MLFQ) giải bằng cách quan sát:
+
+1. Có nhiều hàng đợi với độ ưu tiên khác nhau; luôn chạy job ở hàng ưu tiên cao nhất, cùng hàng thì Round Robin.
+2. Job mới vào hàng cao nhất (giả định nó ngắn hoặc tương tác).
+3. Job dùng hết phần thời gian được cấp ở một mức thì bị hạ một bậc (có vẻ là job tính toán dài).
+4. Định kỳ đưa mọi job về hàng cao nhất (priority boost) để job dài không bị bỏ đói (<Term>starvation</Term>).
+
+Luật 3 tính **tổng** thời gian đã dùng ở mỗi mức, không reset khi job tự nhường CPU. Nếu không, một chương trình có thể cố tình nhường CPU ngay trước khi hết time slice để mãi ở hàng ưu tiên cao (gaming the scheduler).
+
+Kết quả: job tương tác (chạy ngắn rồi chờ I/O) ở hàng cao, phản hồi nhanh; job tính toán dài chìm xuống hàng thấp, vẫn chạy khi CPU rảnh. Windows và các BSD dùng biến thể của MLFQ.
+
+## Lưu ý
+
+- Không có thuật toán "tốt nhất": tối ưu turnaround thì hy sinh response và ngược lại. Câu hỏi đúng là *workload này cần gì*.
+- Job thực tế còn chờ I/O. Khi một job chờ đĩa/mạng, scheduler cho job khác chạy, nên CPU và I/O chạy chồng lên nhau (overlap).
+- Linux không dùng MLFQ: từ 2.6.23 dùng CFS (chia CPU theo tỷ lệ, dựa trên `vruntime`), từ 6.6 chuyển sang EEVDF. Cả hai thuộc nhóm proportional-share scheduling.

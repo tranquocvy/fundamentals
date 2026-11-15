@@ -1,0 +1,75 @@
+---
+title: Deadlock
+description: Bốn điều kiện để các thread chờ nhau mãi mãi, và cách phá từng điều kiện.
+status: draft
+tags: [os, concurrency]
+references:
+  - title: "OSTEP — Chapter 32: Common Concurrency Problems"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf
+    kind: book
+  - title: "Operating System Concepts (Silberschatz) — Chapter 8: Deadlocks"
+    kind: book
+  - title: "Coffman, Elphick, Shoshani (1971) — System Deadlocks"
+    url: https://dl.acm.org/doi/10.1145/356586.356588
+    kind: paper
+---
+
+## Ý chính
+
+<Term>Deadlock</Term> xảy ra khi một nhóm <Term>thread</Term> đứng chờ nhau theo vòng tròn: mỗi thread giữ một tài nguyên và chờ tài nguyên mà thread khác đang giữ. Không ai nhả, không ai chạy tiếp được, chương trình treo mà không báo lỗi gì.
+
+Ví dụ kinh điển với hai <Term>mutex</Term>:
+
+```text
+Thread 1:  lock(A);  lock(B);  ...
+Thread 2:  lock(B);  lock(A);  ...
+```
+
+Nếu Thread 1 vừa giữ A thì bị chuyển sang Thread 2, Thread 2 giữ B, giờ Thread 1 chờ B và Thread 2 chờ A, mãi mãi. Lỗi này chỉ xảy ra khi thứ tự xen kẽ "đúng xui", nên có thể chạy hàng nghìn lần không gặp rồi đột nhiên treo trên production.
+
+## Bốn điều kiện (Coffman)
+
+Deadlock chỉ xảy ra khi **cả bốn** điều kiện cùng đúng. Phá được một là đủ.
+
+| Điều kiện | Nghĩa | Cách phá |
+|---|---|---|
+| Mutual exclusion | Tài nguyên chỉ một thread dùng tại một lúc | Dùng cấu trúc lock-free (atomic, CAS) khi có thể |
+| Hold-and-wait | Đang giữ tài nguyên mà vẫn xin thêm | Xin tất cả tài nguyên cùng một lúc |
+| No preemption | Không ai giật được tài nguyên khỏi thread đang giữ | `trylock`: không lấy được thì nhả hết rồi thử lại |
+| Circular wait | Có vòng chờ A → B → … → A | **Luôn khoá theo một thứ tự cố định** |
+
+## Cách xử lý trong thực tế
+
+**Khoá theo thứ tự (lock ordering)** là cách phổ biến nhất. Nếu mọi thread luôn `lock(A)` trước `lock(B)` thì không thể có vòng chờ. Khi hai lock được truyền vào hàm theo thứ tự bất kỳ, có thể sắp theo địa chỉ bộ nhớ của lock để mọi nơi khoá cùng thứ tự.
+
+<Expand title="Ví dụ: chuyển tiền giữa hai tài khoản">
+
+```text
+transfer(from, to, amount):
+    lock(from); lock(to)      // deadlock nếu đồng thời transfer(X, Y) và transfer(Y, X)
+```
+
+Sửa bằng cách khoá theo thứ tự cố định, ví dụ theo id tài khoản:
+
+```text
+transfer(from, to, amount):
+    first, second = sort_by_id(from, to)
+    lock(first); lock(second)
+    from.balance -= amount; to.balance += amount
+    unlock(second); unlock(first)
+```
+
+Giờ cả hai luồng đều khoá tài khoản có id nhỏ hơn trước, nên không thể giữ chéo nhau.
+
+</Expand>
+
+Các hướng khác:
+
+- **Tránh (avoidance)**: OS biết trước nhu cầu tối đa của mỗi thread và chỉ cấp tài nguyên khi trạng thái vẫn "an toàn", tiêu biểu là thuật toán Banker's. Ít dùng vì hiếm khi biết trước nhu cầu.
+- **Phát hiện rồi khôi phục (detection & recovery)**: cho phép deadlock xảy ra, định kỳ tìm vòng trong đồ thị chờ rồi huỷ một bên. Database làm vậy: phát hiện deadlock giữa hai transaction thì rollback một transaction.
+
+## Lưu ý
+
+- **Deadlock ≠ livelock ≠ starvation.** Deadlock: mọi thread đứng yên. Livelock: các thread vẫn chạy nhưng liên tục nhường nhau nên không ai tiến triển (hay gặp khi dùng `trylock` rồi thử lại cùng nhịp; thêm thời gian chờ ngẫu nhiên để tránh). <Term>Starvation</Term>: hệ thống vẫn chạy nhưng một thread mãi không đến lượt.
+- Giữ lock càng ngắn càng tốt và tránh gọi hàm không rõ bên trong (callback, I/O) khi đang giữ lock: hàm đó có thể xin lock khác theo thứ tự ngược.
+- Deadlock không chỉ có ở mutex: hai process chờ nhau qua pipe, hai service gọi chéo nhau đồng bộ cũng có thể kẹt theo cùng một kiểu vòng chờ.
