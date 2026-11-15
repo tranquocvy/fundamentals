@@ -1,0 +1,37 @@
+name: CI
+
+# Mỗi PR và mỗi push lên main: kiểm nội dung, kiểm type, build tĩnh.
+# PR chỉ được merge khi job này xanh (bật ở Settings → Branches → branch protection).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # đủ lịch sử git để byline lấy được tác giả + ngày cập nhật
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Kiểm tra nội dung (frontmatter, meta.json, glossary)
+        run: npm run check
+
+      - name: Kiểm tra type
+        run: npm run types:check
+
+      - name: Build tĩnh
+        run: npm run build
