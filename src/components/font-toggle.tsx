@@ -15,7 +15,7 @@ export function FontToggle() {
       onClick={toggle}
       aria-label="Đổi font đọc"
       title="Đổi font đọc: serif / sans"
-      className="font-mono text-xs px-2 py-1 border border-fd-border hover:border-fd-primary hover:text-fd-primary transition-colors"
+      className="whitespace-nowrap font-mono text-xs px-2 py-1 border border-fd-border hover:border-fd-primary hover:text-fd-primary transition-colors"
     >
       Aa {sans ? 'sans' : 'serif'}
     </button>
