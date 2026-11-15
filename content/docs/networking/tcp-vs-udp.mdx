@@ -1,0 +1,71 @@
+---
+title: TCP vs UDP
+description: Hai giao thức tầng transport, một đảm bảo mọi thứ, một không đảm bảo gì, và vì sao cả hai đều cần.
+status: draft
+tags: [networking, transport]
+references:
+  - title: "Kurose & Ross, Computer Networking: A Top-Down Approach — Chapter 3: Transport Layer"
+    kind: book
+  - title: "RFC 9293 — Transmission Control Protocol (TCP)"
+    url: https://www.rfc-editor.org/rfc/rfc9293
+    kind: web
+  - title: "RFC 768 — User Datagram Protocol"
+    url: https://www.rfc-editor.org/rfc/rfc768
+    kind: web
+  - title: "RFC 9000 — QUIC: A UDP-Based Multiplexed and Secure Transport"
+    url: https://www.rfc-editor.org/rfc/rfc9000
+    kind: web
+---
+
+## Ý chính
+
+Tầng IP chỉ cố gắng chuyển gói tin từ máy này sang máy kia (best effort): gói có thể mất, đến sai thứ tự, hoặc bị nhân đôi. Tầng transport nằm trên IP và dùng <Term>port</Term> để đưa dữ liệu tới đúng chương trình trên máy. Hai lựa chọn chính:
+
+- <Term>TCP</Term>: tạo một kết nối, đảm bảo dữ liệu tới **đủ, đúng thứ tự, không trùng**. Đổi lại phải bắt tay trước và chậm lại khi mạng có vấn đề.
+- <Term>UDP</Term>: gửi từng gói độc lập, **không đảm bảo gì** ngoài kiểm tra lỗi (checksum). Đổi lại nhanh, nhẹ, không cần thiết lập.
+
+## So sánh
+
+| | TCP | UDP |
+|---|---|---|
+| Kết nối | Có, bắt tay 3 bước trước khi gửi | Không, gửi ngay |
+| Đảm bảo tới nơi | Có, mất thì gửi lại | Không |
+| Thứ tự | Đúng thứ tự gửi | Không đảm bảo |
+| Dạng dữ liệu | Dòng byte liên tục (stream), không có ranh giới tin nhắn | Từng gói (datagram) riêng, giữ nguyên ranh giới |
+| Điều tiết | Flow control + congestion control | Không có, ứng dụng tự lo |
+| Header | 20–60 byte | 8 byte |
+| Dùng cho | Web (HTTP/1.1, HTTP/2), email, SSH, tải file | DNS, gọi video, game, streaming, HTTP/3 (qua QUIC) |
+
+## Bắt tay 3 bước
+
+TCP phải thống nhất số thứ tự (sequence number) ban đầu của cả hai bên trước khi gửi dữ liệu:
+
+```text
+Client → Server:  SYN        (seq = x)
+Server → Client:  SYN-ACK    (seq = y, ack = x + 1)
+Client → Server:  ACK        (ack = y + 1)
+```
+
+Mất ít nhất một vòng đi về (RTT) trước khi gửi được byte dữ liệu đầu tiên. Với kết nối có TLS thì còn thêm các vòng bắt tay TLS nữa; đây là một lý do HTTP/3 chuyển sang QUIC.
+
+<Expand title="TCP làm sao để đảm bảo tới nơi và đúng thứ tự">
+
+- Mỗi byte có một **sequence number**. Bên nhận gửi lại **ACK** cho biết đã nhận liên tục tới byte nào.
+- Gửi xong mà quá thời gian chưa thấy ACK (timeout), hoặc nhận nhiều ACK trùng lặp liên tiếp, thì bên gửi **gửi lại**.
+- Bên nhận dùng sequence number để **sắp lại** các đoạn đến sai thứ tự và bỏ đoạn trùng.
+- **Flow control**: bên nhận báo còn trống bao nhiêu bộ đệm (receive window) để bên gửi không gửi quá khả năng nhận.
+- **Congestion control**: bên gửi tự giảm tốc khi phát hiện mất gói (dấu hiệu mạng nghẽn) rồi tăng dần lại, để không làm sập đường truyền chung.
+
+</Expand>
+
+## Vì sao vẫn cần UDP
+
+Với gọi video hay game, dữ liệu **cũ thì vô dụng**: khung hình bị mất nửa giây trước không cần gửi lại, cái cần là khung hình mới nhất. TCP thì bắt mọi dữ liệu phía sau chờ gói bị mất được gửi lại (<Term>head-of-line blocking</Term>), làm hình bị khựng.
+
+UDP cũng là nền để xây giao thức riêng ở tầng ứng dụng. QUIC (nền của HTTP/3) chạy trên UDP nhưng tự làm phần tin cậy, mã hoá và nhiều luồng độc lập, nên một luồng mất gói không chặn các luồng khác.
+
+## Lưu ý
+
+- "UDP không tin cậy" nghĩa là **giao thức** không lo việc đó, không có nghĩa là ứng dụng dùng UDP thì mất dữ liệu: ứng dụng có thể tự đánh số và gửi lại khi cần.
+- TCP là stream: gọi `send()` hai lần không có nghĩa bên kia `recv()` hai lần. Ứng dụng phải tự đánh dấu ranh giới tin nhắn (độ dài ở đầu, ký tự xuống dòng, …).
+- DNS mặc định dùng UDP cho truy vấn nhỏ, chuyển sang TCP khi câu trả lời quá lớn hoặc khi đồng bộ cả zone.

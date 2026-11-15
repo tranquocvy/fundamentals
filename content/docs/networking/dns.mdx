@@ -1,0 +1,74 @@
+---
+title: DNS
+description: Đổi tên miền thành địa chỉ IP, theo một hệ thống phân cấp và cache khắp nơi.
+status: draft
+tags: [networking, dns]
+references:
+  - title: "Kurose & Ross, Computer Networking: A Top-Down Approach — Chapter 2.4: DNS"
+    kind: book
+  - title: "RFC 1034 — Domain Names: Concepts and Facilities"
+    url: https://www.rfc-editor.org/rfc/rfc1034
+    kind: web
+  - title: "RFC 1035 — Domain Names: Implementation and Specification"
+    url: https://www.rfc-editor.org/rfc/rfc1035
+    kind: web
+  - title: "Cloudflare Learning — What is DNS?"
+    url: https://www.cloudflare.com/learning/dns/what-is-dns/
+    kind: web
+---
+
+## Ý chính
+
+Máy tính kết nối với nhau bằng địa chỉ IP, còn con người nhớ tên miền. <Term>DNS</Term> (Domain Name System) là "danh bạ" phân tán của Internet: hỏi `fundamentals-notes.vercel.app` là gì, nó trả lời bằng một địa chỉ IP.
+
+DNS không phải một server khổng lồ mà là một **cây phân cấp**, mỗi tầng chỉ biết tầng ngay dưới nó:
+
+```text
+.                       root
+└── app.                TLD (top-level domain)
+    └── vercel.app.     authoritative server của vercel.app
+        └── fundamentals-notes.vercel.app.   bản ghi cần tìm
+```
+
+## Một lần tra cứu đi qua những đâu
+
+1. Trình duyệt và OS xem cache của mình trước; có rồi thì dùng luôn.
+2. Chưa có thì hỏi <Term>recursive resolver</Term>, thường của nhà mạng hoặc dịch vụ như `1.1.1.1`, `8.8.8.8`. Resolver nhận làm hết phần việc còn lại.
+3. Resolver hỏi **root server**: "`.app` do ai quản lý?" Root trả về địa chỉ các server của TLD `.app`.
+4. Resolver hỏi **TLD server** `.app`: "`vercel.app` do ai quản lý?" Nhận về các name server của Vercel.
+5. Resolver hỏi **authoritative server** của Vercel và nhận được bản ghi cuối cùng.
+6. Resolver lưu kết quả vào cache theo <Term>TTL</Term> của bản ghi rồi trả lời trình duyệt.
+
+Bước 3 đến 5 chỉ xảy ra khi cache trống. Phần lớn truy vấn được trả lời ngay từ cache, nên DNS vừa nhanh vừa không bắt root server phải gánh mọi truy vấn.
+
+## Các loại bản ghi hay gặp
+
+| Loại | Ý nghĩa | Ví dụ |
+|---|---|---|
+| A | Tên → địa chỉ IPv4 | `example.com → 203.0.113.10` |
+| AAAA | Tên → địa chỉ IPv6 | |
+| CNAME | Tên này là bí danh của tên khác | `www.example.com → example.com` |
+| MX | Server nhận email cho tên miền | |
+| NS | Name server quản lý tên miền | |
+| TXT | Văn bản tuỳ ý, hay dùng để **chứng minh quyền sở hữu** tên miền | |
+
+<Expand title="Ví dụ thật: vì sao Vercel đòi bản ghi TXT">
+
+Khi thêm một domain đã có người khác dùng, Vercel yêu cầu tạo bản ghi `TXT` tại `_vercel.<domain>` với một giá trị ngẫu nhiên. Chỉ ai **sửa được DNS của domain đó** mới tạo được bản ghi này, nên Vercel coi đó là bằng chứng sở hữu.
+
+Đó là lý do không thể "verify" một tên `*.vercel.app`: DNS của `vercel.app` do Vercel quản lý, người dùng không thêm được bản ghi vào đó. Muốn có tên `*.vercel.app` thì đặt tên project, để Vercel tự tạo bản ghi.
+
+</Expand>
+
+Tự tra thử bằng `dig` (Linux/macOS) hoặc `nslookup` (Windows):
+
+```bash
+dig fundamentals-notes.vercel.app A +short
+dig _vercel.example.com TXT
+```
+
+## Lưu ý
+
+- **Đổi DNS không có hiệu lực ngay**: các resolver đang giữ bản cũ tới khi hết TTL. Muốn đổi nhanh thì hạ TTL xuống vài phút **trước** khi đổi.
+- DNS mặc định không mã hoá: nhà mạng thấy được bạn tra tên miền nào. DNS over HTTPS (DoH) và DNS over TLS (DoT) mã hoá phần này.
+- Truy vấn DNS thường đi bằng <Term>UDP</Term> port 53 vì nhỏ và cần nhanh; câu trả lời lớn thì chuyển sang <Term>TCP</Term>.

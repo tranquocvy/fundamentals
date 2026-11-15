@@ -15,7 +15,7 @@ export type Subject = {
 
 export const subjects: Subject[] = [
   { slug: 'os', num: '01', title: 'Operating Systems', topics: 'process · thread · scheduling · virtual memory', accent: { dark: '#ffb454', light: '#a65400' }, ready: true },
-  { slug: 'networking', num: '02', title: 'Computer Networks', topics: 'TCP/IP · HTTP · DNS · TLS', accent: { dark: '#5ccfe6', light: '#00758f' }, ready: false },
+  { slug: 'networking', num: '02', title: 'Computer Networks', topics: 'TCP/IP · HTTP · DNS · TLS', accent: { dark: '#5ccfe6', light: '#00758f' }, ready: true },
   { slug: 'databases', num: '03', title: 'Databases', topics: 'indexing · transaction · normalization', accent: { dark: '#c9a6ff', light: '#6a3fc0' }, ready: false },
   { slug: 'dsa', num: '04', title: 'Data Structures & Algorithms', topics: 'array → graph · complexity', accent: { dark: '#ff8a8a', light: '#c0392b' }, ready: false },
   { slug: 'oop', num: '05', title: 'OOP & Design Patterns', topics: 'SOLID · patterns · architecture', accent: { dark: '#aad94c', light: '#4a7a00' }, ready: false },
