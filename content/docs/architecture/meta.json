@@ -1,6 +1,7 @@
 {
   "title": "Computer Architecture",
   "pages": [
-    "memory-hierarchy"
+    "memory-hierarchy",
+    "pipeline-branch-prediction"
   ]
 }

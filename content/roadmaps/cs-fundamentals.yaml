@@ -111,6 +111,7 @@ sections:
             url: https://godbolt.org/
       - id: pipeline-branch-prediction
         title: CPU Pipeline & Branch Prediction
+        article: architecture/pipeline-branch-prediction
         description: Pipeline, hazard, dự đoán rẽ nhánh và vì sao vòng lặp trên dữ liệu đã sắp xếp nhanh hơn.
         requires: [isa-assembly]
         resources:
