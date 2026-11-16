@@ -228,6 +228,15 @@ sections:
         resources:
           - title: RFC 8446 — TLS 1.3
             url: https://www.rfc-editor.org/rfc/rfc8446
+      - id: sockets
+        title: Socket API & I/O Models
+        article: networking/sockets
+        description: Vòng đời socket TCP, dòng byte, backpressure, hàng đợi accept và epoll.
+        requires: [tcp-vs-udp]
+        optional: true
+        resources:
+          - title: "Beej's Guide to Network Programming"
+            url: https://beej.us/guide/bgnet/
 
   - id: databases
     title: Databases

@@ -6,6 +6,7 @@
     "tcp-vs-udp",
     "dns",
     "http",
-    "tls"
+    "tls",
+    "sockets"
   ]
 }
