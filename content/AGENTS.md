@@ -78,7 +78,7 @@ Khi cần ví dụ về giọng văn, độ chi tiết, cách đặt code và ou
 - Heading chữ thường, không thêm `//`, `[+]`, `$`, `>`. Block ví dụ có thể dùng `$` ở đầu dòng **bên trong code block** nhưng nên tránh khi output bị dán lại.
 - Trong working tree trên Windows, `content/glossary.json` và `src/app/global.css` đang là CRLF còn `.mdx` là LF (`.gitattributes` chuẩn hoá về LF khi commit). Khi sửa bằng script, mở file bằng `newline=''` để giữ nguyên; Python ghi file ở chế độ text trên Windows sẽ đổi LF thành CRLF và làm diff phình. Sau khi ghi `.mdx` bằng Python, kiểm tra bằng `file <tên>` rằng không có "CRLF line terminators".
 - `scripts/check-content.mjs` chặn frontmatter còn chữ `TODO`.
-- Giá trị `note:` hay `title:` trong frontmatter mà chứa dấu hai chấm theo sau là dấu cách (`mô tả Timsort: run, minrun`) phải đặt trong ngoặc kép, nếu không YAML hỏng và `npm run build` lỗi `Nested mappings are not allowed in compact mappings` trong khi `npm run check` vẫn pass.
+- Giá trị `note:` hay `title:` trong frontmatter mà chứa dấu hai chấm theo sau là dấu cách (`mô tả Timsort: run, minrun`) phải đặt trong ngoặc kép, nếu không YAML hỏng (`Nested mappings are not allowed in compact mappings`). `npm run check` nay bắt lỗi này, nhưng vẫn phải chạy cả `npm run build`.
 - Nếu `npm run build` báo đường dẫn lạ tới thư mục khác (ví dụ `webpack loader path ... is outside configured roots`) sau khi dự án được chuyển thư mục, xoá thư mục `.next` và `.source` (đều sinh ra khi build, đã được ignore) rồi build lại.
 - Dữ liệu từ máy của người chạy thí nghiệm (IP nhà mạng, MAC, tên người dùng, đường dẫn máy) có thể lộ vào output. Lược bỏ hoặc nói rõ đã lược, đừng sửa số cho đẹp.
 

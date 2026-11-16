@@ -126,6 +126,15 @@ sections:
         resources:
           - title: "OSTEP — Chapter 36: I/O Devices"
             url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-devices.pdf
+      - id: virtualization-containers
+        title: Virtualization & Containers
+        article: os/virtualization-containers
+        description: Máy ảo, namespace và cgroup, những khối xây nên container.
+        requires: [process-thread]
+        optional: true
+        resources:
+          - title: "Linux man-pages — namespaces(7)"
+            url: https://man7.org/linux/man-pages/man7/namespaces.7.html
 
   - id: networking
     title: Computer Networks
