@@ -342,6 +342,11 @@
         "mutual exclusion lock"
       ]
     },
+    "mvcc": {
+      "label": "MVCC",
+      "def": "Multi-version concurrency control: thay vì sửa tại chỗ, mỗi cập nhật tạo phiên bản mới và mỗi giao dịch đọc từ một ảnh chụp nhất quán, nên người đọc không chặn người ghi.",
+      "subject": "databases"
+    },
     "nagle": {
       "label": "Nagle",
       "def": "Thuật toán của TCP giữ lại các đoạn nhỏ cho tới khi có ACK của dữ liệu trước hoặc đủ một MSS, để giảm số gói nhỏ; tắt bằng TCP_NODELAY.",
@@ -548,6 +553,13 @@
       "def": "Translation Lookaside Buffer: cache nhỏ trong MMU lưu các ánh xạ trang ảo → khung vật lý vừa dùng để dịch địa chỉ nhanh.",
       "subject": "os"
     },
+    "transaction": {
+      "def": "Nhóm một chuỗi thao tác trên cơ sở dữ liệu thành một khối mà hệ thống đảm bảo ACID: tất cả hoặc không gì cả, và đã commit thì bền.",
+      "subject": "databases",
+      "aliases": [
+        "giao dịch"
+      ]
+    },
     "tree": {
       "def": "Cấu trúc phân cấp gồm các nút nối bằng cạnh, có một nút gốc và không có vòng.",
       "subject": "dsa",
@@ -585,6 +597,14 @@
       "subject": "databases",
       "aliases": [
         "hàm cửa sổ"
+      ]
+    },
+    "write-ahead log": {
+      "label": "WAL",
+      "def": "Nhật ký ghi nối đuôi mọi thay đổi và được ghi xuống đĩa trước khi dữ liệu thật bị sửa, để khôi phục sau sự cố bằng redo và undo.",
+      "subject": "databases",
+      "aliases": [
+        "wal"
       ]
     },
     "zombie process": {

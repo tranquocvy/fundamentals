@@ -196,6 +196,7 @@ sections:
             url: https://use-the-index-luke.com/
       - id: transactions
         title: Transactions & ACID
+        article: databases/transactions
         description: Nhóm thao tác thành một khối "tất cả hoặc không".
         requires: [relational-model, synchronization]
         resources:

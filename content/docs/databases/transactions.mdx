@@ -1,0 +1,823 @@
+---
+title: Transactions & ACID
+description: ACID từng chữ, write-ahead log và khôi phục kiểu ARIES tự cài, fsync và group commit đo bằng pgbench, MVCC trong PostgreSQL với xmin, xmax, vacuum và bloat, khoá hai pha, và deadlock thật trên PostgreSQL 16.
+status: draft
+tags: [databases, transactions, acid, wal, mvcc]
+authors: [tranquocvy]
+references:
+  - title: "PostgreSQL docs — Chapter 13: Concurrency Control (MVCC)"
+    url: https://www.postgresql.org/docs/current/mvcc.html
+    kind: web
+    note: nền tảng MVCC, explicit locking, deadlock
+  - title: "PostgreSQL docs — Reliability and the Write-Ahead Log (Chapter 28)"
+    url: https://www.postgresql.org/docs/current/wal-intro.html
+    kind: web
+    note: WAL, checkpoint, vì sao ghi log trước dữ liệu
+  - title: "PostgreSQL docs — Routine Vacuuming"
+    url: https://www.postgresql.org/docs/current/routine-vacuuming.html
+    kind: web
+    note: dọn phiên bản chết, bloat, wraparound của transaction id
+  - title: "PostgreSQL docs — Explicit Locking"
+    url: https://www.postgresql.org/docs/current/explicit-locking.html
+    kind: web
+    note: khoá bảng và khoá dòng, deadlock
+  - title: "Mohan et al. — ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking (1992)"
+    kind: paper
+    note: steal và no-force, analysis, redo, undo, CLR; nền của phục hồi hiện đại
+  - title: "Hellerstein, Stonebraker, Hamilton — Architecture of a Database System (2007)"
+    url: https://dsf.berkeley.edu/papers/fntdb07-architecture.pdf
+    kind: paper
+    note: transaction manager, lock manager, log manager
+  - title: "CMU 15-445/645 Database Systems — Logging and Recovery; Two-Phase Locking; MVCC lectures"
+    url: https://15445.courses.cs.cmu.edu/
+    kind: video
+    note: bài giảng công khai về các chủ đề trong bài
+  - title: "Kleppmann — Designing Data-Intensive Applications, Chapter 7: Transactions"
+    kind: book
+    note: ACID, các mức cô lập, lỗi thường gặp trong thực tế
+---
+
+## Ý chính
+
+Chuyển 300.000 đồng từ tài khoản A sang B là **hai** thao tác: trừ A, cộng B. Nếu máy sập giữa hai thao tác, tiền biến mất. Nếu hai người cùng chuyển tiền từ A, một người có thể đọc số dư cũ và ghi đè kết quả của người kia. Nếu lệnh trả về "xong" rồi mất điện, người dùng nghĩ tiền đã chuyển nhưng đĩa chưa kịp ghi. Một **<Term>transaction</Term>** (giao dịch) là lời giải cho cả ba nỗi sợ này: nhóm một chuỗi thao tác thành **một khối** mà hệ thống đảm bảo bốn tính chất gọi là **ACID**.
+
+Bài này giải thích **cách** các đảm bảo đó được thực hiện, vì chính cách làm quyết định chi phí và giới hạn của chúng. Trình tự: ACID từng chữ (kèm demo `BEGIN`, `ROLLBACK`, `SAVEPOINT`); **<Term>write-ahead log</Term>** (cơ chế đứng sau Atomicity và Durability), tự cài một kho dữ liệu nhỏ có WAL rồi **cho nó sập** và khôi phục bằng ba pha kiểu ARIES; chi phí thật của `fsync` và **group commit** đo bằng `pgbench`; **MVCC**, cách PostgreSQL cho nhiều người đọc ghi cùng lúc mà không chặn nhau (xem tận mắt `xmin`, `xmax`, bloat và `VACUUM`); và **khoá hai pha** với deadlock thật. Mọi output đến từ **PostgreSQL 16.15** (WSL) và Python 3.13. Bài này dùng [file system journaling](/docs/os/file-systems) (cùng ý tưởng log), [synchronization](/docs/os/synchronization) và [deadlock](/docs/os/deadlock) từ chặng OS, đồ thị chờ ở [Graph](/docs/dsa/graphs). Bài sau, [Isolation Levels](/docs/databases/isolation-levels), nói về chữ **I**: nhiều giao dịch chạy đồng thời thì thấy nhau như thế nào.
+
+## ACID từng chữ
+
+| Chữ | Nghĩa | Cơ chế chính |
+|---|---|---|
+| **A**tomicity | tất cả hoặc không gì cả | log để hoàn tác (undo) giao dịch dở dang |
+| **C**onsistency | mọi giao dịch đưa dữ liệu từ trạng thái hợp lệ này sang trạng thái hợp lệ khác | ràng buộc (`CHECK`, khoá ngoại...) cộng logic ứng dụng |
+| **I**solation | giao dịch đồng thời không thấy trạng thái dở dang của nhau | khoá hoặc MVCC (bài sau) |
+| **D**urability | đã `COMMIT` thì sống sót qua sự cố | log được ghi xuống đĩa trước khi báo xong |
+
+Chữ **C** hay bị hiểu nhầm: cơ sở dữ liệu chỉ kiểm tra được các ràng buộc **bạn đã khai báo** (như `CHECK (balance >= 0)`), không biết "tiền không tự sinh ra". Phần còn lại là trách nhiệm của ứng dụng. Có người nói chữ C là "lấy cho đủ vần" vì nó phụ thuộc cả vào ba chữ kia lẫn người viết ứng dụng.
+
+Demo ba hành vi quanh `BEGIN`, `COMMIT`, `ROLLBACK`:
+
+```sql
+\pset null '∅'
+DROP TABLE IF EXISTS account;
+CREATE TABLE account (id int PRIMARY KEY, owner text NOT NULL, balance numeric NOT NULL CHECK (balance >= 0));
+INSERT INTO account VALUES (1, 'An', 1000), (2, 'Bình', 500);
+
+\echo '== Atomicity: chuyển 300 từ An sang Bình, hai UPDATE là MỘT khối =='
+BEGIN;
+UPDATE account SET balance = balance - 300 WHERE id = 1;
+UPDATE account SET balance = balance + 300 WHERE id = 2;
+SELECT id, owner, balance FROM account ORDER BY id;
+COMMIT;
+
+\echo ''
+\echo '== Atomicity khi lỗi giữa chừng: chuyển 5000 (vượt số dư), UPDATE thứ hai chưa kịp chạy =='
+BEGIN;
+UPDATE account SET balance = balance + 5000 WHERE id = 2;
+UPDATE account SET balance = balance - 5000 WHERE id = 1;     -- vi phạm CHECK balance >= 0
+\echo '-- (giao dịch đã ở trạng thái lỗi, mọi lệnh sau bị từ chối cho tới khi ROLLBACK)'
+SELECT 1;
+ROLLBACK;
+SELECT id, owner, balance FROM account ORDER BY id;
+\echo '   An 700, Bình 800 như trước: UPDATE đầu (+5000 cho Bình) cũng đã bị huỷ'
+
+\echo ''
+\echo '== SAVEPOINT: huỷ một phần, giữ phần còn lại =='
+BEGIN;
+UPDATE account SET balance = balance - 100 WHERE id = 1;
+SAVEPOINT s1;
+UPDATE account SET balance = balance - 99999 WHERE id = 1;    -- lỗi CHECK
+ROLLBACK TO s1;
+UPDATE account SET balance = balance + 100 WHERE id = 2;
+COMMIT;
+SELECT id, owner, balance FROM account ORDER BY id;
+
+\echo ''
+\echo '== Autocommit: mỗi lệnh đơn lẻ tự là một giao dịch (không có BEGIN) =='
+UPDATE account SET balance = balance - 50 WHERE id = 1;
+UPDATE account SET balance = balance - 99999 WHERE id = 2;    -- lỗi, nhưng lệnh trước ĐÃ commit
+SELECT id, owner, balance FROM account ORDER BY id;
+```
+
+```text
+== Atomicity: chuyển 300 từ An sang Bình, hai UPDATE là MỘT khối ==
+ id | owner | balance 
+----+-------+---------
+  1 | An    |     700
+  2 | Bình  |     800
+(2 rows)
+
+
+== Atomicity khi lỗi giữa chừng: chuyển 5000 (vượt số dư), UPDATE thứ hai chưa kịp chạy ==
+ERROR:  new row for relation "account" violates check constraint "account_balance_check"
+DETAIL:  Failing row contains (1, An, -4300).
+-- (giao dịch đã ở trạng thái lỗi, mọi lệnh sau bị từ chối cho tới khi ROLLBACK)
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ id | owner | balance 
+----+-------+---------
+  1 | An    |     700
+  2 | Bình  |     800
+(2 rows)
+
+   An 700, Bình 800 như trước: UPDATE đầu (+5000 cho Bình) cũng đã bị huỷ
+
+== SAVEPOINT: huỷ một phần, giữ phần còn lại ==
+ERROR:  new row for relation "account" violates check constraint "account_balance_check"
+DETAIL:  Failing row contains (1, An, -99399).
+ id | owner | balance 
+----+-------+---------
+  1 | An    |     600
+  2 | Bình  |     900
+(2 rows)
+
+
+== Autocommit: mỗi lệnh đơn lẻ tự là một giao dịch (không có BEGIN) ==
+ERROR:  new row for relation "account" violates check constraint "account_balance_check"
+DETAIL:  Failing row contains (2, Bình, -99099).
+ id | owner | balance 
+----+-------+---------
+  1 | An    |     550
+  2 | Bình  |     900
+(2 rows)
+```
+
+1. **Chuyển tiền thành công**: hai `UPDATE` trong một `BEGIN ... COMMIT`; An còn 700, Bình thành 800.
+2. **Lỗi giữa chừng**: `UPDATE` đầu tiên (cộng 5.000 cho Bình) chạy được, `UPDATE` thứ hai vi phạm `CHECK` (An thành -4.300). PostgreSQL đánh dấu cả giao dịch **bị huỷ**: lệnh `SELECT 1` tiếp theo bị từ chối (`current transaction is aborted`), và sau `ROLLBACK`, số dư về 700 và 800: **`UPDATE` đầu cũng bị huỷ theo**. Đây là atomicity: không có trạng thái "đã cộng cho Bình mà chưa trừ An".
+3. **`SAVEPOINT`** cho phép huỷ **một phần**: lỗi ở `UPDATE` giữa được hoàn tác bằng `ROLLBACK TO s1`, các thao tác trước điểm lưu vẫn còn, giao dịch tiếp tục và commit (An 600, Bình 900).
+4. **Autocommit**: lệnh không nằm trong `BEGIN` tự là một giao dịch một lệnh. `UPDATE` đầu (trừ An 50) đã commit trước khi lệnh sau thất bại, nên An còn 550. Dễ gây bug khi tưởng nhiều lệnh là một khối.
+
+## Atomicity và Durability: write-ahead log
+
+### Hai chính sách quyết định mọi thứ
+
+Dữ liệu sống trong **bộ đệm** (buffer pool) trong RAM và được ghi xuống file dữ liệu khi cần. Hai câu hỏi thiết kế:
+
+- **Steal hay no-steal**: bộ đệm có được đẩy trang chứa thay đổi **chưa commit** xuống đĩa không? Cho phép (**steal**) thì dùng RAM linh hoạt, nhưng sau sự cố đĩa có thể chứa dữ liệu của giao dịch chưa commit, cần **undo**.
+- **Force hay no-force**: lúc `COMMIT` có bắt buộc ghi mọi trang đã sửa xuống đĩa không? Bắt buộc (**force**) thì commit rất chậm (ghi rải rác ngẫu nhiên); không bắt buộc (**no-force**) thì commit nhanh, nhưng sau sự cố đĩa có thể thiếu thay đổi đã commit, cần **redo**.
+
+Mọi hệ thống nghiêm túc chọn **steal + no-force** (nhanh nhất), và trả giá bằng việc cần cả undo lẫn redo. Công cụ cho cả hai là **write-ahead log** (WAL): nhật ký **ghi nối đuôi** (tuần tự, rẻ) mọi thay đổi. Hai luật:
+
+1. **Ghi log trước dữ liệu**: bản ghi log của một thay đổi phải xuống đĩa **trước** khi trang dữ liệu bị thay đổi đó xuống đĩa. (Nhờ vậy luôn có đủ thông tin để undo.)
+2. **Log xuống đĩa lúc commit**: giao dịch chỉ được báo "xong" khi bản ghi `COMMIT` và mọi log của nó đã `fsync`. (Nhờ vậy luôn có đủ thông tin để redo.)
+
+Một lần ghi log tuần tự một chỗ thay cho nhiều lần ghi ngẫu nhiên khắp file dữ liệu: đó là lý do WAL vừa an toàn vừa nhanh. Đây cũng là ý tưởng của **journaling** trong file system (xem [File Systems](/docs/os/file-systems)).
+
+### Tự cài và cho nó sập
+
+Một kho khoá-giá trị nhỏ với đúng hai luật trên, có `begin`, `set`, `commit`, một bộ đệm có thể đẩy trang xuống đĩa **bất cứ lúc nào**, và hàm `recover` theo ba pha của ARIES: **analysis** (ai commit, ai chưa), **redo** (lặp lại lịch sử trên các trang chưa có thay đổi, nhận biết bằng `pageLSN`), **undo** (hoàn tác giao dịch thua, theo thứ tự ngược). Kịch bản được dựng để rơi vào đúng trường hợp khó nhất của steal + no-force:
+
+```python
+# Một kho khoá-giá trị nhỏ có WAL: steal + no-force, khôi phục kiểu ARIES rút gọn (analysis, redo, undo).
+# - WAL ghi TRƯỚC khi sửa dữ liệu và được fsync khi COMMIT (write-ahead + force log at commit).
+# - Trang dữ liệu có thể bị đẩy xuống đĩa SỚM (steal: cả dữ liệu chưa commit) hoặc MUỘN (no-force: dữ liệu đã commit chưa chắc xuống đĩa).
+import json, os, tempfile
+
+class Store:
+    def __init__(self, d):
+        self.data_path, self.wal_path = os.path.join(d, "data.json"), os.path.join(d, "wal.log")
+        self.fsyncs = 0
+        self.lsn = 0
+        self.mem = {}                               # bộ đệm (buffer pool): key -> [value, pageLSN]
+        self.wal_buf = []                           # log chưa xuống đĩa
+
+    # ---------- WAL ----------
+    def _log(self, rec):
+        self.lsn += 1; rec["lsn"] = self.lsn
+        self.wal_buf.append(rec); return self.lsn
+    def flush_wal(self):
+        with open(self.wal_path, "a") as f:
+            for r in self.wal_buf: f.write(json.dumps(r) + "\n")
+            f.flush(); os.fsync(f.fileno()); self.fsyncs += 1
+        self.wal_buf.clear()
+
+    # ---------- giao dịch ----------
+    def begin(self, tx): self._log({"t": "BEGIN", "tx": tx})
+    def set(self, tx, key, value):
+        old = self.mem.get(key, [None, 0])[0]
+        lsn = self._log({"t": "SET", "tx": tx, "key": key, "old": old, "new": value})   # 1. ghi log trước
+        self.mem[key] = [value, lsn]                                                    # 2. rồi mới sửa bộ đệm
+    def commit(self, tx):
+        self._log({"t": "COMMIT", "tx": tx})
+        self.flush_wal()                              # COMMIT chỉ "thật" khi log xuống đĩa; KHÔNG ghi dữ liệu (no-force)
+
+    # ---------- trang dữ liệu ----------
+    def flush_page(self, key):                        # có thể xảy ra bất cứ lúc nào, kể cả khi giao dịch chưa commit (steal)
+        self.flush_wal()                              # luật WAL: log phải xuống đĩa trước khi trang dữ liệu xuống đĩa
+        disk = self.read_disk()
+        disk[key] = self.mem[key]
+        with open(self.data_path, "w") as f: json.dump(disk, f); f.flush(); os.fsync(f.fileno())
+    def read_disk(self):
+        return json.load(open(self.data_path)) if os.path.exists(self.data_path) else {}
+
+    def crash(self):                                  # mất sạch bộ nhớ, chỉ còn những gì đã xuống đĩa
+        self.mem, self.wal_buf = {}, []
+
+def recover(d):
+    s = Store(d); s.mem = {k: v for k, v in s.read_disk().items()}
+    log = [json.loads(l) for l in open(s.wal_path)] if os.path.exists(s.wal_path) else []
+    committed = {r["tx"] for r in log if r["t"] == "COMMIT"}
+    started = {r["tx"] for r in log if r["t"] == "BEGIN"}
+    losers = started - committed
+    redo = undo = 0
+    for r in log:                                     # REDO: lặp lại lịch sử, cả của giao dịch thua (nếu trang chưa có thay đổi đó)
+        if r["t"] == "SET" and s.mem.get(r["key"], [None, 0])[1] < r["lsn"]:
+            s.mem[r["key"]] = [r["new"], r["lsn"]]; redo += 1
+    for r in reversed(log):                           # UNDO: hoàn tác ngược các thay đổi của giao dịch thua
+        if r["t"] == "SET" and r["tx"] in losers:
+            s.mem[r["key"]] = [r["old"], r["lsn"]]; undo += 1
+    return s, committed, losers, redo, undo
+
+def show(title, kv):
+    print(f"  {title:<38} " + ", ".join(f"{k} = {v[0]}" for k, v in sorted(kv.items())))
+
+if __name__ == "__main__":
+    d = tempfile.mkdtemp(); s = Store(d)
+    s.begin("T0"); s.set("T0", "A", 100); s.set("T0", "B", 50); s.commit("T0")
+    s.flush_page("A"); s.flush_page("B")              # trạng thái ban đầu A = 100, B = 50 đã nằm trên đĩa
+    print("1. Khởi tạo: A = 100, B = 50, đã xuống đĩa")
+
+    s.begin("T1"); s.set("T1", "A", 70); s.set("T1", "B", 80); s.commit("T1")
+    print("2. T1 chuyển 30 từ A sang B và COMMIT (log đã fsync, trang dữ liệu CHƯA ghi: no-force)")
+    s.begin("T2"); s.set("T2", "A", 60)
+    s.flush_page("A")
+    print("3. T2 trừ thêm 10 ở A, CHƯA commit, nhưng trang A bị đẩy xuống đĩa sớm (steal)")
+    show("bộ nhớ lúc này:", s.mem); show("đĩa lúc này:", s.read_disk())
+    print("   -> đĩa chứa A = 60 (dở dang của T2) và B = 50 (T1 đã commit nhưng chưa được ghi)")
+
+    s.crash()
+    print("4. MẤT ĐIỆN: bộ nhớ biến mất")
+    show("đĩa sau sự cố:", s.read_disk())
+    print(f"   log trên đĩa: {sum(1 for _ in open(s.wal_path))} bản ghi")
+
+    r, committed, losers, redo, undo = recover(d)
+    print(f"5. Khôi phục: giao dịch đã commit = {sorted(committed)}, giao dịch thua = {sorted(losers)}; redo {redo} bản ghi, undo {undo} bản ghi")
+    show("sau khôi phục:", r.mem)
+    assert r.mem["A"][0] == 70 and r.mem["B"][0] == 80
+    print(f"   tổng A + B = {r.mem['A'][0] + r.mem['B'][0]} (đúng 150, bảo toàn): T1 còn nguyên, T2 biến mất")
+```
+
+```text
+1. Khởi tạo: A = 100, B = 50, đã xuống đĩa
+2. T1 chuyển 30 từ A sang B và COMMIT (log đã fsync, trang dữ liệu CHƯA ghi: no-force)
+3. T2 trừ thêm 10 ở A, CHƯA commit, nhưng trang A bị đẩy xuống đĩa sớm (steal)
+  bộ nhớ lúc này:                        A = 60, B = 80
+  đĩa lúc này:                           A = 60, B = 50
+   -> đĩa chứa A = 60 (dở dang của T2) và B = 50 (T1 đã commit nhưng chưa được ghi)
+4. MẤT ĐIỆN: bộ nhớ biến mất
+  đĩa sau sự cố:                         A = 60, B = 50
+   log trên đĩa: 10 bản ghi
+5. Khôi phục: giao dịch đã commit = ['T0', 'T1'], giao dịch thua = ['T2']; redo 1 bản ghi, undo 1 bản ghi
+  sau khôi phục:                         A = 70, B = 80
+   tổng A + B = 150 (đúng 150, bảo toàn): T1 còn nguyên, T2 biến mất
+```
+
+Theo dõi từng bước:
+
+- **Bước 2**: T1 chuyển 30 từ A sang B và commit. Log đã `fsync`, nhưng trang dữ liệu **chưa ghi** (no-force), nên trên đĩa B vẫn 50.
+- **Bước 3**: T2 trừ 10 ở A (chưa commit), và bộ đệm đẩy trang A xuống đĩa sớm (**steal**). Đĩa chứa **A = 60 (dở dang của T2)** và **B = 50 (thiếu phần của T1)**: một trạng thái sai cả hai chiều.
+- **Bước 4-5**: sập điện, bộ nhớ biến mất; chỉ còn đĩa và log (10 bản ghi). Khôi phục: analysis xác định T0, T1 đã commit, **T2 thua**; **redo** lặp lại bản ghi `B = 80` (trang B trên đĩa cũ hơn) và bỏ qua những bản ghi mà trang đã có (nhờ so `pageLSN` với LSN của bản ghi, nên redo **idempotent**: chạy lại bao nhiêu lần cũng ra cùng kết quả, điều quan trọng nếu máy lại sập trong lúc khôi phục); **undo** trả A về giá trị trước của T2.
+- Kết quả: **A = 70, B = 80**, tổng 150: T1 còn nguyên, T2 biến mất. Mỗi trạng thái trung gian trên đĩa đều có thể sai nhưng **log đủ để dựng lại đúng**.
+
+Bản thật phức tạp hơn nhiều: **checkpoint** để không phải đọc log từ đầu thời gian, **CLR** (bản ghi log cho chính thao tác undo, để undo cũng chịu được sập), log theo trang và theo thao tác vật lý hay logic, nén log. Nhưng cấu trúc ba pha và hai luật ở trên giữ nguyên.
+
+### WAL của PostgreSQL trông thế nào
+
+Cùng cơ chế đó ở hệ thống thật. Chạy một giao dịch (`INSERT`, rồi `UPDATE`, rồi `COMMIT`), đọc các bản ghi log nó sinh ra bằng `pg_waldump`:
+
+```bash
+#!/bin/bash
+# Chạy trong WSL với quyền postgres: nhìn log ghi trước (WAL) của một giao dịch nhỏ.
+export PATH=/usr/lib/postgresql/16/bin:$PATH
+psql -X -q -d demo -c "DROP TABLE IF EXISTS walt; CREATE TABLE walt (id int, v text);" >/dev/null
+START=$(psql -X -At -d demo -c "SELECT pg_current_wal_insert_lsn()")
+psql -X -q -d demo <<SQL >/dev/null
+BEGIN;
+INSERT INTO walt VALUES (1, 'hello wal');
+UPDATE walt SET v = 'hello again' WHERE id = 1;
+COMMIT;
+SQL
+END=$(psql -X -At -d demo -c "SELECT pg_current_wal_insert_lsn()")
+echo "LSN trước: $START   LSN sau: $END   (ghi thêm $(psql -X -At -d demo -c "SELECT pg_wal_lsn_diff('$END','$START')") byte log)"
+echo
+pg_waldump -p /var/lib/postgresql/16/main/pg_wal -s "$START" -e "$END" 2>&1 | sed 's/^rmgr: //' | cut -c1-215
+```
+
+```text
+LSN trước: 1/256BE6E8   LSN sau: 1/256BE7A8   (ghi thêm 192 byte log)
+
+Heap        len (rec/tot):     69/    69, tx:        965, lsn: 1/256BE6E8, prev 1/256BDE98, desc: INSERT+INIT off: 1, flags: 0x00, blkref #0: rel 1663/16384/16916 blk 0
+Heap        len (rec/tot):     80/    80, tx:        965, lsn: 1/256BE730, prev 1/256BE6E8, desc: HOT_UPDATE old_xmax: 965, old_off: 1, old_infobits: [], flags: 0x20, new_xmax: 0, new_off: 2, blkref #0: rel 1663/163
+Transaction len (rec/tot):     34/    34, tx:        965, lsn: 1/256BE780, prev 1/256BE730, desc: COMMIT 2026-11-17 03:06:41.873361 +07
+```
+
+Giao dịch chỉ sinh **192 byte** log: bản ghi `INSERT` (69 byte), bản ghi `HOT_UPDATE` (80 byte), và bản ghi `COMMIT` (34 byte). Mỗi bản ghi mang số hiệu giao dịch (`tx`), vị trí của nó trong log (**LSN**, log sequence number, tăng đều), trỏ về bản ghi trước (`prev`) và loại thay đổi cùng trang bị tác động. Chú ý: log chỉ ghi **cái đã đổi** chứ không ghi cả trang 8 KB, nên rất nhỏ. (PostgreSQL có một ngoại lệ có chủ đích là ghi cả trang ở lần sửa đầu tiên sau mỗi checkpoint, `full_page_writes`, để chống trang bị ghi dở khi mất điện.) Chính dòng log này cũng được dùng để **sao lưu liên tục** (point-in-time recovery) và **replication** (replica phát lại log của primary): một cơ chế phục vụ bốn việc.
+
+## fsync và group commit
+
+Luật "log xuống đĩa lúc commit" có nghĩa là mỗi `COMMIT` phải đợi một lần **`fsync`** (ép hệ điều hành và ổ đĩa ghi thật xuống bộ nhớ không bay hơi). Đây thường là phần chậm nhất của một giao dịch nhỏ. Đo bằng `pg_test_fsync` và bằng `pgbench` (mỗi giao dịch là một `INSERT` rồi `COMMIT`), thay đổi số client và bật tắt `synchronous_commit`:
+
+```bash
+#!/bin/bash
+# Chạy trong WSL với quyền postgres: chi phí của việc đẩy log xuống đĩa (fsync) và group commit.
+export PATH=/usr/lib/postgresql/16/bin:$PATH
+echo "== pg_test_fsync (mỗi phép 1 giây): số lần ghi + đẩy xuống đĩa mỗi giây =="
+cd /tmp && pg_test_fsync -s 1 -f /tmp/pgfsync.test 2>&1 | sed -n '1,22p'
+rm -f /tmp/pgfsync.test
+echo
+psql -X -q -d demo -c "DROP TABLE IF EXISTS bench_log; CREATE TABLE bench_log (id int, t timestamptz);" >/dev/null 2>&1
+echo "INSERT INTO bench_log VALUES (1, now());" > /tmp/ins.sql
+echo "== pgbench: mỗi giao dịch là một INSERT rồi COMMIT; 4 giây mỗi cấu hình =="
+printf "%-26s %8s %12s %16s\n" "cấu hình" "client" "TPS" "độ trễ TB (ms)"
+for sc in on off; do
+  for c in 1 8 32; do
+    j=$c; [ $j -gt 4 ] && j=4
+    out=$(PGOPTIONS="-c synchronous_commit=$sc" pgbench -n -f /tmp/ins.sql -c $c -j $j -T 4 demo 2>&1)
+    tps=$(echo "$out" | awk '/^tps/ {print $3}')
+    lat=$(echo "$out" | awk '/^latency average/ {print $4}')
+    printf "%-26s %8s %12s %16s\n" "synchronous_commit=$sc" "$c" "$tps" "$lat"
+  done
+done
+```
+
+```text
+== pg_test_fsync (mỗi phép 1 giây): số lần ghi + đẩy xuống đĩa mỗi giây ==
+1 second per test
+O_DIRECT supported on this platform for open_datasync and open_sync.
+
+Compare file sync methods using one 8kB write:
+(in wal_sync_method preference order, except fdatasync is Linux's default)
+        open_datasync                       615.429 ops/sec    1625 usecs/op
+        fdatasync                           648.292 ops/sec    1543 usecs/op
+        fsync                               346.517 ops/sec    2886 usecs/op
+        fsync_writethrough                              n/a
+        open_sync                           342.969 ops/sec    2916 usecs/op
+
+Compare file sync methods using two 8kB writes:
+(in wal_sync_method preference order, except fdatasync is Linux's default)
+        open_datasync                       316.579 ops/sec    3159 usecs/op
+        fdatasync                           659.087 ops/sec    1517 usecs/op
+        fsync                               336.503 ops/sec    2972 usecs/op
+        fsync_writethrough                              n/a
+        open_sync                           183.749 ops/sec    5442 usecs/op
+
+Compare open_sync with different write sizes:
+(This is designed to compare the cost of writing 16kB in different write
+open_sync sizes.)
+
+== pgbench: mỗi giao dịch là một INSERT rồi COMMIT; 4 giây mỗi cấu hình ==
+cấu hình                  client          TPS độ trễ TB (ms)
+synchronous_commit=on             1   513.338679            1.948
+synchronous_commit=on             8  2788.287940            2.869
+synchronous_commit=on            32 12399.566091            2.581
+synchronous_commit=off            1 18571.398212            0.054
+synchronous_commit=off            8 91681.213996            0.087
+synchronous_commit=off           32 228716.845206            0.140
+```
+
+`pg_test_fsync` cho thấy giới hạn của ổ đĩa này: khoảng **650 lần ghi và đẩy xuống đĩa mỗi giây** (`fdatasync`, mặc định trên Linux), tức khoảng **1,5 ms** mỗi lần, chậm hơn ghi vào bộ nhớ hàng nghìn lần. (Con số này của ổ đĩa ảo trong WSL; SSD NVMe có tụ bảo vệ ghi cho ra vài chục micro giây, ổ HDD vài mili giây.)
+
+Bảng `pgbench` trả lời hai câu hỏi:
+
+- **Một client, `synchronous_commit = on`**: **513 giao dịch mỗi giây**, độ trễ 1,95 ms: chính là một `fdatasync` mỗi commit. Trần cứng của ổ đĩa.
+- **32 client cùng lúc**: **12.400 giao dịch mỗi giây**, gấp **24 lần**, mà ổ đĩa vẫn chỉ thực hiện khoảng 650 lần ghi mỗi giây. Đó là **group commit**: khi nhiều giao dịch cùng chờ, một lần `fsync` đẩy log của **tất cả** chúng xuống đĩa (vì log là chuỗi nối đuôi, đẩy tới LSN lớn nhất là đủ cho mọi giao dịch có LSN nhỏ hơn). Tính trung bình mỗi lần `fsync` phục vụ gần 19 commit.
+- **`synchronous_commit = off`**: server báo "xong" **trước** khi log xuống đĩa. Throughput vọt lên 18.571 (một client, gấp 36 lần) và **228.716** (32 client, gấp 18 lần), vì không còn ai chờ đĩa. Đổi lại: nếu máy sập, **vài trăm mili giây giao dịch cuối** (cỡ ba lần `wal_writer_delay`, mặc định 200 ms) có thể mất, nhưng dữ liệu **vẫn nhất quán** (mất giao dịch chứ không hỏng dữ liệu). Đây là lựa chọn hợp lệ cho dữ liệu như log hoạt động, và là lý do nhiều số liệu "PostgreSQL xử lý hàng trăm nghìn giao dịch mỗi giây" đi kèm cấu hình này. (Khác hoàn toàn với `fsync = off`, tắt hẳn `fsync`, có thể làm hỏng dữ liệu vĩnh viễn khi sập điện; chỉ dùng cho việc nạp dữ liệu thử.)
+
+Phần mô phỏng đơn giản hoá cùng ý trong Python, ghi 2.000 bản ghi log vào file với nhiều cỡ mẻ (số giao dịch đẩy chung một lần `fsync`):
+
+```python
+# Chi phí của fsync và lợi ích của group commit, đo trên ổ đĩa thật của WSL (ext4).
+import os, time, tempfile
+
+def run(n_commits, batch):
+    d = tempfile.mkdtemp(); path = os.path.join(d, "wal.log")
+    f = open(path, "ab")
+    t = time.perf_counter()
+    pending = 0
+    for i in range(n_commits):
+        f.write(b"COMMIT record %08d\n" % i); pending += 1
+        if pending == batch:                          # một lần fsync cho cả mẻ giao dịch cùng chờ
+            f.flush(); os.fsync(f.fileno()); pending = 0
+    if pending: f.flush(); os.fsync(f.fileno())
+    dt = time.perf_counter() - t
+    f.close(); os.remove(path); os.rmdir(d)
+    return dt
+
+N = 2000
+base = run(N, 1)
+print(f"{N} giao dịch, mỗi giao dịch ghi một bản ghi log:")
+print(f"{'cách đẩy log':<28} {'tổng':>9} {'mỗi giao dịch':>15} {'giao dịch/giây':>16} {'số fsync':>9}")
+for batch, name in ((1, "fsync mỗi giao dịch"), (4, "group commit, mẻ 4"), (16, "group commit, mẻ 16"), (100, "group commit, mẻ 100")):
+    dt = base if batch == 1 else run(N, batch)
+    print(f"{name:<28} {dt*1000:>7.0f}ms {dt/N*1e6:>12.0f} µs {N/dt:>16,.0f} {-(-N//batch):>9}")
+f = open(os.path.join(tempfile.mkdtemp(), "x"), "ab"); t = time.perf_counter()
+for i in range(N): f.write(b"COMMIT record %08d\n" % i)
+f.flush(); dt = time.perf_counter() - t
+print(f"{'không fsync (chỉ ghi đệm)':<28} {dt*1000:>7.0f}ms {dt/N*1e6:>12.1f} µs {N/dt:>16,.0f} {0:>9}   <- mất log nếu mất điện")
+```
+
+```text
+2000 giao dịch, mỗi giao dịch ghi một bản ghi log:
+cách đẩy log                      tổng   mỗi giao dịch   giao dịch/giây  số fsync
+fsync mỗi giao dịch             6819ms         3409 µs              293      2000
+group commit, mẻ 4              1548ms          774 µs            1,292       500
+group commit, mẻ 16              402ms          201 µs            4,976       125
+group commit, mẻ 100              61ms           31 µs           32,695        20
+không fsync (chỉ ghi đệm)          0ms          0.2 µs        6,251,719         0   <- mất log nếu mất điện
+```
+
+Một `fsync` cho mỗi giao dịch cho **293 giao dịch mỗi giây**; gom thành mẻ 100 cho **32.695**, nhanh hơn **111 lần** chỉ bằng cách ghi cùng lượng log với 20 lần `fsync` thay vì 2.000. Dòng cuối cho thấy chi phí **không** có `fsync` (0,2 µs mỗi giao dịch): chênh lệch bốn bậc độ lớn giữa "đã nằm trong bộ nhớ đệm hệ điều hành" và "đã xuống đĩa". Tính bền vững có giá, và group commit là cách cả ngành trả giá đó rẻ hơn.
+
+## MVCC: đọc không chặn ghi
+
+### Vấn đề: khoá làm đọc và ghi chặn nhau
+
+Cách đơn giản nhất để cô lập giao dịch là **khoá**: ai đọc khoá chia sẻ, ai ghi khoá độc quyền, nên người ghi chặn mọi người đọc cho tới khi commit. Hệ thống có hàng nghìn người đọc và ít người ghi sẽ tắc nghẽn. **<Term>MVCC</Term>** (multi-version concurrency control) đi theo hướng khác: **không sửa tại chỗ mà tạo phiên bản mới**; mỗi giao dịch đọc từ một "ảnh chụp" (snapshot) nhất quán của dữ liệu, nên người đọc không bao giờ bị người ghi chặn, và người ghi không bị người đọc chặn. Chỉ **hai người ghi cùng một dòng** mới chờ nhau.
+
+### Nhìn tận mắt trong PostgreSQL
+
+Mỗi dòng trong heap mang `xmin` (số hiệu giao dịch **tạo** ra phiên bản này) và `xmax` (số hiệu giao dịch **xoá hoặc thay thế** nó, bằng 0 nếu còn sống). Một giao dịch **thấy** một phiên bản nếu `xmin` đã commit trước snapshot của nó và (`xmax` chưa commit hoặc commit sau snapshot).
+
+```sql
+\pset null '∅'
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+DROP TABLE IF EXISTS v;
+CREATE TABLE v (id int PRIMARY KEY, val text) WITH (autovacuum_enabled = off);
+INSERT INTO v VALUES (1, 'v1'), (2, 'b');
+
+\echo '== mỗi dòng mang xmin (giao dịch tạo ra nó) và xmax (giao dịch xoá/thay nó) =='
+SELECT ctid, xmin, xmax, id, val FROM v ORDER BY id;
+
+\echo ''
+\echo '== UPDATE KHÔNG sửa tại chỗ: nó tạo phiên bản mới, phiên bản cũ nằm lại =='
+BEGIN;
+SELECT txid_current() AS my_txid;
+UPDATE v SET val = 'v2' WHERE id = 1;
+COMMIT;
+SELECT ctid, xmin, xmax, id, val FROM v ORDER BY id;
+\echo '-- nhìn thẳng vào trang heap: phiên bản cũ vẫn còn, xmax đã được ghi'
+SELECT lp AS slot, t_xmin, t_xmax, t_ctid, (t_infomask & 256) <> 0 AS xmin_committed,
+       CASE WHEN t_xmax <> 0 THEN 'đã bị thay' ELSE 'đang sống' END AS state
+FROM heap_page_items(get_raw_page('v', 0)) ORDER BY lp;
+
+\echo ''
+\echo '== nhiều lần UPDATE: bảng phình ra vì phiên bản chết =='
+SELECT pg_relation_size('v') AS bytes_before, (SELECT count(*) FROM heap_page_items(get_raw_page('v', 0))) AS item_slots;
+DO $$ BEGIN FOR i IN 1..200 LOOP UPDATE v SET val = 'x' || i WHERE id = 1; END LOOP; END $$;
+SELECT (SELECT count(*) FROM heap_page_items(get_raw_page('v', 0))) AS item_slots_page0, pg_relation_size('v') AS bytes_after;
+
+\echo ''
+\echo '== VACUUM dọn phiên bản chết (đánh dấu chỗ trống để dùng lại, không trả đĩa cho hệ điều hành) =='
+VACUUM v;
+SELECT lp AS slot, lp_flags, t_xmin, t_xmax FROM heap_page_items(get_raw_page('v', 0)) ORDER BY lp LIMIT 6;
+\echo '   (lp_flags: 1 = đang dùng, 2 = chuyển hướng HOT, 0 = trống dùng lại được)'
+
+\echo ''
+\echo '== bảng phình thật: cập nhật cả bảng nhiều lần =='
+DROP TABLE IF EXISTS big;
+CREATE TABLE big (id int PRIMARY KEY, val int) WITH (autovacuum_enabled = off);
+INSERT INTO big SELECT g, 0 FROM generate_series(1, 100000) g;
+SELECT pg_size_pretty(pg_relation_size('big')) AS size_initial;
+UPDATE big SET val = val + 1; UPDATE big SET val = val + 1; UPDATE big SET val = val + 1;
+SELECT pg_size_pretty(pg_relation_size('big')) AS size_after_3_updates, (SELECT count(*) FROM big) AS live_rows;
+VACUUM big;
+SELECT pg_size_pretty(pg_relation_size('big')) AS size_after_vacuum;
+UPDATE big SET val = val + 1;
+SELECT pg_size_pretty(pg_relation_size('big')) AS size_after_vacuum_plus_update;
+VACUUM FULL big;
+SELECT pg_size_pretty(pg_relation_size('big')) AS size_after_vacuum_full;
+```
+
+```text
+== mỗi dòng mang xmin (giao dịch tạo ra nó) và xmax (giao dịch xoá/thay nó) ==
+ ctid  | xmin | xmax | id | val 
+-------+------+------+----+-----
+ (0,1) |  951 |    0 |  1 | v1
+ (0,2) |  951 |    0 |  2 | b
+(2 rows)
+
+
+== UPDATE KHÔNG sửa tại chỗ: nó tạo phiên bản mới, phiên bản cũ nằm lại ==
+ my_txid 
+---------
+     952
+(1 row)
+
+ ctid  | xmin | xmax | id | val 
+-------+------+------+----+-----
+ (0,3) |  952 |    0 |  1 | v2
+ (0,2) |  951 |    0 |  2 | b
+(2 rows)
+
+-- nhìn thẳng vào trang heap: phiên bản cũ vẫn còn, xmax đã được ghi
+ slot | t_xmin | t_xmax | t_ctid | xmin_committed |   state    
+------+--------+--------+--------+----------------+------------
+    1 |    951 |    952 | (0,3)  | t              | đã bị thay
+    2 |    951 |      0 | (0,2)  | t              | đang sống
+    3 |    952 |      0 | (0,3)  | t              | đang sống
+(3 rows)
+
+
+== nhiều lần UPDATE: bảng phình ra vì phiên bản chết ==
+ bytes_before | item_slots 
+--------------+------------
+         8192 |          3
+(1 row)
+
+ item_slots_page0 | bytes_after 
+------------------+-------------
+              203 |        8192
+(1 row)
+
+
+== VACUUM dọn phiên bản chết (đánh dấu chỗ trống để dùng lại, không trả đĩa cho hệ điều hành) ==
+ slot | lp_flags | t_xmin | t_xmax 
+------+----------+--------+--------
+    1 |        2 |      ∅ |      ∅
+    2 |        1 |    951 |      0
+    3 |        0 |      ∅ |      ∅
+    4 |        0 |      ∅ |      ∅
+    5 |        0 |      ∅ |      ∅
+    6 |        0 |      ∅ |      ∅
+(6 rows)
+
+   (lp_flags: 1 = đang dùng, 2 = chuyển hướng HOT, 0 = trống dùng lại được)
+
+== bảng phình thật: cập nhật cả bảng nhiều lần ==
+ size_initial 
+--------------
+ 3544 kB
+(1 row)
+
+ size_after_3_updates | live_rows 
+----------------------+-----------
+ 14 MB                |    100000
+(1 row)
+
+ size_after_vacuum 
+-------------------
+ 14 MB
+(1 row)
+
+ size_after_vacuum_plus_update 
+-------------------------------
+ 14 MB
+(1 row)
+
+ size_after_vacuum_full 
+------------------------
+ 3544 kB
+(1 row)
+```
+
+- Sau `INSERT`, hai dòng có cùng `xmin = 939` (giao dịch chèn chúng), `xmax = 0`. Địa chỉ `ctid` là `(0,1)` và `(0,2)`.
+- `UPDATE` giao dịch 940 **không sửa dòng cũ**. Nó thêm một phiên bản mới ở `(0,3)` với `xmin = 940`, còn phiên bản cũ ở `(0,1)` giữ nguyên nhưng được ghi `xmax = 940` và `t_ctid` trỏ tới bản mới `(0,3)` (một chuỗi phiên bản). Nhìn thẳng vào trang heap (`pageinspect`): ba slot, slot 1 là bản cũ "đã bị thay", slot 3 là bản mới. Giao dịch bắt đầu **trước** 940 vẫn thấy bản `v1`; giao dịch sau thấy `v2`. Đó chính là snapshot.
+- **200 lần `UPDATE`** một dòng làm trang 0 chứa **203 slot**: mỗi lần cập nhật tạo một phiên bản mới, tất cả nằm cùng trang nhờ tối ưu **HOT** (heap-only tuple: phiên bản mới nối chuỗi trong cùng trang, không cần cập nhật chỉ mục, như bản ghi `HOT_UPDATE` ở WAL phía trên).
+- **`VACUUM`** dọn các phiên bản mà không giao dịch nào còn thấy: slot 1 trở thành `lp_flags = 2` (chuyển hướng HOT tới phiên bản sống), các slot chết được trả về trạng thái trống (`lp_flags = 0`) để dùng lại.
+
+### Cái giá: bloat
+
+Phiên bản chết chiếm chỗ cho tới khi `VACUUM` dọn, và `VACUUM` thường **không trả dung lượng cho hệ điều hành**, chỉ đánh dấu chỗ trống để dùng lại. Phần cuối của script đo điều đó trên bảng 100.000 dòng:
+
+| Bước | Kích thước bảng |
+|---|---|
+| ban đầu (100.000 dòng) | 3.544 kB |
+| sau 3 lần `UPDATE` toàn bảng | **14 MB** (bốn phiên bản của mỗi dòng) |
+| sau `VACUUM` | 14 MB (chỗ chết được đánh dấu, file không co) |
+| sau thêm một `UPDATE` toàn bảng | 14 MB (dùng lại chỗ đã dọn, **không phình thêm**) |
+| sau `VACUUM FULL` | **3.544 kB** (ghi lại cả bảng, khoá bảng) |
+
+Đây là tên gọi **bloat**: bảng chứa nhiều chỗ chết hơn dữ liệu sống. Hậu quả: quét tuần tự đọc nhiều trang hơn, chỉ mục phình, bộ đệm đầy chỗ vô ích. Cơ chế **autovacuum** của PostgreSQL chạy nền để dọn; bảng bị cập nhật dày cần autovacuum đủ mạnh. Một thủ phạm kinh điển là **giao dịch mở rất lâu** (đặc biệt `idle in transaction`): `VACUUM` không được dọn phiên bản nào mà giao dịch cổ nhất còn có thể cần thấy, nên một giao dịch bị bỏ quên chặn việc dọn của cả cơ sở dữ liệu.
+
+**InnoDB** (MySQL) cũng dùng MVCC nhưng đặt phiên bản cũ ở **undo log** riêng: dòng trong bảng luôn là phiên bản mới nhất, muốn đọc phiên bản cũ thì lần theo con trỏ lùi về undo log. Cách đó giữ bảng gọn nhưng làm việc đọc phiên bản cũ chậm hơn và undo log có thể phình khi có giao dịch dài. Hai thiết kế là hai điểm trên cùng một đường đánh đổi.
+
+## Khoá hai pha và deadlock
+
+MVCC giải quyết đọc-ghi, nhưng **ghi-ghi** vẫn cần khoá: hai giao dịch cùng sửa một dòng phải xếp hàng. Cơ chế cổ điển là **khoá hai pha** (two-phase locking, 2PL): mỗi giao dịch có **pha mở rộng** (chỉ lấy khoá, không nhả) rồi **pha co lại** (chỉ nhả). Biến thể **strict 2PL** nhả **tất cả khoá cùng lúc ở `COMMIT` hoặc `ROLLBACK`**, nên không ai thấy dữ liệu dở dang. Có hai chế độ khoá: **S** (shared, để đọc, nhiều người cùng giữ) và **X** (exclusive, để ghi, độc quyền). Dưới đây là một lock manager nhỏ, có phát hiện deadlock bằng **đồ thị chờ** (cạnh `A → B` khi A chờ khoá của B), dùng DFS ba màu đã thấy ở [Graph](/docs/dsa/graphs):
+
+```python
+# Khoá hai pha chặt (strict 2PL) với khoá S/X, hàng đợi chờ và phát hiện deadlock bằng đồ thị chờ.
+from collections import defaultdict
+
+COMPAT = {("S", "S"): True, ("S", "X"): False, ("X", "S"): False, ("X", "X"): False}
+
+class LockManager:
+    def __init__(self):
+        self.holders = defaultdict(dict)       # item -> {tx: mode}
+        self.waiting = {}                      # tx -> (item, mode)   mỗi giao dịch chỉ chờ một khoá
+        self.log = []
+
+    def _blockers(self, tx, item, mode):
+        return [h for h, m in self.holders[item].items() if h != tx and not COMPAT[(m, mode)]]
+
+    def lock(self, tx, item, mode):
+        bl = self._blockers(tx, item, mode)
+        if not bl:
+            if self.holders[item].get(tx) != "X": self.holders[item][tx] = mode
+            self.log.append(f"{tx} lấy khoá {mode} trên {item}"); return True
+        self.waiting[tx] = (item, mode)
+        self.log.append(f"{tx} muốn {mode} trên {item} nhưng bị {', '.join(bl)} giữ -> CHỜ"); return False
+
+    def wait_for_graph(self):                  # cạnh A -> B nghĩa là A đang chờ B
+        g = defaultdict(set)
+        for tx, (item, mode) in self.waiting.items():
+            for b in self._blockers(tx, item, mode): g[tx].add(b)
+        return g
+
+    def find_deadlock(self):                   # DFS ba màu trên đồ thị chờ (xem bài Graph)
+        g = self.wait_for_graph(); color, parent = {}, {}
+        def dfs(u):
+            color[u] = 1
+            for v in sorted(g[u]):
+                if color.get(v, 0) == 0:
+                    parent[v] = u
+                    c = dfs(v)
+                    if c: return c
+                elif color[v] == 1:
+                    cyc, x = [u], u
+                    while x != v: x = parent[x]; cyc.append(x)
+                    return cyc[::-1] + [v]
+            color[u] = 2
+        for u in sorted(g):
+            if color.get(u, 0) == 0:
+                c = dfs(u)
+                if c: return c
+        return None
+
+    def release_all(self, tx):                 # pha co lại của strict 2PL: nhả TẤT CẢ khoá một lần lúc commit hoặc abort
+        for item in list(self.holders):
+            self.holders[item].pop(tx, None)
+        self.waiting.pop(tx, None)
+        self.log.append(f"{tx} nhả mọi khoá")
+
+print("ma trận tương thích khoá (hàng = đang giữ, cột = muốn lấy):")
+print("          S      X")
+for h in "SX": print(f"   {h}   " + "   ".join(f"{'ok ' if COMPAT[(h, w)] else 'CHỜ'}" for w in "SX"))
+
+print()
+print("-- lịch 1: hai người chỉ đọc cùng dữ liệu không chặn nhau, người ghi chặn mọi người")
+lm = LockManager()
+lm.lock("T1", "x", "S"); lm.lock("T2", "x", "S"); lm.lock("T3", "x", "X")
+print("\n".join("  " + l for l in lm.log))
+
+print()
+print("-- lịch 2: deadlock kinh điển: T1 lấy A rồi muốn B, T2 lấy B rồi muốn A")
+lm = LockManager()
+lm.lock("T1", "A", "X"); lm.lock("T2", "B", "X")
+lm.lock("T1", "B", "X"); lm.lock("T2", "A", "X")
+print("\n".join("  " + l for l in lm.log))
+print("  đồ thị chờ:", {k: sorted(v) for k, v in lm.wait_for_graph().items()})
+cyc = lm.find_deadlock()
+print("  phát hiện chu trình:", " -> ".join(cyc))
+victim = cyc[-2]                                 # chọn nạn nhân (ở đây: giao dịch cuối chu trình); thật thì chọn theo chi phí hoặc tuổi
+lm.release_all(victim); print(f"  huỷ {victim} (nạn nhân) -> {victim} nhả khoá")
+lm.waiting.pop("T1", None); lm.lock("T1", "B", "X")
+print("  T1 tiếp tục:", lm.log[-1], "| deadlock còn không?", lm.find_deadlock())
+
+print()
+print("-- lịch 3: cùng hai giao dịch nhưng lấy khoá theo cùng một thứ tự (A rồi B): không thể deadlock")
+lm = LockManager()
+lm.lock("T1", "A", "X"); lm.lock("T2", "A", "X")      # T2 chờ A
+lm.lock("T1", "B", "X")                                # T1 chạy tiếp, không ai chờ T1
+print("\n".join("  " + l for l in lm.log))
+print("  đồ thị chờ:", {k: sorted(v) for k, v in lm.wait_for_graph().items()}, "| chu trình:", lm.find_deadlock())
+```
+
+```text
+ma trận tương thích khoá (hàng = đang giữ, cột = muốn lấy):
+          S      X
+   S   ok    CHỜ
+   X   CHỜ   CHỜ
+
+-- lịch 1: hai người chỉ đọc cùng dữ liệu không chặn nhau, người ghi chặn mọi người
+  T1 lấy khoá S trên x
+  T2 lấy khoá S trên x
+  T3 muốn X trên x nhưng bị T1, T2 giữ -> CHỜ
+
+-- lịch 2: deadlock kinh điển: T1 lấy A rồi muốn B, T2 lấy B rồi muốn A
+  T1 lấy khoá X trên A
+  T2 lấy khoá X trên B
+  T1 muốn X trên B nhưng bị T2 giữ -> CHỜ
+  T2 muốn X trên A nhưng bị T1 giữ -> CHỜ
+  đồ thị chờ: {'T1': ['T2'], 'T2': ['T1']}
+  phát hiện chu trình: T1 -> T2 -> T1
+  huỷ T2 (nạn nhân) -> T2 nhả khoá
+  T1 tiếp tục: T1 lấy khoá X trên B | deadlock còn không? None
+
+-- lịch 3: cùng hai giao dịch nhưng lấy khoá theo cùng một thứ tự (A rồi B): không thể deadlock
+  T1 lấy khoá X trên A
+  T2 muốn X trên A nhưng bị T1 giữ -> CHỜ
+  T1 lấy khoá X trên B
+  đồ thị chờ: {'T2': ['T1']} | chu trình: None
+```
+
+- **Lịch 1**: hai giao dịch cùng giữ khoá S trên `x` không chặn nhau, nhưng giao dịch muốn X phải chờ cả hai: ma trận tương thích là toàn bộ luật.
+- **Lịch 2 (deadlock)**: T1 giữ A và xin B; T2 giữ B và xin A. Mỗi người chờ người kia mãi mãi (đúng bốn điều kiện deadlock ở [Deadlock](/docs/os/deadlock): loại trừ lẫn nhau, giữ và chờ, không giành lại, chờ vòng tròn). Đồ thị chờ có chu trình `T1 → T2 → T1`, phát hiện bằng DFS. Cách giải: chọn một **nạn nhân**, huỷ (`ROLLBACK`) và nhả khoá của nó; người kia chạy tiếp. Hệ thống thật chọn nạn nhân theo chi phí hoặc tuổi, và ứng dụng phải sẵn sàng **thử lại** giao dịch bị huỷ.
+- **Lịch 3**: cùng hai giao dịch nhưng **lấy khoá theo cùng một thứ tự** (A rồi B): đồ thị chờ không có chu trình. Quy tắc phòng tránh rẻ nhất trong ứng dụng: luôn khoá các tài nguyên theo một thứ tự toàn cục cố định (ví dụ theo `id` tăng dần).
+
+Giờ là thật. Hai kết nối PostgreSQL khoá hai dòng theo thứ tự ngược nhau:
+
+```python
+# Deadlock thật trong PostgreSQL: hai phiên khoá hai dòng theo thứ tự ngược nhau.
+import psycopg2, threading, time
+
+def conn():
+    c = psycopg2.connect(dbname="demo"); c.autocommit = False; return c
+
+setup = conn(); cur = setup.cursor()
+cur.execute("DROP TABLE IF EXISTS dl; CREATE TABLE dl (id int PRIMARY KEY, v int); INSERT INTO dl VALUES (1, 0), (2, 0);")
+setup.commit(); setup.close()
+
+events, barrier = [], threading.Barrier(2)
+def worker(name, first, second, delay):
+    c = conn(); cur = c.cursor()
+    cur.execute("SELECT pg_backend_pid()"); pid = cur.fetchone()[0]
+    try:
+        cur.execute("UPDATE dl SET v = v + 1 WHERE id = %s", (first,))
+        events.append(f"{name} (pid {pid}) khoá dòng {first}")
+        barrier.wait(); time.sleep(delay)
+        events.append(f"{name} muốn dòng {second} ...")
+        cur.execute("UPDATE dl SET v = v + 1 WHERE id = %s", (second,))
+        events.append(f"{name} lấy được dòng {second}")
+        c.commit(); events.append(f"{name} COMMIT")
+    except psycopg2.errors.DeadlockDetected as e:
+        c.rollback()
+        events.append(f"{name} BỊ HUỶ: {str(e).splitlines()[0]}")
+        events.append("   " + " | ".join(l.strip() for l in str(e).splitlines()[1:4]))
+    finally:
+        c.close()
+
+t0 = time.time()
+a = threading.Thread(target=worker, args=("T1", 1, 2, 0.0)); b = threading.Thread(target=worker, args=("T2", 2, 1, 0.3))
+a.start(); b.start()
+time.sleep(0.8)
+w = conn(); wc = w.cursor()
+wc.execute("""SELECT a.pid AS waiting_pid, pg_blocking_pids(a.pid) AS blocked_by, left(a.query, 40) AS query
+              FROM pg_stat_activity a WHERE a.wait_event_type = 'Lock' ORDER BY a.pid""")
+rows = wc.fetchall(); w.close()
+print("trong lúc chờ (pg_blocking_pids):")
+for r in rows: print(f"   pid {r[0]} đang chờ pid {r[1]}   câu lệnh: {r[2]!r}")
+a.join(); b.join()
+print()
+print(f"dòng thời gian (deadlock_timeout = 1s, tổng {time.time() - t0:.1f}s):")
+for e in events: print("  ", e)
+```
+
+```text
+trong lúc chờ (pg_blocking_pids):
+   pid 493 đang chờ pid [494]   câu lệnh: 'UPDATE dl SET v = v + 1 WHERE id = 2'
+   pid 494 đang chờ pid [493]   câu lệnh: 'UPDATE dl SET v = v + 1 WHERE id = 1'
+
+dòng thời gian (deadlock_timeout = 1s, tổng 1.0s):
+   T2 (pid 494) khoá dòng 2
+   T1 (pid 493) khoá dòng 1
+   T1 muốn dòng 2 ...
+   T2 muốn dòng 1 ...
+   T2 lấy được dòng 1
+   T1 BỊ HUỶ: deadlock detected
+      DETAIL:  Process 493 waits for ShareLock on transaction 1416662; blocked by process 494. | Process 494 waits for ShareLock on transaction 1416663; blocked by process 493. | HINT:  See server log for query details.
+   T2 COMMIT
+```
+
+Trong lúc chờ, `pg_blocking_pids` cho thấy hai tiến trình **chờ lẫn nhau** (pid 493 chờ 494 và ngược lại). PostgreSQL không phát hiện ngay: nó chờ `deadlock_timeout` (1 giây) rồi mới chạy thuật toán tìm chu trình (kiểm tra tốn kém, nên chỉ làm khi một khoá chờ lâu bất thường). Khi phát hiện, nó huỷ **một** giao dịch với lỗi `deadlock detected`, kèm chi tiết ai chờ ai; giao dịch còn lại (T2) lấy được khoá và commit. Ứng dụng phải bắt lỗi này và thử lại.
+
+## Trong hệ thống thật
+
+| Hệ thống | Atomicity/Durability | Đọc-ghi | Ghi-ghi |
+|---|---|---|---|
+| PostgreSQL | WAL (redo), phiên bản chết nằm trong heap | MVCC (xmin, xmax) | khoá dòng, deadlock detector |
+| MySQL InnoDB | redo log và undo log, doublewrite buffer | MVCC (undo log) | khoá dòng và gap lock |
+| SQLite | rollback journal (mặc định) hoặc WAL | một người ghi tại một thời điểm | khoá cả file |
+| Oracle | redo và undo | MVCC (undo) | khoá dòng |
+
+- **`innodb_flush_log_at_trx_commit`** (mặc định 1) là bản của InnoDB cho đánh đổi `fsync`: `1` đẩy log mỗi commit, `2` mỗi giây, `0` cũng mỗi giây nhưng không qua hệ điều hành. PostgreSQL có `synchronous_commit` như đã đo.
+- **Wraparound của transaction id**: PostgreSQL dùng số 32 bit cho `xmin` và `xmax`; sau khoảng 2 tỉ giao dịch số bị vòng lại, và `VACUUM` phải **đóng băng** (freeze) các phiên bản đủ cũ để chúng không "trở thành tương lai". Bảng chưa được vacuum đủ lâu có thể buộc cơ sở dữ liệu chuyển sang chế độ chỉ đọc để tự cứu; đây là nguyên nhân của một số sự cố sản xuất nổi tiếng.
+- **Giao dịch phân tán** (nhiều cơ sở dữ liệu) cần **two-phase commit**: một người điều phối hỏi mọi bên "sẵn sàng commit chưa" rồi mới ra lệnh commit. Dễ chặn khi người điều phối sập; đây là một lý do nhiều hệ thống lớn tránh giao dịch phân tán.
+- **Mặc định của cơ sở dữ liệu** là autocommit nếu bạn không viết `BEGIN`; thư viện và ORM thường tự mở giao dịch quanh mỗi request. Biết chắc phạm vi giao dịch của mình thật sự là gì.
+
+## Quan sát và chẩn đoán
+
+- `pg_stat_activity`: mọi kết nối, trạng thái (`active`, `idle`, **`idle in transaction`**), thời điểm bắt đầu giao dịch, câu lệnh; tìm giao dịch mở quá lâu bằng `now() - xact_start`.
+- `pg_locks` cùng `pg_blocking_pids(pid)`: ai đang chờ ai (như trong phần deadlock); `log_lock_waits = on` để ghi log chờ khoá quá `deadlock_timeout`.
+- `pg_stat_user_tables.n_dead_tup` và `last_autovacuum` để theo dõi phiên bản chết; `pgstattuple` để đo bloat chính xác.
+- `pg_waldump` và `pg_current_wal_lsn()` để xem lượng log sinh ra; tốc độ sinh log là chỉ số quan trọng cho replication và sao lưu.
+- Lỗi `deadlock detected` (SQLSTATE `40P01`) và `could not serialize access` (`40001`) là lỗi **có thể thử lại**; ứng dụng nên có vòng thử lại với giao dịch được viết lại từ đầu.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Bảng và chỉ mục phình dù dữ liệu sống không đổi | nhiều `UPDATE` và `DELETE`, autovacuum không theo kịp, hoặc bị chặn | chỉnh autovacuum, tìm giao dịch dài, `VACUUM`, `pg_repack` |
+| Autovacuum "không dọn được gì" | giao dịch `idle in transaction` giữ ranh giới xmin cũ | đóng kết nối bỏ quên, đặt `idle_in_transaction_session_timeout` |
+| `COMMIT` chậm, ổ đĩa là điểm nghẽn | mỗi giao dịch nhỏ chờ một `fsync` | gom giao dịch, group commit tự có khi tải song song, hoặc `synchronous_commit = off` nếu chấp nhận mất giao dịch cuối |
+| Lỗi `deadlock detected` thỉnh thoảng | hai luồng khoá cùng tài nguyên theo thứ tự ngược | khoá theo thứ tự cố định, giữ giao dịch ngắn, thử lại |
+| Giao dịch chờ khoá lâu | một giao dịch khác giữ khoá dòng và chưa commit | `pg_blocking_pids`, tìm giao dịch giữ khoá, rút ngắn |
+| Mất dữ liệu sau khi sập dù đã nhận `COMMIT` | `fsync = off`, ổ đĩa nói dối về ghi xuống đĩa, hoặc `synchronous_commit = off` | đừng tắt `fsync`; kiểm tra cache ghi của ổ |
+
+## Lưu ý
+
+- Atomicity và durability đến từ **write-ahead log**, không phải từ việc ghi dữ liệu vào đĩa lúc commit: dữ liệu có thể xuống đĩa trễ, log phải xuống đĩa trước.
+- Mọi hệ thống thực dụng dùng steal + no-force, nên khôi phục cần cả **redo** (làm lại giao dịch đã commit) và **undo** (huỷ giao dịch chưa commit); redo phải idempotent.
+- `COMMIT` chậm vì `fsync`; **group commit** cho phép nhiều giao dịch chia sẻ một lần `fsync`, và `synchronous_commit = off` đổi vài trăm mili giây dữ liệu lấy tốc độ (không làm hỏng dữ liệu, khác `fsync = off`).
+- Chữ **C** của ACID chỉ đảm bảo các ràng buộc bạn đã khai báo. Phần còn lại là logic ứng dụng.
+- MVCC không sửa tại chỗ mà tạo phiên bản mới; người đọc không chặn người ghi. Cái giá là phiên bản chết cần dọn (`VACUUM`) và bloat nếu dọn không kịp.
+- Một giao dịch mở lâu (đặc biệt `idle in transaction`) giữ chân việc dọn của cả cơ sở dữ liệu và giữ khoá; giữ giao dịch ngắn, đóng ngay khi xong.
+- Deadlock không thể tránh hoàn toàn khi nhiều giao dịch giữ nhiều khoá; ứng dụng phải bắt lỗi và thử lại, và khoá tài nguyên theo thứ tự cố định để giảm xác suất.
+- Trong autocommit, mỗi lệnh là một giao dịch; muốn nhiều lệnh thành một khối phải `BEGIN` tường minh.
+- Đừng tắt `fsync` ở production, và nhớ rằng cache ghi của ổ đĩa hoặc bộ điều khiển có thể "nói dối" là đã ghi xuống bộ nhớ bền.
