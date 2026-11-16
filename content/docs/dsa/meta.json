@@ -5,6 +5,7 @@
     "arrays-linked-lists",
     "hash-tables",
     "trees",
-    "sorting"
+    "sorting",
+    "graphs"
   ]
 }

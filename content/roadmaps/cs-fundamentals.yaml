@@ -65,6 +65,7 @@ sections:
             url: https://jeffe.cs.illinois.edu/teaching/algorithms/
       - id: graphs
         title: Graph
+        article: dsa/graphs
         description: BFS, DFS, đường đi ngắn nhất, sắp xếp topo.
         requires: [trees]
         resources:

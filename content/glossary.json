@@ -138,6 +138,14 @@
       "def": "Đoạn mã truy cập dữ liệu chung, không được để hai thread chạy cùng lúc.",
       "subject": "os"
     },
+    "dag": {
+      "label": "DAG",
+      "def": "Đồ thị có hướng không có chu trình (directed acyclic graph); mô hình chuẩn cho quan hệ phụ thuộc và có thể sắp xếp topo.",
+      "subject": "dsa",
+      "aliases": [
+        "directed acyclic graph"
+      ]
+    },
     "deadlock": {
       "def": "Nhóm thread chờ nhau theo vòng tròn, mỗi thread giữ một tài nguyên và chờ tài nguyên thread khác đang giữ, nên không ai chạy tiếp được.",
       "subject": "os"
@@ -200,6 +208,13 @@
       "subject": "networking",
       "aliases": [
         "glue"
+      ]
+    },
+    "graph": {
+      "def": "Tập đỉnh cùng tập cạnh nối các cặp đỉnh; mô hình cho mọi quan hệ như mạng, bản đồ, phụ thuộc.",
+      "subject": "dsa",
+      "aliases": [
+        "đồ thị"
       ]
     },
     "hash table": {

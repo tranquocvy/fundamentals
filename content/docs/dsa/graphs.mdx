@@ -1,0 +1,577 @@
+---
+title: Graph
+description: Biểu diễn đồ thị bằng ma trận và danh sách kề, BFS và DFS, sắp xếp topo và phát hiện chu trình, union-find, Dijkstra, Bellman-Ford và cây khung nhỏ nhất, kèm ví dụ thật là chính đồ thị phụ thuộc của roadmap site này.
+status: draft
+tags: [dsa, graph]
+authors: [tranquocvy]
+references:
+  - title: "Jeff Erickson — Algorithms, Chapters 5-8: Graph Traversal, Minimum Spanning Trees, Shortest Paths"
+    url: https://jeffe.cs.illinois.edu/teaching/algorithms/
+    kind: book
+    note: duyệt đồ thị tổng quát, DFS với thời điểm vào ra, Dijkstra, Bellman-Ford, MST
+  - title: "CLRS (ấn bản 4) — Chapters 20-22: Elementary Graph Algorithms, Minimum Spanning Trees, Single-Source Shortest Paths; Chapter 19: Data Structures for Disjoint Sets"
+    kind: book
+    note: chứng minh tính đúng, phân loại cạnh DFS, tính chất cắt của MST, union-find
+  - title: "MIT 6.006 (Spring 2020) — BFS, DFS, Topological Sort, Dijkstra, Bellman-Ford"
+    url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
+    kind: video
+    note: các bài giảng về đồ thị và đường đi ngắn nhất
+  - title: "Sedgewick & Wayne — Algorithms, Chapter 4: Graphs"
+    url: https://algs4.cs.princeton.edu/40graphs/
+    kind: web
+    note: biểu diễn, DFS và BFS, đồ thị có hướng, MST, đường đi ngắn nhất
+  - title: "Tarjan — Efficiency of a Good But Not Linear Set Union Algorithm (1975)"
+    kind: paper
+    note: phân tích union-find với nén đường và hợp theo hạng, hàm Ackermann ngược
+  - title: "Dijkstra — A note on two problems in connexion with graphs (1959)"
+    kind: paper
+    note: bài báo gốc của thuật toán đường đi ngắn nhất và của Prim
+  - title: "Russ Cox — Version SAT"
+    url: https://research.swtch.com/version-sat
+    kind: web
+    note: vì sao chọn phiên bản thoả mọi ràng buộc là NP-complete, khác với chỉ sắp thứ tự build
+---
+
+## Ý chính
+
+Mảng, danh sách, cây, bảng băm đều lưu **dữ liệu**; <Term>graph</Term> lưu **quan hệ**: ai nối với ai. Một đồ thị gồm tập **đỉnh** (vertex) và tập **cạnh** (edge) nối các cặp đỉnh. Nhìn đâu cũng thấy: mạng máy tính (router là đỉnh, đường truyền là cạnh), bản đồ đường đi, quan hệ bạn bè, các module phụ thuộc nhau, các bước của một quy trình, thậm chí cây là trường hợp đặc biệt của đồ thị (không có chu trình, liên thông). Gần như mọi bài toán "đi từ A tới B", "cái gì phải xong trước cái gì", "những thứ nào liên quan nhau" đều là bài toán đồ thị.
+
+Điều khiến đồ thị khác với các cấu trúc trước là không có thứ tự tự nhiên và có thể có chu trình, nên thuật toán nào cũng phải **nhớ mình đã đi qua đỉnh nào** để không quay vòng mãi. Bài này đi theo trình tự: từ vựng và hai cách biểu diễn (có đo bộ nhớ, thời gian); BFS và DFS, hai cách duyệt nền tảng; sắp xếp topo và phát hiện chu trình, áp vào đúng đồ thị phụ thuộc của roadmap này; thành phần liên thông và union-find; đường đi ngắn nhất (Dijkstra, Bellman-Ford); và cây khung nhỏ nhất. Mọi thuật toán được tự cài bằng Python 3.13, kiểm tra kết quả và đo trên máy thật. Bài dùng [heap](/docs/dsa/trees) (Dijkstra, Prim), [mảng và hàng đợi](/docs/dsa/arrays-linked-lists) (BFS), [bảng băm](/docs/dsa/hash-tables) (tập đỉnh đã thăm) và [sắp xếp](/docs/dsa/sorting) (Kruskal), và là chủ đề cuối của chặng.
+
+## Từ vựng
+
+| Thuật ngữ | Nghĩa |
+|---|---|
+| Có hướng, vô hướng | cạnh `u → v` chỉ đi một chiều, hay cạnh `u — v` đi hai chiều |
+| Có trọng số | mỗi cạnh mang một số (độ dài, chi phí, thời gian) |
+| Bậc (degree) | số cạnh nối với một đỉnh; với đồ thị có hướng chia thành bậc vào và bậc ra |
+| Đường đi, chu trình | dãy đỉnh nối nhau bằng cạnh; chu trình là đường đi quay về đỉnh đầu |
+| Liên thông | từ một đỉnh tới được mọi đỉnh khác; không liên thông thì chia thành các **thành phần** |
+| <Term>DAG</Term> | đồ thị có hướng **không có chu trình**: mô hình cho "phụ thuộc" |
+
+Hai đại lượng quyết định chi phí: `V` (số đỉnh) và `E` (số cạnh). Đồ thị đơn có `E` từ `0` tới `V(V-1)/2`. Gọi là **thưa** khi `E` cỡ `V` (bản đồ đường, mạng xã hội), **dày** khi `E` cỡ `V^2`.
+
+## Biểu diễn đồ thị
+
+**Ma trận kề**: bảng `V × V`, ô `[u][v]` cho biết có cạnh `u — v` không (hoặc trọng số). **Danh sách kề**: với mỗi đỉnh, một danh sách các đỉnh kề nó. Mỗi cách tối ưu một truy vấn khác nhau:
+
+| | Ma trận kề | Danh sách kề |
+|---|---|---|
+| Bộ nhớ | `Θ(V^2)` | `Θ(V + E)` |
+| Có cạnh `u — v` không | `O(1)` | `O(bậc của u)` (hoặc `O(1)` nếu dùng tập băm) |
+| Duyệt các láng giềng của `u` | `O(V)` | `O(bậc của u)` |
+| Duyệt mọi cạnh | `O(V^2)` | `O(V + E)` |
+
+Đo trên 4.000 đỉnh với ba mật độ, ma trận dùng `array('b')` (1 byte mỗi ô) để so sánh công bằng:
+
+```python
+# Biểu diễn đồ thị: ma trận kề vs danh sách kề. Đo bộ nhớ và thời gian của hai truy vấn.
+import random, time, tracemalloc
+from array import array
+
+def build(V, E, seed=1):
+    random.seed(seed)
+    edges = set()
+    while len(edges) < E:
+        u, v = random.randrange(V), random.randrange(V)
+        if u != v: edges.add((min(u, v), max(u, v)))
+    return list(edges)
+
+def as_matrix(V, edges):
+    m = [array('b', bytes(V)) for _ in range(V)]            # 1 byte mỗi ô để so sánh công bằng
+    for u, v in edges: m[u][v] = m[v][u] = 1
+    return m
+
+def as_lists(V, edges):
+    g = [[] for _ in range(V)]
+    for u, v in edges: g[u].append(v); g[v].append(u)
+    return g
+
+def mem(fn):
+    tracemalloc.start(); x = fn(); cur, _ = tracemalloc.get_traced_memory(); tracemalloc.stop(); return x, cur / 2**20
+
+V = 4000
+print(f"V = {V}")
+print(f"{'E':>9} {'mật độ':>8} | {'ma trận (MB)':>13} {'danh sách (MB)':>15} | {'duyệt hết láng giềng: ma trận / danh sách (ms)':>46} | {'hỏi 1 cạnh: ma trận / danh sách (µs)':>38}")
+for E in (8_000, 80_000, 4_000_000):
+    edges = build(V, E)
+    m, mm = mem(lambda: as_matrix(V, edges))
+    g, gm = mem(lambda: as_lists(V, edges))
+    def scan_m():
+        c = 0
+        for u in range(V):
+            row = m[u]
+            for v in range(V):
+                if row[v]: c += 1
+        return c
+    def scan_g():
+        c = 0
+        for u in range(V):
+            for v in g[u]: c += 1
+        return c
+    t = time.perf_counter(); scan_m(); tm = time.perf_counter() - t
+    t = time.perf_counter(); scan_g(); tg = time.perf_counter() - t
+    qs = [(random.randrange(V), random.randrange(V)) for _ in range(20000)]
+    t = time.perf_counter(); [m[u][v] for u, v in qs]; qm = (time.perf_counter() - t) / len(qs) * 1e6
+    t = time.perf_counter(); [v in g[u] for u, v in qs]; qg = (time.perf_counter() - t) / len(qs) * 1e6
+    print(f"{E:>9,} {E / (V*(V-1)/2):>8.2%} | {mm:>13.1f} {gm:>15.1f} | {tm*1000:>22.0f} / {tg*1000:<20.0f} | {qm:>14.2f} / {qg:<10.2f}")
+```
+
+```text
+V = 4000
+        E   mật độ |  ma trận (MB)  danh sách (MB) | duyệt hết láng giềng: ma trận / danh sách (ms) |   hỏi 1 cạnh: ma trận / danh sách (µs)
+    8,000    0.10% |          16.6             0.4 |                    337 / 1                    |           0.12 / 0.10      
+   80,000    1.00% |          16.6             1.6 |                    356 / 8                    |           0.12 / 0.56      
+4,000,000   50.01% |          16.6            64.1 |                   1002 / 1348                 |           0.17 / 95.26     
+```
+
+Đọc bảng:
+
+- **Bộ nhớ**: ma trận luôn 16,6 MB dù đồ thị có 8.000 hay 4 triệu cạnh. Danh sách kề tăng theo `E` (0,4 MB, 1,6 MB, rồi 64 MB). Ở độ dày 50% **danh sách còn tốn nhiều gấp khoảng 4 lần ma trận**, vì mỗi cạnh nằm hai lần (hai đầu mút) và mỗi mục là một con trỏ 8 byte, còn ô ma trận chỉ 1 byte. Ma trận chỉ thắng khi đồ thị dày hoặc khi trọng số/nhãn nhỏ.
+- **Duyệt hết láng giềng** của mọi đỉnh: với đồ thị thưa, danh sách chỉ mất khoảng **1 ms** trong khi ma trận mất **337 ms**, vì ma trận phải quét cả `V^2 = 16 triệu` ô trống. Ở 50% độ dày hai cách ngang nhau (ma trận còn nhanh hơn vì liền khối).
+- **Hỏi một cạnh**: ma trận luôn `O(1)` (khoảng 0,1 µs). Danh sách kề tìm tuyến tính trong list: ổn khi bậc nhỏ (0,1 µs đến 0,56 µs) nhưng thành **95 µs** khi mỗi đỉnh có trung bình 2.000 láng giềng. Muốn `O(1)` cho truy vấn này, dùng danh sách kề **bằng tập băm** thay vì list.
+
+Hầu hết đồ thị thực tế là thưa (một người có vài trăm bạn trong số hàng tỉ người), nên danh sách kề là lựa chọn mặc định, và mọi thuật toán dưới đây dùng nó. Ma trận kề đáng dùng cho đồ thị nhỏ hoặc dày, hay khi cần nhân ma trận (số đường đi độ dài `k`).
+
+## BFS và DFS: hai cách duyệt
+
+Cả hai bắt đầu từ một đỉnh nguồn `s` và thăm mọi đỉnh tới được, mỗi đỉnh một lần, nhờ một tập đánh dấu đã thăm; thời gian `O(V + E)`. Khác nhau ở **đỉnh nào được thăm tiếp theo**:
+
+- **BFS** (breadth-first, theo chiều rộng) dùng **hàng đợi**: thăm hết các đỉnh cách `s` một cạnh, rồi hai cạnh, rồi ba cạnh... Nên nó là thuật toán đường đi ngắn nhất (theo số cạnh) trong đồ thị không trọng số: lần đầu tới một đỉnh chính là bằng đường ngắn nhất.
+- **DFS** (depth-first, theo chiều sâu) dùng **stack** (hoặc đệ quy): đi sâu hết mức theo một nhánh rồi mới quay lại thử nhánh khác. Nó không cho đường ngắn nhất, nhưng ghi lại được **thời điểm vào và ra** của từng đỉnh, thứ nền tảng cho phát hiện chu trình và sắp xếp topo.
+
+Dưới đây là BFS, DFS (cài bằng vòng lặp để không chạm giới hạn đệ quy của Python, xem [Big-O & Complexity](/docs/dsa/complexity)), và các thuật toán xây trên chúng: phát hiện chu trình, sắp xếp topo hai cách, thành phần liên thông. Ví dụ chạy là mê cung lưới (BFS tìm đường ngắn nhất), một cây DFS nhỏ, và đồ thị phụ thuộc giữa các thư viện.
+
+```python
+# BFS, DFS, phát hiện chu trình, sắp xếp topo (hai cách), thành phần liên thông, trên danh sách kề.
+from collections import deque
+
+def bfs(g, s):
+    """Khoảng cách (số cạnh) ngắn nhất từ s tới mọi đỉnh tới được, cùng cây đường đi."""
+    dist, parent, q = {s: 0}, {s: None}, deque([s])
+    while q:
+        u = q.popleft()
+        for v in g[u]:
+            if v not in dist:
+                dist[v] = dist[u] + 1; parent[v] = u; q.append(v)
+    return dist, parent
+
+def path(parent, t):
+    out = []
+    while t is not None: out.append(t); t = parent.get(t)
+    return out[::-1]
+
+def dfs_order(g, s):
+    """DFS lặp, ghi thời điểm vào (pre) và ra (post)."""
+    pre, post, clock = {}, {}, 0
+    stack = [(s, iter(g[s]))]; pre[s] = clock; clock += 1
+    while stack:
+        u, it = stack[-1]
+        for v in it:
+            if v not in pre:
+                pre[v] = clock; clock += 1
+                stack.append((v, iter(g[v]))); break
+        else:
+            post[u] = clock; clock += 1; stack.pop()
+    return pre, post
+
+def find_cycle(g):
+    """Đồ thị có hướng: ba màu. Gặp đỉnh XÁM nghĩa là cạnh ngược, tức có chu trình. Trả về chu trình hoặc None."""
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {u: WHITE for u in g}; parent = {}
+    for root in g:
+        if color[root] != WHITE: continue
+        stack = [(root, iter(g[root]))]; color[root] = GRAY
+        while stack:
+            u, it = stack[-1]
+            for v in it:
+                if color[v] == WHITE:
+                    color[v] = GRAY; parent[v] = u; stack.append((v, iter(g[v]))); break
+                if color[v] == GRAY:                     # cạnh ngược u -> v: chu trình v ... u v
+                    cyc, x = [u], u
+                    while x != v: x = parent[x]; cyc.append(x)
+                    return cyc[::-1] + [v]
+            else:
+                color[u] = BLACK; stack.pop()
+    return None
+
+def topo_kahn(g):
+    """Kahn: liên tục lấy đỉnh có bậc vào bằng 0."""
+    indeg = {u: 0 for u in g}
+    for u in g:
+        for v in g[u]: indeg[v] += 1
+    q = deque(sorted(u for u in g if indeg[u] == 0)); order = []
+    while q:
+        u = q.popleft(); order.append(u)
+        for v in g[u]:
+            indeg[v] -= 1
+            if indeg[v] == 0: q.append(v)
+    return order if len(order) == len(g) else None      # thiếu đỉnh = có chu trình
+
+def topo_dfs(g):
+    """Đảo ngược thứ tự post-order của DFS."""
+    seen, out = set(), []
+    for root in sorted(g):
+        if root in seen: continue
+        seen.add(root)
+        stack = [(root, iter(sorted(g[root])))]
+        while stack:
+            u, it = stack[-1]
+            for v in it:
+                if v not in seen: seen.add(v); stack.append((v, iter(sorted(g[v])))); break
+            else: out.append(u); stack.pop()
+    return out[::-1]
+
+def components(g):
+    seen, comps = set(), []
+    for s in g:
+        if s in seen: continue
+        d, _ = bfs(g, s); seen |= set(d); comps.append(sorted(d))
+    return comps
+
+if __name__ == "__main__":
+    # mê cung lưới: '#' tường, S bắt đầu, E đích; BFS cho đường ngắn nhất
+    maze = ["S.#.....",
+            ".##.###.",
+            "....#...",
+            ".##...#E"]
+    R, C = len(maze), len(maze[0])
+    cells = {(r, c): [] for r in range(R) for c in range(C) if maze[r][c] != '#'}
+    for (r, c) in cells:
+        for dr, dc in ((1,0),(-1,0),(0,1),(0,-1)):
+            if (r+dr, c+dc) in cells: cells[(r, c)].append((r+dr, c+dc))
+    s = next(k for k in cells if maze[k[0]][k[1]] == 'S'); e = next(k for k in cells if maze[k[0]][k[1]] == 'E')
+    dist, parent = bfs(cells, s)
+    p = path(parent, e)
+    print(f"mê cung {R}x{C}: BFS tìm thấy đường ngắn nhất dài {dist[e]} bước, thăm {len(dist)} ô")
+    grid = [list(row) for row in maze]
+    for (r, c) in p[1:-1]: grid[r][c] = '*'
+    print("\n".join("".join(row) for row in grid))
+
+    # DFS: thời điểm vào/ra trên cây nhỏ
+    g = {"A": ["B", "C"], "B": ["D"], "C": ["D", "E"], "D": [], "E": ["B"]}
+    pre, post = dfs_order(g, "A")
+    print("\nDFS từ A:", {u: (pre[u], post[u]) for u in sorted(pre)}, " (vào, ra)")
+
+    # sắp xếp topo
+    deps = {"app": ["http", "log"], "http": ["tls", "socket"], "tls": ["crypto", "socket"], "log": ["fmt"],
+            "crypto": [], "socket": [], "fmt": []}
+    print("\nthứ tự build (Kahn):", topo_kahn(deps))
+    print("thứ tự build (DFS) :", topo_dfs(deps))
+    deps["socket"] = ["tls"]                                    # tạo vòng tls -> socket -> tls
+    print("sau khi thêm socket -> tls:  Kahn =", topo_kahn(deps), "| chu trình =", " -> ".join(find_cycle(deps)))
+
+    # thành phần liên thông
+    ug = {1: [2], 2: [1, 3], 3: [2], 4: [5], 5: [4], 6: []}
+    print("\nthành phần liên thông:", components(ug))
+```
+
+```text
+mê cung 4x8: BFS tìm thấy đường ngắn nhất dài 12 bước, thăm 22 ô
+S.#.....
+*##.###.
+****#***
+.##***#E
+
+DFS từ A: {'A': (0, 9), 'B': (1, 4), 'C': (5, 8), 'D': (2, 3), 'E': (6, 7)}  (vào, ra)
+
+thứ tự build (Kahn): ['app', 'http', 'log', 'tls', 'fmt', 'crypto', 'socket']
+thứ tự build (DFS) : ['app', 'log', 'fmt', 'http', 'tls', 'crypto', 'socket']
+sau khi thêm socket -> tls:  Kahn = None | chu trình = tls -> socket -> tls
+
+thành phần liên thông: [[1, 2, 3], [4, 5], [6]]
+```
+
+**BFS trong mê cung**: mỗi ô trống là một đỉnh, hai ô liền nhau là một cạnh. BFS từ `S` tìm ra đường ngắn nhất 12 bước tới `E` (các dấu `*`), sau khi thăm 22 ô. Cây `parent` mà BFS dựng lên cho phép dựng lại đường đi bằng cách lần ngược từ đích về nguồn.
+
+**DFS với thời điểm vào, ra** `(vào, ra)`: `A` có `(0, 9)` bao trùm mọi đỉnh còn lại vì mọi đỉnh được thăm trong khoảng thời gian `A` còn "đang mở". Tính chất cốt lõi: nếu khoảng `[vào, ra]` của `v` nằm trong khoảng của `u` thì `v` là hậu duệ của `u` trong cây DFS. Trong cây này `D` `(2, 3)` nằm trong `B` `(1, 4)`; `E` `(6, 7)` nằm trong `C` `(5, 8)`. Cạnh `E → B` đi tới đỉnh đã thăm xong (`B` ra lúc 4, trước khi `E` vào lúc 6) nên không phải cạnh ngược.
+
+### Phát hiện chu trình: ba màu
+
+Trong đồ thị **có hướng**, DFS tô mỗi đỉnh một trong ba màu: **trắng** (chưa thăm), **xám** (đang trong stack, đã vào nhưng chưa ra), **đen** (đã ra). Nếu từ `u` gặp cạnh tới đỉnh **xám**, tức đỉnh tổ tiên của `u` còn đang mở, thì đã tìm ra **cạnh ngược** và do đó có chu trình: `v → ... → u → v`. Đỉnh đen hay trắng thì không (đỉnh đen đã xong và không quay lại được đỉnh xám). Code `find_cycle` bên trên trả về đúng chu trình, ví dụ `tls → socket → tls` khi thêm cạnh `socket → tls` vào đồ thị phụ thuộc.
+
+### Sắp xếp topo
+
+Cho một DAG (như "module A cần module B"), **sắp xếp topo** xếp các đỉnh thành một hàng sao cho mọi cạnh `u → v` có `u` đứng trước `v`: thứ tự build hợp lệ. Có hai cách:
+
+- **Kahn**: đếm bậc vào của mỗi đỉnh; đỉnh bậc vào 0 chưa có điều kiện chặn nên xếp được; lấy nó ra, trừ bậc vào của các đỉnh nó chỉ tới, và lặp. Nếu hết hàng đợi mà vẫn còn đỉnh chưa xếp thì mọi đỉnh còn lại nằm trong hoặc sau một chu trình, nghĩa là đồ thị **có chu trình** và không tồn tại thứ tự.
+- **DFS**: đảo ngược thứ tự **ra** (post-order). Đỉnh ra sau cùng là đỉnh mà mọi thứ nó chỉ tới đã xong rồi.
+
+Cả hai `O(V + E)`. Hai thứ tự khác nhau trong output (`app, http, log, tls, fmt, crypto, socket` so với `app, log, fmt, http, tls, crypto, socket`), cả hai đều hợp lệ vì sắp xếp topo thường có nhiều đáp án. Khi thêm cạnh gây vòng, Kahn trả về `None` (không xếp hết), và `find_cycle` chỉ ra vòng cụ thể cho người đọc sửa.
+
+### Áp vào đồ thị thật: roadmap của site này
+
+Roadmap `cs-fundamentals` là một đồ thị: mỗi node là một đỉnh, `requires` là cạnh. Script dưới đây đọc đúng file YAML của site, chạy Kahn để xem có thứ tự học hợp lệ không, rồi tìm **đường tới hạn** (chuỗi `requires` dài nhất) bằng quy hoạch động trên thứ tự topo: độ dài tốt nhất tới một node bằng một cộng giá trị lớn nhất của các node nó cần.
+
+```js
+// Coi cs-fundamentals.yaml là đồ thị có hướng: node -> các node nó "requires". Tính thứ tự học và đường tới hạn.
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+const require = createRequire('D:/Workspace/fundamentals/package.json');
+const YAML = require('yaml');
+const rm = YAML.parse(readFileSync('D:/Workspace/fundamentals/content/roadmaps/cs-fundamentals.yaml', 'utf8'));
+
+const nodes = rm.sections.flatMap((s) => s.nodes.map((n) => ({ ...n, section: s.id })));
+const byId = new Map(nodes.map((n) => [n.id, n]));
+const out = new Map(nodes.map((n) => [n.id, []]));   // cạnh r -> n  (học r trước n)
+const indeg = new Map(nodes.map((n) => [n.id, 0]));
+let edges = 0;
+for (const n of nodes) for (const r of n.requires ?? []) { out.get(r).push(n.id); indeg.set(n.id, indeg.get(n.id) + 1); edges++; }
+console.log(`${nodes.length} node, ${edges} cạnh requires`);
+
+// Kahn: thứ tự học hợp lệ + độ sâu (số bước tối thiểu từ gốc) bằng DP trên thứ tự topo
+const q = nodes.filter((n) => indeg.get(n.id) === 0).map((n) => n.id);
+const deg = new Map(indeg), depth = new Map(q.map((id) => [id, 1])), order = [];
+while (q.length) {
+  const u = q.shift(); order.push(u);
+  for (const v of out.get(u)) {
+    depth.set(v, Math.max(depth.get(v) ?? 1, depth.get(u) + 1));
+    deg.set(v, deg.get(v) - 1);
+    if (deg.get(v) === 0) q.push(v);
+  }
+}
+console.log(order.length === nodes.length ? 'không có chu trình: có thứ tự học hợp lệ' : 'CÓ CHU TRÌNH');
+console.log('thứ tự Kahn :', order.join(' > '));
+
+// đường tới hạn: chuỗi requires dài nhất (DP trên thứ tự topo, truy vết cha)
+const best = new Map(), prev = new Map();
+for (const id of order) {
+  best.set(id, 1);
+  for (const r of byId.get(id).requires ?? []) if (best.get(r) + 1 > best.get(id)) { best.set(id, best.get(r) + 1); prev.set(id, r); }
+}
+const end = [...best].sort((a, b) => b[1] - a[1])[0][0];
+const chain = []; for (let c = end; c; c = prev.get(c)) chain.unshift(c);
+console.log(`đường tới hạn (${chain.length} node):`, chain.join(' > '));
+console.log('node cần nhiều bước nhất:', [...best].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id, d]) => `${id}=${d}`).join(', '));
+```
+
+```text
+25 node, 22 cạnh requires
+không có chu trình: có thứ tự học hợp lệ
+thứ tự Kahn : complexity > process-thread > io-devices > network-layers > relational-model > arrays-linked-lists > sorting > cpu-scheduling > synchronization > virtual-memory > ip-routing > normalization > hash-tables > trees > dynamic-programming > deadlock > transactions > file-systems > tcp-vs-udp > graphs > indexing > isolation-levels > dns > http > tls
+đường tới hạn (5 node): network-layers > ip-routing > tcp-vs-udp > http > tls
+node cần nhiều bước nhất: tls=5, graphs=4, indexing=4
+```
+
+Có 25 node và 22 cạnh, không có chu trình, và đường tới hạn là chuỗi 5 bước của chặng mạng: `network-layers → ip-routing → tcp-vs-udp → http → tls`, đúng với chuỗi bài trong [chặng Computer Networks](/docs/networking). Kết quả này không phải ngẫu nhiên: chính mã của site dùng cùng hai ý tưởng. Hàm kiểm tra của `npm run check` (xem `scripts/roadmap-core.mjs`) phát hiện "phụ thuộc vòng tròn" bằng DFS ba màu (`state` 1 là xám, 2 là đen) và in ra đúng chu trình dạng `a → b → a`; hàm `layoutSection` tính **chiều cao** từng node (độ dài chuỗi bắt buộc dài nhất đi xuống) bằng đệ quy có nhớ rồi chọn trục chính của chặng đi theo con cao nhất: chính là bài đường dài nhất trong DAG.
+
+## Thành phần liên thông và union-find
+
+Với đồ thị **vô hướng**, các **thành phần liên thông** là các nhóm đỉnh tới được nhau. BFS hoặc DFS từ một đỉnh chưa thăm tìm ra trọn một thành phần (hàm `components` ở trên cho `[[1, 2, 3], [4, 5], [6]]`). Nhưng nếu đồ thị **đang lớn dần** (cạnh mới liên tục được thêm vào) và cần trả lời "hai đỉnh này đã cùng nhóm chưa?" sau mỗi cạnh, chạy lại BFS mỗi lần là quá chậm.
+
+**Union-find** (disjoint set) giải đúng bài toán đó với hai thao tác: `find(x)` cho đại diện (gốc) của nhóm chứa `x`, và `union(a, b)` hợp hai nhóm. Mỗi nhóm là một cây, đại diện là gốc, mỗi đỉnh lưu cha của nó trong một mảng. Hai tối ưu làm nó gần như hằng số:
+
+- **Nén đường** (path compression): sau khi `find` đi từ `x` lên gốc, gắn mọi đỉnh trên đường đó thẳng vào gốc, các lần sau chỉ một bước.
+- **Hợp theo hạng** (union by rank): khi hợp, luôn gắn cây thấp vào dưới cây cao, nên cây không bao giờ cao quá `log n`.
+
+Dùng cả hai, `m` thao tác trên `n` phần tử tốn `O(m α(n))` với `α` là **hàm Ackermann ngược**, tăng chậm đến mức không vượt 4 với bất kỳ `n` nào có thể tồn tại trong vũ trụ: coi như hằng số. Dưới đây đo số bước đi lên của `find` trên chuỗi union tệ nhất (gắn gốc cũ dưới đỉnh mới nên cây thành đường thẳng nếu không có hợp theo hạng), cùng code Dijkstra, Bellman-Ford và MST ở các phần sau:
+
+```python
+# Union-find, Dijkstra, Bellman-Ford, Kruskal, Prim.
+import heapq, random, math, time
+
+class UF:
+    def __init__(self, n, compress=True, by_rank=True):
+        self.p, self.r, self.steps = list(range(n)), [0] * n, 0
+        self.compress, self.by_rank = compress, by_rank
+    def find(self, x):
+        root = x
+        while self.p[root] != root: root = self.p[root]; self.steps += 1
+        if self.compress:
+            while self.p[x] != root: self.p[x], x = root, self.p[x]
+        return root
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb: return False
+        if self.by_rank:
+            if self.r[ra] < self.r[rb]: ra, rb = rb, ra
+            self.p[rb] = ra
+            if self.r[ra] == self.r[rb]: self.r[ra] += 1
+        else:
+            self.p[rb] = ra                                  # luôn gắn b dưới a: dễ tạo chuỗi dài
+        return True
+
+def dijkstra(g, s):
+    dist, pq, settled = {s: 0}, [(0, s)], set()
+    while pq:
+        d, u = heapq.heappop(pq)
+        if u in settled: continue                            # bản cũ trong heap
+        settled.add(u)                                       # u được chốt: dist[u] không bao giờ đổi nữa
+        for v, w in g[u]:
+            if v not in settled and d + w < dist.get(v, math.inf):
+                dist[v] = d + w; heapq.heappush(pq, (d + w, v))
+    return dist
+
+def dijkstra_naive(g, s):                                    # O(V^2): quét tìm đỉnh nhỏ nhất
+    dist = {u: math.inf for u in g}; dist[s] = 0; done = set()
+    for _ in range(len(g)):
+        u = min((x for x in g if x not in done), key=lambda x: dist[x]); done.add(u)
+        for v, w in g[u]:
+            if dist[u] + w < dist[v]: dist[v] = dist[u] + w
+    return dist
+
+def bellman_ford(n, edges, s):
+    dist = [math.inf] * n; dist[s] = 0
+    for i in range(n - 1):
+        changed = False
+        for u, v, w in edges:
+            if dist[u] + w < dist[v]: dist[v] = dist[u] + w; changed = True
+        if not changed: break
+    neg = any(dist[u] + w < dist[v] for u, v, w in edges)    # còn nới lỏng được ở vòng n: có chu trình âm
+    return dist, neg
+
+def kruskal(n, edges):
+    uf, total, out = UF(n), 0, []
+    for w, u, v in sorted(edges):
+        if uf.union(u, v): total += w; out.append((u, v, w))
+    return total, out
+
+def prim(g, s):
+    seen, pq, total = {s}, [(w, s, v) for v, w in g[s]], 0
+    heapq.heapify(pq)
+    while pq and len(seen) < len(g):
+        w, u, v = heapq.heappop(pq)
+        if v in seen: continue
+        seen.add(v); total += w
+        for x, wx in g[v]:
+            if x not in seen: heapq.heappush(pq, (wx, v, x))
+    return total
+
+if __name__ == "__main__":
+    # 1) union-find: đo số bước đi lên của find khi gộp N đỉnh thành một
+    N = 5_000
+    print(f"union-find, {N:,} phần tử, {N-1:,} lần union liên tiếp + {N:,} lần find ngẫu nhiên:")
+    for compress, by_rank, name in ((False, False, "không tối ưu"), (True, False, "chỉ nén đường"), (False, True, "chỉ hợp theo hạng"), (True, True, "cả hai")):
+        uf = UF(N, compress, by_rank)
+        order = list(range(N - 1))
+        for i in order: uf.union(i + 1, i)      # gắn gốc cũ dưới đỉnh mới: tạo chuỗi dài nếu không có hợp theo hạng
+        random.seed(1)
+        for _ in range(N): uf.find(random.randrange(N))
+        print(f"  {name:<18} tổng số bước đi lên: {uf.steps:>14,} ({uf.steps / (2 * N):>9.2f} mỗi thao tác)")
+
+    # 2) đồ thị trọng số nhỏ: Dijkstra, Bellman-Ford, MST
+    edges = [(0,1,7),(0,3,5),(1,2,8),(1,3,9),(1,4,7),(2,4,5),(3,4,15),(3,5,6),(4,5,8),(4,6,9),(5,6,11)]
+    g = {i: [] for i in range(7)}
+    for u, v, w in edges: g[u].append((v, w)); g[v].append((u, w))
+    print("\nDijkstra từ 0:", dict(sorted(dijkstra(g, 0).items())))
+    print("Bellman-Ford  :", bellman_ford(7, edges + [(v, u, w) for u, v, w in edges], 0)[0])
+    print("MST Kruskal   :", kruskal(7, [(w, u, v) for u, v, w in edges]))
+    print("MST Prim (tổng):", prim(g, 0))
+
+    # 3) cạnh âm: Dijkstra sai, Bellman-Ford đúng; chu trình âm
+    d = {"s": [("a", 4), ("b", 5)], "a": [], "b": [("a", -3)]}
+    print("\ncạnh âm: s->a 4, s->b 5, b->a -3 (đường tốt nhất tới a là s->b->a = 2)")
+    print("  Dijkstra:", dijkstra(d, "s"), "<- sai (a = 4)")
+    ids = {"s": 0, "a": 1, "b": 2}
+    es = [(ids[u], ids[v], w) for u in d for v, w in d[u]]
+    print("  Bellman-Ford:", bellman_ford(3, es, 0))
+    print("chu trình âm  :", bellman_ford(3, [(0, 1, 1), (1, 2, -3), (2, 1, 1)], 0), "(neg=True)")
+
+    # 4) Dijkstra heap vs naive trên đồ thị ngẫu nhiên
+    print(f"\n{'V':>6} {'E':>8} | {'heap (ms)':>10} {'naive O(V^2) (ms)':>18}")
+    for V in (500, 1000, 2000, 4000):
+        random.seed(V); E = 5 * V
+        g = {i: [] for i in range(V)}
+        for _ in range(E):
+            u, v, w = random.randrange(V), random.randrange(V), random.randint(1, 100)
+            g[u].append((v, w))
+        t = time.perf_counter(); a = dijkstra(g, 0); t1 = time.perf_counter() - t
+        t = time.perf_counter(); b = dijkstra_naive(g, 0); t2 = time.perf_counter() - t
+        assert all(a.get(u, math.inf) == b[u] for u in g)
+        print(f"{V:>6} {E:>8} | {t1*1000:>10.1f} {t2*1000:>18.1f}")
+```
+
+```text
+union-find, 5,000 phần tử, 4,999 lần union liên tiếp + 5,000 lần find ngẫu nhiên:
+  không tối ưu       tổng số bước đi lên:     12,465,968 (  1246.60 mỗi thao tác)
+  chỉ nén đường      tổng số bước đi lên:          9,997 (     1.00 mỗi thao tác)
+  chỉ hợp theo hạng  tổng số bước đi lên:          9,996 (     1.00 mỗi thao tác)
+  cả hai             tổng số bước đi lên:          9,996 (     1.00 mỗi thao tác)
+
+Dijkstra từ 0: {0: 0, 1: 7, 2: 15, 3: 5, 4: 14, 5: 11, 6: 22}
+Bellman-Ford  : [0, 7, 15, 5, 14, 11, 22]
+MST Kruskal   : (39, [(0, 3, 5), (2, 4, 5), (3, 5, 6), (0, 1, 7), (1, 4, 7), (4, 6, 9)])
+MST Prim (tổng): 39
+
+cạnh âm: s->a 4, s->b 5, b->a -3 (đường tốt nhất tới a là s->b->a = 2)
+  Dijkstra: {'s': 0, 'a': 4, 'b': 5} <- sai (a = 4)
+  Bellman-Ford: ([0, 2, 5], False)
+chu trình âm  : ([0, -3, -4], True) (neg=True)
+
+     V        E |  heap (ms)  naive O(V^2) (ms)
+   500     2500 |        0.4               12.2
+  1000     5000 |        0.8               54.4
+  2000    10000 |        2.0              205.7
+  4000    20000 |        4.3              834.6
+```
+
+Phần đầu của output: không tối ưu gì cả, 5.000 phần tử tốn **12,5 triệu** bước đi lên (**1.247 bước mỗi thao tác**), vì cây thành đường thẳng dài 5.000. Chỉ cần nén đường **hoặc** chỉ cần hợp theo hạng là về khoảng **một bước mỗi thao tác**. Chuỗi thử này chưa đủ để tách riêng giá trị của từng tối ưu (cả hai đều thắng ở đây); lý thuyết cho bảo đảm `O(m log n)` với mỗi tối ưu riêng và `O(m α(n))` khi dùng cả hai.
+
+## Đường đi ngắn nhất trên đồ thị có trọng số
+
+BFS đúng cho đồ thị không trọng số vì mọi cạnh "dài" như nhau. Khi cạnh có độ dài khác nhau, đường ít cạnh nhất không còn là đường ngắn nhất.
+
+### Dijkstra
+
+**Dijkstra** giải bài toán với trọng số **không âm**, theo ý tưởng tham lam: luôn chốt đỉnh có khoảng cách tạm nhỏ nhất chưa chốt. Lý do đúng: với trọng số không âm, mọi đường tới đỉnh đó qua đỉnh chưa chốt đều không thể ngắn hơn khoảng cách tạm nhỏ nhất, nên khoảng cách của nó đã là cuối cùng. Với heap nhị phân (xem [Tree](/docs/dsa/trees)) để lấy đỉnh nhỏ nhất, thời gian `O((V + E) log V)`.
+
+Code `dijkstra` ở trên dùng tập `settled` và cho phép đưa nhiều bản của một đỉnh vào heap ("xoá lười": heap không hỗ trợ giảm khoá, nên ta đẩy bản mới và bỏ qua bản cũ khi pop). Bản `dijkstra_naive` quét tuyến tính tìm đỉnh nhỏ nhất, `O(V^2)`. Đối chiếu ở phần cuối output (đồ thị ngẫu nhiên có `E = 5V`, hai bản cho cùng kết quả): với 4.000 đỉnh, heap chạy **4,3 ms** còn bản quét tuyến tính **834,6 ms**, chênh khoảng 200 lần và chênh tăng theo `V`, đúng như `V^2` so với `V log V`. Với đồ thị dày (`E` cỡ `V^2`) thì bản quét tuyến tính mới có thể ngang bằng, vì heap lúc đó không còn lợi thế.
+
+**Trọng số âm làm Dijkstra sai**: ví dụ `s → a` nặng 4, `s → b` nặng 5, `b → a` nặng -3. Đường tốt nhất tới `a` là `s → b → a` với độ dài 2. Nhưng Dijkstra chốt `a` ở khoảng cách 4 (nhỏ hơn `b = 5`) trước khi biết tới cạnh âm, và không bao giờ cập nhật lại: output ghi `'a': 4`, sai. Giả định "không có đường nào qua đỉnh chưa chốt ngắn hơn" sụp đổ khi cạnh âm kéo khoảng cách xuống.
+
+### Bellman-Ford
+
+**Bellman-Ford** chấp nhận trọng số âm. Ý tưởng: nới lỏng (relax) **mọi cạnh**, lặp `V - 1` vòng; đường đi ngắn nhất không có chu trình có tối đa `V - 1` cạnh, nên sau `i` vòng mọi đường ngắn nhất có `≤ i` cạnh đã đúng. Thời gian `O(VE)`, chậm hơn Dijkstra, nhưng đúng với cạnh âm: output cho `a = 2`. Thêm một lần nới lỏng nữa: nếu còn cạnh nào giảm được khoảng cách thì có **chu trình âm** (đi vòng mãi để giảm), và khi đó "đường đi ngắn nhất" không tồn tại. Ví dụ cuối trong output (`1 → 2` nặng -3, `2 → 1` nặng 1, chu trình có tổng -2) trả về `True` ở vị trí cờ chu trình âm.
+
+| Thuật toán | Trọng số | Thời gian | Dùng khi |
+|---|---|---|---|
+| BFS | không trọng số | `O(V + E)` | số cạnh ít nhất |
+| Dijkstra (heap) | không âm | `O((V + E) log V)` | mặc định cho bản đồ, mạng |
+| Bellman-Ford | có âm, phát hiện chu trình âm | `O(VE)` | cạnh âm, hoặc kiểm tra chu trình âm |
+
+## Cây khung nhỏ nhất (MST)
+
+Cho đồ thị vô hướng liên thông có trọng số, **cây khung** là tập `V - 1` cạnh nối mọi đỉnh mà không có chu trình; **cây khung nhỏ nhất** là cây có tổng trọng số nhỏ nhất. Ví dụ: nối các toà nhà bằng dây mạng với tổng chiều dài ngắn nhất. Hai thuật toán tham lam đều dựa trên **tính chất cắt**: với mọi cách chia đỉnh làm hai nhóm, cạnh nhẹ nhất đi qua ranh giới luôn thuộc một MST nào đó.
+
+- **Kruskal**: sắp xếp cạnh theo trọng số tăng dần; duyệt từng cạnh, thêm vào nếu **không tạo chu trình**, tức hai đầu mút ở hai nhóm khác nhau trong union-find. `O(E log E)`, chủ yếu là sắp xếp (xem [Sorting](/docs/dsa/sorting)).
+- **Prim**: bắt đầu từ một đỉnh, mỗi lần thêm cạnh nhẹ nhất nối cây hiện tại với một đỉnh bên ngoài, dùng heap. `O(E log V)`. Trông giống Dijkstra nhưng khoá heap là **trọng số một cạnh**, không phải tổng khoảng cách từ nguồn.
+
+Trên đồ thị 7 đỉnh trong output, Kruskal và Prim cùng cho tổng **39** (Kruskal liệt kê được cả 6 cạnh: `(0,3,5)`, `(2,4,5)`, `(3,5,6)`, `(0,1,7)`, `(1,4,7)`, `(4,6,9)`). MST có thể không duy nhất khi có hai cạnh cùng trọng số, nhưng tổng thì luôn bằng nhau.
+
+## Trong hệ thống thật
+
+- **Định tuyến mạng**: giao thức trạng thái liên kết như OSPF cho mỗi router chạy Dijkstra trên đồ thị mạng; RIP dùng ý tưởng của Bellman-Ford phân tán (distance vector). Xem [IP & Routing](/docs/networking/ip-routing) để hiểu bảng định tuyến.
+- **Hệ thống build** (Make, Bazel, Gradle, npm scripts): đồ thị phụ thuộc là DAG; build theo sắp xếp topo, chạy song song các đỉnh không phụ thuộc nhau, và báo lỗi khi có chu trình. `git log` cũng là DAG của các commit.
+- **Quản lý gói**: sắp thứ tự cài là sắp xếp topo, nhưng **chọn phiên bản** thoả mọi ràng buộc là NP-complete (xem bài của Russ Cox trong phần tham khảo), nên trình giải phụ thuộc phải dùng quay lui hoặc bộ giải SAT.
+- **Phát hiện deadlock**: đồ thị chờ (wait-for graph) có đỉnh là transaction hoặc thread, cạnh `A → B` khi A đợi tài nguyên B giữ; **chu trình trong đồ thị này chính là deadlock** (xem [Deadlock](/docs/os/deadlock)). Cơ sở dữ liệu như PostgreSQL phát hiện deadlock bằng cách tìm chu trình trong đồ thị chờ.
+- **Garbage collector**: pha đánh dấu duyệt đồ thị tham chiếu từ các gốc (stack, biến toàn cục) bằng DFS hoặc BFS; đối tượng không tới được thì bị thu hồi (xem [Virtual Memory](/docs/os/virtual-memory) cho phần bộ nhớ bên dưới).
+- **Web crawler và mạng xã hội**: BFS theo "số bước từ trang gốc" hoặc "bạn của bạn"; PageRank là thuật toán lặp trên đồ thị liên kết.
+
+## Quan sát và chẩn đoán
+
+- **`RecursionError` khi DFS**: đồ thị sâu (đường dài 10.000 đỉnh) làm DFS đệ quy tràn stack. Viết DFS bằng stack tường minh như `dfs_order` ở trên.
+- **BFS và DFS không dừng**: quên tập đã thăm trên đồ thị có chu trình. Đánh dấu đỉnh **khi đẩy vào** hàng đợi (BFS), không phải khi lấy ra, để một đỉnh không vào hàng đợi nhiều lần.
+- **Hết bộ nhớ khi biểu diễn đồ thị lớn**: ma trận kề cho đồ thị thưa tốn `V^2`; chuyển sang danh sách kề.
+- **Dijkstra trả kết quả sai trên dữ liệu thật**: kiểm tra có cạnh nào âm không (một cạnh "hoàn tiền" hay "bù" là đủ); nếu có, dùng Bellman-Ford.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Chương trình treo khi duyệt đồ thị | không đánh dấu đỉnh đã thăm, trong đồ thị có chu trình | tập `visited`, đánh dấu khi đẩy vào hàng đợi |
+| Đường đi "ngắn nhất" dài hơn kỳ vọng | dùng BFS trên đồ thị có trọng số | Dijkstra |
+| Dijkstra cho đáp án sai | có cạnh trọng số âm | Bellman-Ford |
+| Dijkstra chậm khi `V` lớn | tìm đỉnh nhỏ nhất bằng quét tuyến tính | dùng heap |
+| Sắp xếp topo không xếp hết | đồ thị có chu trình | tìm chu trình bằng DFS ba màu và báo lại |
+| Union-find chậm dần | thiếu nén đường hoặc hợp theo hạng | cài cả hai |
+
+## Lưu ý
+
+- Chọn biểu diễn theo mật độ và truy vấn: danh sách kề là mặc định cho đồ thị thưa; ma trận kề cho đồ thị nhỏ, dày hoặc cần truy vấn cạnh `O(1)`.
+- BFS cho đường đi ngắn nhất **theo số cạnh** (đồ thị không trọng số); DFS không cho đường ngắn nhất nhưng là nền của phát hiện chu trình và sắp xếp topo.
+- DFS cho đồ thị có hướng dùng **ba màu**: gặp đỉnh xám là có chu trình. Hai màu (chỉ "đã thăm hay chưa") không đủ cho đồ thị có hướng.
+- Sắp xếp topo chỉ tồn tại với **DAG**; thường có nhiều đáp án hợp lệ.
+- Dijkstra yêu cầu **trọng số không âm**. Một cạnh âm là đủ để nó trả đáp án sai mà không báo lỗi.
+- Bellman-Ford chậm hơn (`O(VE)`) nhưng xử lý được cạnh âm và phát hiện chu trình âm; nếu có chu trình âm thì khoảng cách ngắn nhất không có nghĩa.
+- Heap nhị phân không hỗ trợ giảm khoá hiệu quả; cài đặt phổ biến là đẩy bản mới và bỏ qua bản cũ khi pop.
+- Union-find cần cả nén đường và hợp theo hạng để đạt gần hằng số; thiếu cả hai, cây có thể thành đường thẳng.
+- Cây khung nhỏ nhất có thể không duy nhất, nhưng tổng trọng số duy nhất. Kruskal và Prim đều cho đáp án đúng; chọn theo cách dữ liệu đến (danh sách cạnh hay danh sách kề).
+- Nhiều bài toán trông giống đồ thị đơn giản nhưng khó: đường đi đơn dài nhất, người bán hàng (TSP), chọn phiên bản gói đều là NP-hard hoặc NP-complete; đừng kỳ vọng thuật toán đa thức.
