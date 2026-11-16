@@ -1,0 +1,519 @@
+---
+title: Array & Linked List
+description: Bố cục bộ nhớ của mảng và danh sách liên kết, dynamic array và chính sách thu nhỏ, danh sách đơn và đôi tự cài, vì sao mảng thắng trên phần cứng thật (có số đo), cùng stack, queue, deque và ring buffer.
+status: draft
+tags: [dsa, array, linked-list]
+authors: [tranquocvy]
+references:
+  - title: "Open Data Structures — Chapter 2: Array-Based Lists; Chapter 3: Linked Lists"
+    url: https://opendatastructures.org/ods-python/2_Array_Based_Lists.html
+    kind: book
+    note: ArrayStack, ArrayDeque, SLList, DLList và phân tích chi phí từng thao tác
+  - title: "MIT 6.006 (Spring 2020) — Sequence Interface, Linked Lists and Dynamic Arrays"
+    url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
+    kind: video
+    note: bảng chi phí thao tác của các cấu trúc dãy
+  - title: "CLRS (ấn bản 4) — Section 10.1: Simple array-based data structures; Section 10.2: Linked lists"
+    kind: book
+    note: stack, queue bằng mảng; danh sách liên kết và nút canh (sentinel)
+  - title: "Ulrich Drepper — What Every Programmer Should Know About Memory"
+    url: https://people.freebsd.org/~lstewart/articles/cpumemory.pdf
+    kind: paper
+    note: cache line, prefetch và vì sao duyệt liền kề nhanh hơn
+  - title: "Python wiki — TimeComplexity"
+    url: https://wiki.python.org/moin/TimeComplexity
+    kind: web
+    note: chi phí thao tác của list và collections.deque
+  - title: "CPython source — Objects/listobject.c"
+    url: https://github.com/python/cpython/blob/main/Objects/listobject.c
+    kind: web
+    note: list_resize, công thức sức chứa mới
+  - title: "Linux kernel documentation — Linked Lists (list.h)"
+    url: https://docs.kernel.org/core-api/list.html
+    kind: web
+    note: danh sách đôi xâu vào ngay trong struct (intrusive list)
+---
+
+## Ý chính
+
+Mọi chương trình đều cần giữ một **dãy** phần tử: các request đang chờ, các dòng của một file, các bước của một thuật toán. Có hai cách nền tảng để nhớ một dãy. Cách thứ nhất xếp các phần tử **liền nhau** trong một khối bộ nhớ: đó là <Term>array</Term>. Cách thứ hai rải các phần tử ở bất kỳ đâu và mỗi phần tử mang theo **con trỏ** tới phần tử kế: đó là <Term>linked list</Term>. Hai cách trả lời hai câu hỏi khác nhau, "phần tử thứ `i` ở đâu" và "sau phần tử này là gì", nên chi phí các thao tác đảo nhau: mảng lấy phần tử thứ `i` trong `O(1)` nhưng chèn vào giữa tốn `O(n)`; danh sách liên kết chèn sau một nút trong `O(1)` nhưng lấy phần tử thứ `i` tốn `O(i)`.
+
+Trên giấy, hai bên hoà nhau ở nhiều thao tác và sách giáo khoa hay kết luận "tuỳ nhu cầu". Trên máy thật, mảng thắng gần như mọi bài toán thực tế, và lý do không nằm ở Big-O mà ở cách CPU đọc bộ nhớ (xem phần cuối [Big-O & Complexity](/docs/dsa/complexity)). Bài này đi theo trình tự: bố cục bộ nhớ của hai cấu trúc, dynamic array (cách mảng "co giãn được"), danh sách đơn và đôi tự cài, một thí nghiệm tách riêng yếu tố bố cục để cho thấy cái giá của con trỏ, rồi stack, queue, deque và ring buffer, những cấu trúc dựng trên hai nền này.
+
+Code là Python 3.13. Python che mất nhiều chi tiết bộ nhớ (mọi thứ đều là object), nên khi cần nhìn bộ nhớ thô, mình dùng module `array` và `ctypes`.
+
+## Hai cách xếp một dãy
+
+### Mảng: địa chỉ tính bằng phép nhân
+
+Mảng cấp một khối liền gồm `n` ô cùng cỡ `s` byte. Phần tử thứ `i` ở địa chỉ `base + i * s`: một phép nhân và một phép cộng, không phụ thuộc `i`, nên truy cập là `O(1)` thật sự. Có thể nhìn thấy điều đó trên `array('q')` của Python (số nguyên 8 byte), đọc lại bộ nhớ thô bằng `ctypes`:
+
+```python
+import sys, ctypes
+from array import array
+
+a = array('q', [10, 20, 30, 40])
+addr, length = a.buffer_info()
+print("array('q'): địa chỉ đầu =", hex(addr), " số phần tử =", length)
+for i in range(4):
+    p = ctypes.c_int64.from_address(addr + 8 * i).value
+    print(f"  a[{i}] ở {hex(addr + 8*i)} (đầu + {8*i:>2} byte) = {p}")
+
+print()
+L = [1000 + i * 7919 for i in range(4)]       # int lớn, mỗi cái là một object riêng
+print("list: kích thước của chính list =", sys.getsizeof(L), "byte (4 con trỏ x 8 + phần đầu)")
+for i, x in enumerate(L):
+    print(f"  L[{i}] -> object ở {hex(id(x))}, kích thước object = {sys.getsizeof(x)} byte")
+
+print()
+for n in (1000, 100_000):
+    arr = array('q', range(n))
+    lst = list(range(n, 2 * n))
+    objs = sum(sys.getsizeof(x) for x in lst)
+    print(f"n={n:>7}: array('q') = {sys.getsizeof(arr):>9} byte | list = {sys.getsizeof(lst):>9} byte + {objs:>9} byte cho các int bên trong")
+```
+
+```text
+array('q'): địa chỉ đầu = 0x2478c13f390  số phần tử = 4
+  a[0] ở 0x2478c13f390 (đầu +  0 byte) = 10
+  a[1] ở 0x2478c13f398 (đầu +  8 byte) = 20
+  a[2] ở 0x2478c13f3a0 (đầu + 16 byte) = 30
+  a[3] ở 0x2478c13f3a8 (đầu + 24 byte) = 40
+
+list: kích thước của chính list = 88 byte (4 con trỏ x 8 + phần đầu)
+  L[0] -> object ở 0x2478c13f4d0, kích thước object = 28 byte
+  L[1] -> object ở 0x2478c13f550, kích thước object = 28 byte
+  L[2] -> object ở 0x2478c13f970, kích thước object = 28 byte
+  L[3] -> object ở 0x2478c13f990, kích thước object = 28 byte
+
+n=   1000: array('q') =      8320 byte | list =      8056 byte + 28000 byte cho các int bên trong
+n= 100000: array('q') =    816640 byte | list =    800056 byte + 2800000 byte cho các int bên trong
+```
+
+Hai điều nhìn thấy:
+
+- `array('q')` đúng là khối liền: địa chỉ các phần tử cách đều đúng 8 byte. Đây là toàn bộ bí mật của `O(1)`.
+- `list` của Python **không phải** mảng giá trị mà là **mảng con trỏ** (8 byte mỗi ô) tới các object nằm ở chỗ khác, và địa chỉ các object này không đều nhau (`...4d0`, `...550`, `...970`, `...990`). Với 100.000 số nguyên, `array('q')` tốn khoảng 0,8 MB còn `list` tốn 0,8 MB cho con trỏ cộng thêm 2,8 MB cho các object `int`. Cùng một "mảng", Python đã đổi bố cục liền kề lấy tính linh hoạt (mỗi ô chứa được kiểu gì cũng được).
+
+### Danh sách liên kết: địa chỉ không tính được
+
+Danh sách liên kết cấp từng **nút** riêng, mỗi nút chứa giá trị và con trỏ `next` (và `prev` nếu là danh sách đôi). Nút nằm ở đâu cũng được; chỉ có con trỏ nối chúng. Hệ quả:
+
+- Không có công thức cho "nút thứ `i`": phải đi từ đầu qua `i` con trỏ, `O(i)`.
+- Nhưng khi đã **cầm sẵn một nút**, chèn sau nó hay cắt nó ra chỉ là đổi vài con trỏ: `O(1)`, không phải dịch ai.
+- Mỗi nút tốn thêm bộ nhớ cho con trỏ và cho phần quản lý của allocator.
+
+Bảng chi phí tổng quát, trong đó "có nút trong tay" nghĩa là đã biết vị trí mà không cần tìm:
+
+| Thao tác | Mảng | Danh sách đơn | Danh sách đôi |
+|---|---|---|---|
+| Truy cập phần tử thứ `i` | `O(1)` | `O(i)` | `O(i)` |
+| Chèn hoặc xoá ở đầu | `O(n)` | `O(1)` | `O(1)` |
+| Chèn hoặc xoá ở cuối | `O(1)` amortized (chèn); `O(1)` (xoá) | `O(1)` chèn nếu giữ tail; xoá `O(n)` | `O(1)` |
+| Chèn sau một nút đã có trong tay | `O(n)` (dịch phần sau) | `O(1)` | `O(1)` |
+| Xoá một nút đã có trong tay | `O(n)` | `O(n)` (cần nút trước) | `O(1)` |
+| Tìm theo giá trị | `O(n)` | `O(n)` | `O(n)` |
+
+Ô "xoá nút đã có trong tay" là lý do tồn tại của danh sách đôi: muốn gỡ một nút khỏi danh sách đơn, cần sửa con trỏ của nút **đứng trước** nó, mà nút đó thì chỉ tìm được bằng cách duyệt từ đầu.
+
+## Dynamic array
+
+Mảng thuần có kích thước cố định, nhưng ta muốn một dãy "dài ra khi cần". <Term>Dynamic array</Term> giải bằng cách giữ một mảng lớn hơn số phần tử đang dùng (`cap` so với `n`), thêm vào cuối thì ghi vào ô trống kế tiếp; khi đầy thì cấp mảng mới gấp đôi, chép sang, bỏ mảng cũ. Phần phân tích amortized của việc này nằm ở [Big-O & Complexity](/docs/dsa/complexity): nhân sức chứa lên thì `append` là `O(1)` amortized. Điều còn lại cần bàn là hướng ngược: **khi nào thu nhỏ**.
+
+Chính sách ngây thơ nghe hợp lý: "còn nửa là thu nhỏ một nửa cho đỡ phí". Hãy đếm số lần sao chép khi chương trình đẩy và rút xen kẽ đúng quanh ngưỡng đó:
+
+```python
+class DynArray:
+    def __init__(self, shrink_at):
+        self.cap, self.n, self.copies, self.shrink_at = 4, 0, 0, shrink_at
+    def push(self):
+        if self.n == self.cap:
+            self.copies += self.n; self.cap *= 2
+        self.n += 1
+    def pop(self):
+        self.n -= 1
+        if self.cap > 4 and self.n <= self.cap * self.shrink_at:
+            self.copies += self.n; self.cap //= 2      # cấp mảng nhỏ hơn, chép sang
+
+def trial(name, shrink_at):
+    a = DynArray(shrink_at)
+    for _ in range(1024): a.push()              # đưa tới đúng ngưỡng: n = cap = 1024
+    base = a.copies
+    for _ in range(1000):                        # rồi đẩy-rút xen kẽ ngay quanh ngưỡng
+        a.push(); a.pop()
+    print(f"{name:<34} thêm {a.copies - base:>9} lần sao chép cho 2000 thao tác")
+
+trial("thu nhỏ khi còn 1/2 (n <= cap/2)", 0.5)
+trial("thu nhỏ khi còn 1/4 (n <= cap/4)", 0.25)
+```
+
+```text
+thu nhỏ khi còn 1/2 (n <= cap/2)   thêm   2048000 lần sao chép cho 2000 thao tác
+thu nhỏ khi còn 1/4 (n <= cap/4)   thêm      1024 lần sao chép cho 2000 thao tác
+```
+
+Với chính sách "còn một nửa thì thu", mỗi lần đẩy làm đầy mảng rồi mở rộng gấp đôi, mỗi lần rút lại rơi về đúng ngưỡng nên thu nhỏ: mỗi cặp thao tác tốn khoảng 2000 lần sao chép, tổng hơn hai triệu cho 2000 thao tác, tức `O(n)` cho **mỗi** thao tác (**thrashing**: mảng dao động qua lại). Chính sách "còn một phần tư mới thu" chỉ tốn đúng một lần mở rộng ban đầu. Lý do: sau khi thu nhỏ về `cap/2`, mảng mới mới đầy một nửa, cần thêm `cap/4` lần rút hoặc `cap/4` lần đẩy nữa mới chạm ngưỡng kế tiếp, nên chi phí thu nhỏ được trả dần bằng một chuỗi thao tác dài (amortized `O(1)` trở lại).
+
+Quy tắc rút ra: **ngưỡng thu nhỏ phải thấp hơn hẳn ngưỡng mở rộng** để có khoảng đệm.
+
+### Trong thư viện thật
+
+| Cài đặt | Hệ số khi đầy | Ghi chú |
+|---|---|---|
+| CPython `list` | khoảng `1,125` (xem bài Complexity: sức chứa đi 4, 8, 16, 24, 32, 40, 52, ...) | ưu tiên tiết kiệm RAM |
+| Java `ArrayList` | `1,5` | `newCapacity = old + (old >> 1)` |
+| C++ `std::vector` | tuỳ thư viện, thường `2` hoặc `1,5` | chuẩn không ép hệ số, chỉ ép amortized `O(1)` |
+| Go `slice` | `2` tới khi nhỏ, sau đó giảm dần về khoảng `1,25` | runtime tự chọn; dùng `append` sẽ cấp lại khi vượt `cap` |
+
+Điều này ảnh hưởng tới code hằng ngày: `append` là `O(1)` amortized, nhưng con trỏ tới phần tử cũ có thể **mất hiệu lực** sau một lần cấp lại (trong C++ là iterator invalidation, trong Go là slice cũ vẫn trỏ vào mảng cũ).
+
+## Danh sách liên kết tự cài
+
+Dưới đây là danh sách đơn có `head` và `tail`, rồi danh sách đôi có nút canh, và một số bài kinh điển. Mỗi nút dùng `__slots__` để bỏ dict thừa của Python (phần đo bộ nhớ ở dưới dùng chính lớp này).
+
+```python
+class Node:
+    __slots__ = ("val", "next")
+    def __init__(self, val, next=None):
+        self.val, self.next = val, next
+
+class SinglyLinkedList:
+    def __init__(self):
+        self.head = self.tail = None
+        self.n = 0
+    def push_front(self, v):                       # O(1)
+        self.head = Node(v, self.head)
+        if self.tail is None: self.tail = self.head
+        self.n += 1
+    def push_back(self, v):                        # O(1) nhờ giữ tail
+        node = Node(v)
+        if self.tail is None: self.head = self.tail = node
+        else: self.tail.next = node; self.tail = node
+        self.n += 1
+    def pop_front(self):                           # O(1)
+        node = self.head
+        self.head = node.next
+        if self.head is None: self.tail = None
+        self.n -= 1
+        return node.val
+    def pop_back(self):                            # O(n): phải đi tìm nút áp chót
+        if self.head is self.tail: return self.pop_front()
+        cur = self.head
+        while cur.next is not self.tail: cur = cur.next
+        v = self.tail.val
+        cur.next = None; self.tail = cur; self.n -= 1
+        return v
+    def insert_after(self, node, v):               # O(1) nếu đã có nút trong tay
+        node.next = Node(v, node.next)
+        if node is self.tail: self.tail = node.next
+        self.n += 1
+    def get(self, i):                              # O(i): không có truy cập ngẫu nhiên
+        cur = self.head
+        for _ in range(i): cur = cur.next
+        return cur.val
+    def reverse(self):                             # O(n), tại chỗ, đảo con trỏ
+        prev, cur = None, self.head
+        self.tail = self.head
+        while cur:
+            cur.next, prev, cur = prev, cur, cur.next
+        self.head = prev
+    def middle(self):                              # hai con trỏ nhanh/chậm
+        slow = fast = self.head
+        while fast and fast.next:
+            slow, fast = slow.next, fast.next.next
+        return slow.val
+    def __iter__(self):
+        cur = self.head
+        while cur: yield cur.val; cur = cur.next
+
+def has_cycle(head):                               # Floyd: thỏ và rùa
+    slow = fast = head
+    while fast and fast.next:
+        slow, fast = slow.next, fast.next.next
+        if slow is fast: return True
+    return False
+
+class DNode:
+    __slots__ = ("val", "prev", "next")
+    def __init__(self, val): self.val, self.prev, self.next = val, None, None
+
+class DoublyLinkedList:
+    """Danh sách đôi có nút canh (sentinel) để không phải xử lý biên."""
+    def __init__(self):
+        self.s = DNode(None); self.s.prev = self.s.next = self.s
+        self.n = 0
+    def _link(self, left, v):                      # chèn sau nút left, O(1)
+        node = DNode(v)
+        node.prev, node.next = left, left.next
+        left.next.prev = node; left.next = node
+        self.n += 1
+        return node
+    def push_front(self, v): return self._link(self.s, v)
+    def push_back(self, v):  return self._link(self.s.prev, v)
+    def remove(self, node):                        # xoá chính nút này, O(1) (đơn không làm được)
+        node.prev.next, node.next.prev = node.next, node.prev
+        self.n -= 1
+    def __iter__(self):
+        cur = self.s.next
+        while cur is not self.s: yield cur.val; cur = cur.next
+
+if __name__ == "__main__":
+    s = SinglyLinkedList()
+    for v in (3, 2, 1): s.push_front(v)            # 1 2 3
+    for v in (4, 5): s.push_back(v)                # 1 2 3 4 5
+    print("sau push:", list(s), " n =", s.n)
+    s.insert_after(s.head.next, 99)
+    print("insert_after nút thứ hai:", list(s))
+    print("get(3) =", s.get(3), "| middle =", s.middle())
+    s.reverse()
+    print("reverse:", list(s), "| head =", s.head.val, "tail =", s.tail.val)
+    print("pop_front =", s.pop_front(), "| pop_back =", s.pop_back(), "->", list(s))
+
+    a = SinglyLinkedList()
+    for v in range(6): a.push_back(v)
+    print("có vòng?", has_cycle(a.head), end="  ->  ")
+    a.tail.next = a.head.next.next                 # nối đuôi vào nút thứ 3: tạo vòng
+    print("sau khi nối đuôi về nút giữa:", has_cycle(a.head))
+
+    d = DoublyLinkedList()
+    nodes = [d.push_back(v) for v in "abcde"]
+    d.remove(nodes[2])                             # xoá 'c' mà không cần duyệt từ đầu
+    d.push_front("z")
+    print("danh sách đôi:", list(d), " n =", d.n)
+```
+
+```text
+sau push: [1, 2, 3, 4, 5]  n = 5
+insert_after nút thứ hai: [1, 2, 99, 3, 4, 5]
+get(3) = 3 | middle = 3
+reverse: [5, 4, 3, 99, 2, 1] | head = 5 tail = 1
+pop_front = 5 | pop_back = 1 -> [4, 3, 99, 2]
+có vòng? False  ->  sau khi nối đuôi về nút giữa: True
+danh sách đôi: ['z', 'a', 'b', 'd', 'e']  n = 5
+```
+
+Mấy điểm đáng đọc kỹ trong code:
+
+- **`push_back` là `O(1)` chỉ vì giữ `tail`.** Bỏ `tail`, mỗi lần thêm cuối phải duyệt cả danh sách. `pop_back` vẫn `O(n)` vì phải tìm nút áp chót, và chỉ danh sách đôi (có `prev`) mới làm nó `O(1)`.
+- **`reverse` đảo con trỏ tại chỗ, không cấp thêm nút**: ba biến `prev`, `cur`, và phép gán đồng thời `cur.next, prev, cur = prev, cur, cur.next` (vế phải đánh giá hết trước khi gán). `O(n)` thời gian, `O(1)` bộ nhớ phụ. Đây là bài kinh điển vì sai một thứ tự gán là mất cả phần đuôi.
+- **`middle` và `has_cycle` dùng hai con trỏ chạy khác tốc độ** (Floyd). Khi con trỏ nhanh tới cuối thì con trỏ chậm đang ở giữa. Nếu có vòng, con trỏ nhanh sẽ vòng lại và đuổi kịp con trỏ chậm, và hai con trỏ chỉ gặp nhau khi có vòng. Hai biến, không cần tập "đã thăm".
+- **Nút canh (sentinel)** của danh sách đôi là một nút giả `s` với `s.prev` và `s.next` trỏ về chính nó khi rỗng. Nhờ vậy `_link` và `remove` không có nhánh `if` nào cho đầu hay cuối: mọi nút thật đều có đủ `prev` và `next`. Đây là kỹ thuật nên dùng cho mọi danh sách đôi.
+- **`remove(node)` không cần biết danh sách**: cầm nút là đủ. Đó là thứ mảng không có, và là lý do danh sách đôi hiện diện trong các cấu trúc như cache LRU (xoá một mục ở giữa và đưa lên đầu trong `O(1)`, ghép với bảng băm ở [Hash Table](/docs/dsa/hash-tables)).
+
+## Vì sao mảng thắng trên phần cứng thật
+
+Bảng chi phí ở trên cho thấy danh sách liên kết thắng ở vài thao tác. Nhưng khi người ta đo thật, đa số bài toán vẫn ưu tiên mảng. Lý do có hai tầng.
+
+### Tầng 1: con trỏ tốn bộ nhớ
+
+Đo bộ nhớ của ba cách lưu một triệu số nguyên:
+
+```python
+import sys, tracemalloc
+from linked import Node
+from array import array
+
+class PlainNode:                 # không có __slots__: mỗi object mang theo một dict
+    def __init__(self, v, nx): self.val, self.next = v, nx
+
+print("kích thước một nút:  slots =", sys.getsizeof(Node(1)), "byte, thường =",
+      sys.getsizeof(PlainNode(1, None)), "byte + dict", sys.getsizeof(PlainNode(1, None).__dict__), "byte")
+
+N = 1_000_000
+for name, build in (
+    ("list[int]", lambda: list(range(N))),
+    ("array('q')", lambda: array('q', range(N))),
+    ("liên kết (Node có slots)", None),
+):
+    tracemalloc.start()
+    if build:
+        x = build()
+    else:
+        head = None
+        for i in range(N): head = Node(i, head)
+        x = head
+    cur, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    print(f"{name:<28} {cur/2**20:8.1f} MB cho {N:,} phần tử  ({cur/N:6.1f} byte/phần tử)")
+```
+
+```text
+kích thước một nút:  slots = 48 byte, thường = 48 byte + dict 288 byte
+list[int]                        38.1 MB cho 1,000,000 phần tử  (  40.0 byte/phần tử)
+array('q')                        7.8 MB cho 1,000,000 phần tử  (   8.2 byte/phần tử)
+liên kết (Node có slots)         76.3 MB cho 1,000,000 phần tử  (  80.0 byte/phần tử)
+```
+
+Chi phí mỗi phần tử: `array('q')` 8 byte, `list` 40 byte (một con trỏ và một object `int`), danh sách liên kết 80 byte (nút 48 byte cộng object `int`). Không dùng `__slots__`, mỗi nút còn kéo theo một dict 288 byte. Các con số tuyệt đối đặc thù cho Python, nhưng xu hướng thì chung: mỗi nút liên kết trả thêm ít nhất một con trỏ cộng phần quản lý của allocator (thường là 8 đến 16 byte), nên với dữ liệu nhỏ như số nguyên, phần "kèm theo" lấn át phần dữ liệu.
+
+### Tầng 2: con trỏ phá cache
+
+Tầng quan trọng hơn là thời gian. CPU không đọc từng byte từ RAM mà đọc cả <Term>cache line</Term> (thường 64 byte) rồi giữ trong cache. Khi duyệt mảng, một lần đọc cache line mang theo 8 số `int64` kế tiếp; phần cứng còn đoán được mẫu đi tuần tự và đọc trước (prefetch). Danh sách liên kết thì không biết nút kế nằm đâu cho tới khi đọc xong nút hiện tại, nên mỗi bước là một lần chờ RAM.
+
+Để tách riêng yếu tố này mà không bị Python làm nhiễu, thí nghiệm dưới đây dựng cùng một danh sách liên kết (nút `i` trỏ tới nút `next[i]`) trong một `array('q')`. Hai phiên bản có **cùng số nút, cùng đường duyệt, cùng đoạn code duyệt**; khác duy nhất ở thứ tự các nút trong bộ nhớ: một bản xếp liền theo thứ tự duyệt, một bản đã xáo ngẫu nhiên.
+
+```python
+import random, time
+from array import array
+
+def build(N, shuffled):
+    order = list(range(N))
+    if shuffled:
+        random.seed(7); random.shuffle(order)
+    nxt = array('q', [0]) * N
+    for k in range(N - 1):
+        nxt[order[k]] = order[k + 1]          # nút order[k] trỏ tới nút order[k+1]
+    nxt[order[-1]] = -1
+    return nxt, order[0]
+
+def walk(nxt, start):
+    i, steps = start, 0
+    while i != -1:
+        i = nxt[i]; steps += 1
+    return steps
+
+print(f"{'số nút':>10} {'kích thước':>11} {'liền kề':>10} {'xáo trộn':>10} {'tỉ lệ':>7}")
+for N in (1 << 14, 1 << 18, 1 << 21, 1 << 23):
+    res = []
+    for shuffled in (False, True):
+        nxt, start = build(N, shuffled)
+        best = min((lambda: (lambda t: (walk(nxt, start), time.perf_counter() - t)[1])(time.perf_counter()))() for _ in range(3))
+        res.append(best)
+    print(f"{N:>10} {N*8/2**20:>9.1f}MB {res[0]*1000:>8.1f}ms {res[1]*1000:>8.1f}ms {res[1]/res[0]:>6.2f}x")
+```
+
+```text
+    số nút  kích thước    liền kề   xáo trộn   tỉ lệ
+     16384       0.1MB      0.6ms      0.5ms   0.95x
+    262144       2.0MB      9.1ms      9.3ms   1.02x
+   2097152      16.0MB     71.8ms     98.8ms   1.38x
+   8388608      64.0MB    301.5ms   1414.5ms   4.69x
+```
+
+Khi toàn bộ dữ liệu còn nhỏ (0,1 và 2 MB), nằm gọn trong cache, hai cách bằng nhau (tỉ lệ quanh 1, dao động đo đạc). Khi dữ liệu lớn hơn cache (16 MB rồi 64 MB), cách xáo trộn chậm hơn 1,4 lần rồi 4,7 lần, trong khi số bước và đoạn code **y hệt**. Phần chênh lệch hoàn toàn do bố cục bộ nhớ: mỗi bước nhảy đi đâu đó xa, đụng RAM thay vì cache.
+
+Cần ghi chú về giới hạn của phép đo: đây là bản mô phỏng bằng chỉ số trong một mảng chứ không phải con trỏ thật; và máy khác cho tỉ lệ khác (kích thước cache khác nhau). Hướng tăng thì chắc chắn, độ lớn thì phụ thuộc máy. Trong ngôn ngữ biên dịch như C, nơi chi phí mỗi bước rất nhỏ, tỉ lệ này thường còn dốc hơn.
+
+Hệ quả thiết kế:
+
+- Nếu cần duyệt hay lấy phần tử theo vị trí, **dùng mảng**. Mảng thắng cả về bộ nhớ lẫn cache.
+- Danh sách liên kết chỉ xứng đáng khi bạn **thực sự** cần chèn hoặc xoá ở giữa trong `O(1)` với nút đã cầm sẵn, hoặc cần con trỏ tới phần tử không bị mất hiệu lực khi dãy thay đổi (mảng cấp lại làm các con trỏ cũ hỏng). Ngay cả khi đó, thường nên kiểm tra xem một mảng có dịch chuyển nhanh hơn không: với vài nghìn phần tử, `memmove` liền khối thường thắng.
+- Bài toán có hai thao tác trộn lẫn (hay chèn đầu, hay duyệt) thường được giải bằng cấu trúc lai: mảng các khối (xem deque bên dưới).
+
+## Stack, queue, deque, ring buffer
+
+Bốn cấu trúc này không phải cấu trúc lưu trữ mới mà là **giao diện** trên một dãy, hạn chế chỗ được thao tác:
+
+| Cấu trúc | Quy tắc | Thao tác | Hay dựng trên |
+|---|---|---|---|
+| <Term>Stack</Term> | vào sau, ra trước (LIFO) | `push`, `pop` ở cùng một đầu | dynamic array |
+| <Term>Queue</Term> | vào trước, ra trước (FIFO) | `push` ở một đầu, `pop` ở đầu kia | ring buffer hoặc deque |
+| Deque | thêm và bớt ở cả hai đầu | `push` và `pop` hai đầu | ring buffer, hoặc mảng các khối |
+
+**Stack** nằm khắp nơi: call stack của chương trình (xem [Process vs Thread](/docs/os/process-thread) về stack của mỗi thread), nút "undo", duyệt đồ thị theo chiều sâu. Dùng `list.append` và `list.pop` là đủ vì cả hai ở đuôi, `O(1)` amortized.
+
+**Queue** dựng trên `list` thì sai: `list.pop(0)` dịch cả mảng, `O(n)`. Cách đúng là hoặc `collections.deque`, hoặc **ring buffer**: một mảng cố định kèm chỉ số `head` và độ dài `len`, địa chỉ phần tử thứ `i` là `(head + i) mod cap`; khi đạt cuối mảng thì "quấn" về đầu. Không có dịch phần tử, không cấp phát lại, mọi thao tác `O(1)` thật sự.
+
+```python
+import time
+from collections import deque
+
+class RingBuffer:
+    """Hàng đợi vòng sức chứa cố định: head và len, địa chỉ = (head + i) % cap."""
+    def __init__(self, cap):
+        self.buf, self.cap, self.head, self.len = [None] * cap, cap, 0, 0
+    def push(self, v):
+        if self.len == self.cap: raise OverflowError("đầy")
+        self.buf[(self.head + self.len) % self.cap] = v
+        self.len += 1
+    def pop(self):
+        if self.len == 0: raise IndexError("rỗng")
+        v = self.buf[self.head]
+        self.buf[self.head] = None
+        self.head = (self.head + 1) % self.cap
+        self.len -= 1
+        return v
+
+rb = RingBuffer(4)
+for v in "abcd": rb.push(v)
+print("đầy:", rb.buf, "head =", rb.head, "len =", rb.len)
+print("pop:", rb.pop(), rb.pop(), "-> head =", rb.head, "len =", rb.len)
+rb.push("e"); rb.push("f")
+print("sau khi push e, f (quấn vòng):", rb.buf, "head =", rb.head, "len =", rb.len)
+try: rb.push("x")
+except OverflowError as e: print("push khi đầy ->", e)
+
+def t(fn):
+    s = time.perf_counter(); fn(); return (time.perf_counter() - s) * 1000
+
+print()
+print(f"{'n':>8} {'list.pop(0)':>13} {'deque.popleft':>15} {'RingBuffer.pop':>16}")
+for n in (10_000, 20_000, 40_000, 80_000):
+    def a():
+        q = list(range(n))
+        while q: q.pop(0)
+    def b():
+        q = deque(range(n))
+        while q: q.popleft()
+    def c():
+        r = RingBuffer(n)
+        for i in range(n): r.push(i)
+        while r.len: r.pop()
+    print(f"{n:>8} {t(a):>10.2f} ms {t(b):>12.2f} ms {t(c):>13.2f} ms")
+```
+
+```text
+đầy: ['a', 'b', 'c', 'd'] head = 0 len = 4
+pop: a b -> head = 2 len = 2
+sau khi push e, f (quấn vòng): ['e', 'f', 'c', 'd'] head = 2 len = 4
+push khi đầy -> đầy
+
+       n   list.pop(0)   deque.popleft   RingBuffer.pop
+   10000       4.85 ms         0.27 ms          1.90 ms
+   20000      21.19 ms         0.53 ms          3.76 ms
+   40000      85.86 ms         1.06 ms          7.46 ms
+   80000     336.13 ms         2.37 ms         15.58 ms
+```
+
+Ví dụ trên cho thấy "quấn vòng": sau hai lần `pop`, `head = 2`; hai lần `push` sau đó ghi vào ô `0` và `1`, mảng thành `['e', 'f', 'c', 'd']` nhưng thứ tự logic vẫn là `c, d, e, f`. Số đo: `list.pop(0)` tăng gấp khoảng 4 mỗi khi `n` gấp đôi (4,85 lên 21,19 lên 85,86 lên 336,13 ms), tức `Θ(n^2)` cho `n` lần pop; `deque` và ring buffer tăng gấp đôi, tức tuyến tính. Ring buffer tự cài chậm hơn `deque` khoảng 6,5 lần vì mỗi thao tác của nó là vài dòng Python thông dịch còn `deque` chạy trong C, nhưng cả hai cùng bậc.
+
+Python `collections.deque` thực chất là **danh sách đôi của các khối**, mỗi khối là một mảng 64 phần tử: lai giữa hai cấu trúc. Đầu và cuối mở rộng bằng cách thêm khối, không dịch phần tử; duyệt trong khối thì liền kề. Truy cập phần tử giữa vẫn là `O(n)`. Đây là cách giải kinh điển cho yêu cầu "chèn xoá hai đầu nhanh mà vẫn thân thiện cache".
+
+Ring buffer có thêm một điểm mạnh: **sức chứa cố định** nên không bao giờ cấp phát lại, đó là lý do nó có mặt ở tầng thấp: bộ đệm gói tin trong driver mạng (xem [I/O Devices](/docs/os/io-devices) về hàng đợi DMA của card mạng), pipe trong kernel, bộ đệm âm thanh, `io_uring` của Linux, và hàng đợi lock-free giữa hai thread (vì chỉ producer ghi `tail` và chỉ consumer ghi `head`, không cần khoá, xem [Synchronization](/docs/os/synchronization)). Khi đầy thì hoặc từ chối (như code trên), hoặc ghi đè phần tử cũ nhất, tuỳ bài toán.
+
+### Một ứng dụng của stack: kiểm tra ngoặc
+
+Stack cho lời giải gọn cho các bài có cấu trúc lồng nhau, ví dụ kiểm tra chuỗi ngoặc hợp lệ: gặp ngoặc mở thì đẩy vào, gặp ngoặc đóng thì lấy ngoặc mở trên cùng ra đối chiếu. Mỗi ký tự được đẩy và lấy tối đa một lần, nên `O(n)`; stack sâu tối đa `n`, bộ nhớ `O(n)`. Cùng nguyên lý là cách trình biên dịch phân tích biểu thức lồng nhau và cách một máy ảo thực thi lời gọi hàm.
+
+## Trong hệ thống thật
+
+- **Linux kernel** dùng danh sách đôi vòng ở khắp nơi (`struct list_head`), nhưng theo kiểu **intrusive**: con trỏ `next` và `prev` nằm **ngay trong** struct dữ liệu (ví dụ danh sách các task đang chạy, các inode), thay vì nút bọc quanh dữ liệu. Không cần cấp phát nút riêng, một struct có thể nằm trong nhiều danh sách cùng lúc bằng nhiều trường `list_head`, và xoá khỏi danh sách là `O(1)`. Cái giá là phải có macro `container_of` để từ con trỏ nhúng suy ngược ra struct. Xem tài liệu `list.h` ở phần tham khảo.
+- **Redis** lưu `List` bằng `quicklist`: danh sách đôi của các khối nhỏ nén, mỗi khối là một mảng gọn. Một lần nữa, lai giữa hai cấu trúc, vì lý do giống `deque`: cân bằng giữa chèn hai đầu rẻ và tiết kiệm bộ nhớ (một nút trần quá tốn).
+- **Java**: `ArrayList` được dùng phổ biến; `LinkedList` (danh sách đôi) hiếm khi thắng trong đo đạc thật, dù Big-O hứa hẹn ở một số thao tác. Tác giả thư viện khuyên `ArrayDeque` thay cho `LinkedList` khi cần hàng đợi hay stack.
+- **Cache LRU** (loại bỏ mục dùng lâu nhất) kết hợp bảng băm và danh sách đôi: bảng băm tìm nút trong `O(1)`, danh sách đôi di chuyển nút lên đầu hay gỡ nút cuối trong `O(1)`.
+
+## Quan sát và chẩn đoán
+
+- Trong Python, `sys.getsizeof` cho kích thước của chính object (không tính các object nó trỏ tới); `tracemalloc` đo tổng bộ nhớ thật như trong phần đo ở trên.
+- `timeit` hoặc doubling test (xem [Big-O & Complexity](/docs/dsa/complexity)) để phát hiện thao tác `O(n)` ẩn trong vòng lặp.
+- Trong C và C++, `perf stat -e cache-misses,cache-references` cho thấy tỉ lệ cache miss, bằng chứng trực tiếp cho phần "tầng 2" ở trên. (Bài này không chạy `perf` nên không có output của nó; số đo cache ở trên đến từ thí nghiệm bằng thời gian.)
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Hàng đợi chạy chậm dần khi dài ra | dùng `list.pop(0)` hoặc `list.insert(0, x)` | đổi sang `collections.deque` hoặc ring buffer |
+| Bộ nhớ lớn gấp vài lần dữ liệu thật | cấu trúc nhiều object nhỏ, mỗi nút một object | dùng `array`, mảng các khối, hoặc `__slots__` |
+| Duyệt qua cấu trúc chậm dù Big-O tốt | các nút rải rác, nhiều cache miss | chuyển sang mảng hoặc cấp phát nút gần nhau |
+| Con trỏ hoặc iterator đột nhiên hỏng | mảng cấp phát lại làm địa chỉ cũ mất hiệu lực | giữ chỉ số thay vì con trỏ, hoặc dùng cấu trúc nút |
+| Thời gian một thao tác thỉnh thoảng vọt lên | dynamic array đang cấp phát lại (amortized, không phải trường hợp xấu nhất) | cấp trước sức chứa nếu biết trước kích thước |
+
+## Lưu ý
+
+- "Mảng truy cập nhanh, danh sách liên kết chèn nhanh" là cách nói rút gọn quá mức: danh sách chỉ chèn nhanh **khi đã cầm nút**; tìm đúng nút vẫn `O(n)`. Chèn giữa một danh sách theo chỉ số vẫn tốn `O(n)` cho việc đi tìm.
+- Trên phần cứng thật, hai bên hiếm khi ngang nhau. Mảng liền khối thắng nhờ cache và bộ nhớ, ngay cả với các thao tác mà Big-O bảo là chậm hơn, trong phạm vi vài nghìn phần tử.
+- Ngưỡng thu nhỏ của dynamic array phải thấp hơn hẳn ngưỡng mở rộng (ví dụ một phần tư so với đầy), nếu không đẩy rút xen kẽ quanh ngưỡng sẽ làm mảng cấp lại liên tục.
+- `list` của Python là mảng **con trỏ** tới object, không phải mảng giá trị. Cần dữ liệu số lượng lớn thì dùng `array` hoặc thư viện cấu trúc giá trị.
+- Danh sách đơn muốn `push_back` rẻ phải giữ `tail`; muốn `pop_back` hay xoá một nút bất kỳ rẻ phải là danh sách đôi.
+- Dùng nút canh (sentinel) cho danh sách đôi để mọi thao tác không có trường hợp biên riêng cho đầu và cuối.
+- `list.pop(0)` và `list.insert(0, x)` là `O(n)` và hay bị dùng nhầm làm hàng đợi; luôn dùng `deque`.
+- Ring buffer cho phép hàng đợi sức chứa cố định không cấp phát lại, nhưng phải quyết định ngay khi nó đầy (từ chối, chặn, hay ghi đè); đừng để mặc.
+- Đệ quy duyệt danh sách dài có thể tràn stack; duyệt bằng vòng lặp thì không.

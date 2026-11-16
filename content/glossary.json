@@ -22,6 +22,10 @@
       "def": "Address Resolution Protocol: giao thức hỏi cả mạng cục bộ bằng broadcast để đổi một địa chỉ IP thành địa chỉ MAC.",
       "subject": "networking"
     },
+    "array": {
+      "def": "Khối bộ nhớ liền nhau gồm các ô cùng cỡ; phần tử thứ i nằm ở địa chỉ đầu cộng i nhân cỡ ô nên truy cập theo chỉ số tốn O(1).",
+      "subject": "dsa"
+    },
     "atomic operation": {
       "def": "Thao tác chạy trọn vẹn như một bước duy nhất: không thread nào thấy được trạng thái giữa chừng của nó.",
       "subject": "os",
@@ -71,6 +75,10 @@
       "aliases": [
         "certificate authority"
       ]
+    },
+    "cache line": {
+      "def": "Đơn vị CPU đọc từ RAM vào cache một lần, thường 64 byte; đọc một byte kéo theo cả dòng 64 byte quanh nó.",
+      "subject": "dsa"
     },
     "cidr": {
       "label": "CIDR",
@@ -143,6 +151,14 @@
       "def": "DNS over HTTPS: gửi message DNS nhị phân trong HTTPS, nên được mã hoá và lẫn vào lưu lượng web.",
       "subject": "networking"
     },
+    "dynamic array": {
+      "def": "Mảng giữ sức chứa lớn hơn số phần tử đang dùng và cấp lại mảng lớn hơn khi đầy, nhờ vậy thêm vào cuối tốn O(1) amortized.",
+      "subject": "dsa",
+      "aliases": [
+        "vector",
+        "arraylist"
+      ]
+    },
     "encapsulation": {
       "def": "Mỗi tầng mạng bọc dữ liệu của tầng trên vào bên trong gói của mình và thêm header riêng; bên nhận bóc ngược từng lớp.",
       "subject": "networking"
@@ -204,6 +220,13 @@
     "kernel mode": {
       "def": "Chế độ đặc quyền của CPU, nơi kernel chạy và được dùng mọi lệnh; ngược với user mode của chương trình thường.",
       "subject": "os"
+    },
+    "linked list": {
+      "def": "Chuỗi các nút nằm rải rác trong bộ nhớ, mỗi nút giữ giá trị và con trỏ tới nút kế (và nút trước nếu là danh sách đôi).",
+      "subject": "dsa",
+      "aliases": [
+        "danh sách liên kết"
+      ]
     },
     "livelock": {
       "def": "Các thread vẫn chạy và liên tục phản ứng với nhau nhưng không bên nào tiến triển; khác deadlock ở chỗ không ai bị block.",
@@ -304,6 +327,13 @@
         "processes"
       ]
     },
+    "queue": {
+      "def": "Cấu trúc vào trước ra trước (FIFO): thêm ở một đầu, lấy ở đầu kia.",
+      "subject": "dsa",
+      "aliases": [
+        "hàng đợi"
+      ]
+    },
     "quic": {
       "label": "QUIC",
       "def": "Giao thức transport chạy trên UDP, gộp độ tin cậy, mã hoá TLS 1.3 và nhiều stream độc lập trong một kết nối; nền của HTTP/3.",
@@ -349,6 +379,10 @@
       "label": "SNI",
       "def": "Server Name Indication: extension trong ClientHello của TLS cho server biết tên miền client muốn vào, để chọn đúng chứng chỉ khi nhiều site chung một IP; ở dạng rõ nên lộ tên site.",
       "subject": "networking"
+    },
+    "stack": {
+      "def": "Cấu trúc vào sau ra trước (LIFO): chỉ thêm và lấy ở một đầu.",
+      "subject": "dsa"
     },
     "starvation": {
       "def": "Một thread hoặc job mãi không được cấp tài nguyên vì luôn có thứ khác được ưu tiên hơn, dù hệ thống vẫn chạy.",

@@ -1,6 +1,7 @@
 {
   "title": "Data Structures & Algorithms",
   "pages": [
-    "complexity"
+    "complexity",
+    "arrays-linked-lists"
   ]
 }

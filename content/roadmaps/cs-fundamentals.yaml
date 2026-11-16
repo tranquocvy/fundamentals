@@ -33,6 +33,7 @@ sections:
             url: https://jeffe.cs.illinois.edu/teaching/algorithms/
       - id: arrays-linked-lists
         title: Array & Linked List
+        article: dsa/arrays-linked-lists
         description: Hai cách xếp dữ liệu tuần tự và cái giá của mỗi cách.
         requires: [complexity]
         resources:
