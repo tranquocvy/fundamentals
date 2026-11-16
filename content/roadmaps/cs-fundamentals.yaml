@@ -219,3 +219,12 @@ sections:
         resources:
           - title: "Wikipedia — Database normalization"
             url: https://en.wikipedia.org/wiki/Database_normalization
+      - id: storage-engines
+        title: Storage Engines (B-tree vs LSM-tree)
+        article: databases/storage-engines
+        description: Hai họ cấu trúc lưu trữ trên đĩa và cái giá của chúng khi đọc, ghi và chiếm chỗ.
+        requires: [indexing]
+        optional: true
+        resources:
+          - title: "Designing Data-Intensive Applications — Chapter 3: Storage and Retrieval"
+            url: https://dataintensive.net/

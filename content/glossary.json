@@ -335,6 +335,15 @@
       "def": "Anomaly trong đó hai giao dịch cùng đọc, cùng tính lại rồi cùng ghi một giá trị, và ghi sau đè mất kết quả của ghi trước.",
       "subject": "databases"
     },
+    "lsm-tree": {
+      "def": "Log-structured merge tree: cấu trúc lưu trữ ghi vào memtable rồi xả thành các file sắp xếp bất biến (SSTable) và gộp chúng ở nền, đổi ghi tuần tự lấy việc đọc phải xem nhiều file.",
+      "subject": "databases",
+      "aliases": [
+        "lsm",
+        "lsm tree",
+        "sstable"
+      ]
+    },
     "mac address": {
       "label": "MAC address",
       "def": "Địa chỉ phần cứng 48 bit của một giao diện mạng, chỉ có nghĩa trong một mạng cục bộ và bị thay ở mỗi router.",
@@ -632,6 +641,13 @@
       "subject": "databases",
       "aliases": [
         "hàm cửa sổ"
+      ]
+    },
+    "write amplification": {
+      "def": "Tỉ số giữa số byte thực sự ghi xuống đĩa và số byte dữ liệu người dùng ghi; lớn nghĩa là tốn băng thông và làm mòn SSD.",
+      "subject": "databases",
+      "aliases": [
+        "khuếch đại ghi"
       ]
     },
     "write skew": {

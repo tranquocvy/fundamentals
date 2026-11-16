@@ -5,6 +5,7 @@
     "indexing",
     "transactions",
     "isolation-levels",
-    "normalization"
+    "normalization",
+    "storage-engines"
   ]
 }
