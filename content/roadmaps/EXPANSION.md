@@ -1,6 +1,6 @@
 # Kế hoạch mở rộng roadmap `cs-fundamentals`
 
-Ghi lại kết quả khảo sát ngày 2026-11-17: bốn chặng hiện có (DSA, OS, Networking, Databases) có đủ cho "CS Fundamentals" chưa, và nên bổ sung gì. **Đây là ghi chú để làm dần, chưa có gì trong này được triển khai.** Tick vào mục khi làm xong.
+Ghi lại kết quả khảo sát ngày 2026-11-17: bốn chặng hiện có (DSA, OS, Networking, Databases) có đủ cho "CS Fundamentals" chưa, và nên bổ sung gì. Đây là ghi chú để làm dần; tick vào mục khi làm xong. **Trạng thái:** mục 6 (node thiếu trong bốn chặng hiện có) đã làm gần hết, trừ `sockets` của Networking. Các chặng mới (mục 3 và 4) **chưa làm**, đang chờ chủ repo chọn chặng nào.
 
 Chủ repo chọn làm **tuần tự, từng chặng một**. Hoàn thành bài viết của bốn chặng hiện có trước (xem `HANDOFF.md`), rồi mới thêm chặng mới.
 
@@ -61,9 +61,9 @@ AI/ML, Graphics, HCI, Ethics. Thuộc CS tổng quát nhưng lệch hướng c�
 
 ## 6. Node còn thiếu trong bốn chặng hiện có
 
-- [ ] **OS**: `virtualization-containers` (namespaces, cgroups). Đây là một trong ba phần của OSTEP (virtualization, concurrency, persistence) và nối sang DevOps.
-- [ ] **DSA**: `strings` (matching, trie). Phần heap và priority queue cần chỗ rõ ràng, hiện chỉ nằm lẫn trong `trees`.
-- [ ] **Databases**: `storage-engines` (B-tree so với LSM-tree) và `query-processing` (planner, join algorithm), là nền cho `indexing` và `transactions`.
+- [x] **OS**: `virtualization-containers` (namespaces, cgroups). Đây là một trong ba phần của OSTEP (virtualization, concurrency, persistence) và nối sang DevOps.
+- [x] **DSA**: `strings` (matching, suffix array, regex, Unicode).  Heap và priority queue đã có mục riêng trong bài `trees`.
+- [x] **Databases**: `storage-engines` (B-tree so với LSM-tree) và `query-processing` (planner, join algorithm); cả hai được đặt sau `indexing` (`optional: true`).
 - [ ] **Networking** (ưu tiên thấp): `sockets` (API và mô hình I/O).
 
 ## 7. Ràng buộc kỹ thuật khi thực hiện
