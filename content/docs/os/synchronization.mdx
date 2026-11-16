@@ -1,0 +1,800 @@
+---
+title: Synchronization
+description: Từ lệnh atomic của CPU tới spinlock, mutex, condition variable và semaphore, tự cài từng thứ để hiểu vì sao chúng đúng, khi nào dùng cái nào, và chúng chậm ở đâu.
+status: draft
+tags: [os, concurrency]
+authors: [tranquocvy]
+references:
+  - title: "OSTEP — Chapter 28: Locks"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/threads-locks.pdf
+    kind: book
+    note: test-and-set, compare-and-swap, spinlock, park/unpark, futex
+  - title: "OSTEP — Chapter 29: Lock-based Concurrent Data Structures"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/threads-locks-usage.pdf
+    kind: book
+  - title: "OSTEP — Chapter 30: Condition Variables"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/threads-cv.pdf
+    kind: book
+    note: bài toán producer/consumer và lý do phải dùng while
+  - title: "OSTEP — Chapter 31: Semaphores"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/threads-sema.pdf
+    kind: book
+  - title: "OSTEP — Chapter 32: Common Concurrency Problems"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf
+    kind: book
+  - title: "Ulrich Drepper — Futexes Are Tricky"
+    url: https://akkadia.org/drepper/futex.pdf
+    kind: paper
+    note: cách cài mutex đúng trên futex, nguồn của đoạn mã mutex ba trạng thái
+  - title: "Linux man-pages — futex(2)"
+    url: https://man7.org/linux/man-pages/man2/futex.2.html
+    kind: web
+---
+
+## Ý chính
+
+Khi nhiều <Term>thread</Term> cùng đọc và ghi một dữ liệu chung, kết quả phụ thuộc vào thứ tự xen kẽ của chúng. Đó là <Term>race condition</Term>, đã thấy ở bài [Process vs Thread](/docs/os/process-thread) với ví dụ `counter++` ra kết quả sai. **Synchronization** là tập các công cụ để kiểm soát thứ tự đó.
+
+Chỉ có hai nhu cầu cơ bản, mọi công cụ đều phục vụ một trong hai:
+
+1. **Loại trừ lẫn nhau**: tại một thời điểm chỉ một thread được chạy một đoạn mã nhất định. Công cụ: lock (spinlock, mutex).
+2. **Chờ một điều kiện**: thread dừng lại cho tới khi một điều gì đó trở thành đúng (hàng đợi có dữ liệu, kết nối sẵn sàng). Công cụ: condition variable, semaphore.
+
+Bài này xây từng công cụ từ dưới lên, bắt đầu ở lệnh máy của CPU. Lý do không chỉ học API: gần như mọi quyết định khi dùng lock (dùng loại nào, giữ bao lâu, vì sao chậm) đều cần biết bên dưới nó làm gì.
+
+## Critical section
+
+<Term>Critical section</Term> là đoạn mã truy cập dữ liệu chung và không được để hai thread chạy cùng lúc. Trong ví dụ đếm, critical section là ba lệnh máy của `counter++`: đọc, cộng, ghi.
+
+Một lời giải cho bài toán critical section phải thoả ba điều:
+
+| Yêu cầu | Nghĩa là | Vi phạm thì sao |
+|---|---|---|
+| Mutual exclusion | Tại mỗi thời điểm có nhiều nhất một thread ở trong critical section | Dữ liệu hỏng |
+| Progress | Nếu không ai ở trong, và có thread muốn vào, thì một thread phải vào được | Hệ thống đứng dù không ai giữ gì |
+| Bounded waiting | Thread muốn vào sẽ vào được sau một số hữu hạn lượt của thread khác | <Term>Starvation</Term> |
+
+Ngoài ba điều về tính đúng còn một điều về thực dụng: **chi phí thấp khi không có tranh chấp**. Phần lớn thời gian, lock được lấy mà không ai tranh. Một lock chậm trong trường hợp đó là lock không ai dùng.
+
+### Vì sao không tự viết bằng một biến cờ
+
+Ý tưởng đầu tiên ai cũng nghĩ tới:
+
+```c
+int flag = 0;                 // 0: rảnh, 1: có người giữ
+
+void lock(void) {
+    while (flag == 1)         // (1) chờ tới khi rảnh
+        ;
+    flag = 1;                 // (2) nhận lấy
+}
+
+void unlock(void) {
+    flag = 0;
+}
+```
+
+Nó sai, vì chính nó có race condition giữa bước (1) và bước (2):
+
+```text
+Thread A                         Thread B                      flag
+thấy flag == 0, thoát vòng lặp                                 0
+                                 thấy flag == 0, thoát vòng lặp 0
+flag = 1                                                       1
+                                 flag = 1                      1
+vào critical section             vào critical section          ← cả hai cùng vào
+```
+
+Kiểm tra và đặt cờ là hai thao tác tách rời. Muốn làm lock, cần một cách **kiểm tra và đặt trong cùng một thao tác không thể bị chen ngang**. Phần mềm thuần tuý không tự tạo ra được điều đó một cách hiệu quả; phải có phần cứng giúp.
+
+## Nền móng: lệnh atomic của CPU
+
+### Tắt ngắt: lời giải của thời một CPU
+
+Trên máy một core, hai thread chỉ xen kẽ được khi có context switch, và context switch chỉ xảy ra khi có ngắt. Vậy tắt ngắt trước critical section rồi bật lại sau là xong.
+
+Cách này có ba vấn đề. Nó cho chương trình quyền tắt ngắt, tức quyền chiếm CPU vô thời hạn. Nó vô dụng trên máy nhiều core, vì thread trên core khác vẫn chạy song song thật. Và tắt ngắt lâu làm mất ngắt từ thiết bị. Ngày nay chỉ kernel dùng cách này, cho những đoạn rất ngắn, và luôn kết hợp với spinlock.
+
+### Test-and-set và compare-and-swap
+
+CPU cung cấp những lệnh đọc, sửa, ghi một ô nhớ như **một thao tác không chia cắt được**: không thread nào trên bất kỳ core nào nhìn thấy trạng thái giữa chừng. Gọi là <Term>atomic operation</Term>.
+
+**Test-and-set** ghi một giá trị mới và trả về giá trị cũ. Viết bằng C để mô tả ngữ nghĩa (CPU làm cả hàm này trong một lệnh):
+
+```c
+int test_and_set(int *ptr, int new) {
+    int old = *ptr;
+    *ptr = new;
+    return old;
+}
+```
+
+<Term>Compare-and-swap</Term> (CAS) mạnh hơn: chỉ ghi giá trị mới nếu giá trị hiện tại đúng bằng giá trị ta mong đợi, và cho biết có ghi được không.
+
+```c
+int compare_and_swap(int *ptr, int expected, int new) {
+    int old = *ptr;
+    if (old == expected)
+        *ptr = new;
+    return old;               // bằng expected nghĩa là đã ghi thành công
+}
+```
+
+Trên x86-64, test-and-set là lệnh `xchg`, CAS là `lock cmpxchg`. Tiền tố `lock` bảo CPU giữ độc quyền cache line chứa ô nhớ đó trong suốt lệnh. ARM và RISC-V dùng một cặp lệnh khác (load-linked / store-conditional): đọc một ô nhớ, rồi ghi có điều kiện, lệnh ghi thất bại nếu có ai đụng vào ô đó ở giữa. Kết quả sử dụng thì như nhau.
+
+Trong C11, bạn dùng chúng qua `<stdatomic.h>` mà không cần viết assembly:
+
+```c
+#include <stdatomic.h>
+
+atomic_long counter = 0;
+
+atomic_fetch_add(&counter, 1);          // counter++ nhưng atomic; trên x86 là một lệnh lock xadd
+```
+
+Đây là cách sửa đơn giản nhất cho ví dụ đếm. Nhưng lệnh atomic chỉ bảo vệ được **một** ô nhớ. Khi critical section phải sửa nhiều thứ cho nhất quán (chuyển tiền giữa hai tài khoản, chèn vào linked list) thì cần lock.
+
+## Spinlock: lock đơn giản nhất
+
+Với test-and-set, lock viết được trong vài dòng:
+
+```c
+#include <stdatomic.h>
+
+typedef struct {
+    atomic_flag held;                   // false: rảnh, true: có người giữ
+} spinlock_t;
+
+#define SPINLOCK_INIT { ATOMIC_FLAG_INIT }
+
+void spin_lock(spinlock_t *l) {
+    // Đặt cờ thành true và nhận lại giá trị cũ, trong MỘT thao tác atomic.
+    // Giá trị cũ là true nghĩa là đã có người giữ: thử lại.
+    while (atomic_flag_test_and_set(&l->held))
+        ;                               // quay vòng (spin) chờ
+}
+
+void spin_unlock(spinlock_t *l) {
+    atomic_flag_clear(&l->held);
+}
+```
+
+Nó đúng vì việc "thấy cờ đang rảnh" và "đặt cờ" không còn tách rời. Nếu hai thread cùng gọi test-and-set, phần cứng bảo đảm một lệnh xảy ra trước: thread đó nhận về `false` và vào; thread kia nhận về `true` và quay vòng.
+
+Thread không lấy được lock **không ngủ**. Nó chạy vòng lặp liên tục, đốt CPU, cho tới khi lock rảnh. Vì vậy mới gọi là spinlock.
+
+### Đánh giá
+
+| Tiêu chí | Spinlock |
+|---|---|
+| Mutual exclusion | Có |
+| Công bằng | Không. Thread nào may mắn thử đúng lúc thì được; một thread có thể đói |
+| Chi phí khi không tranh chấp | Rất thấp: một lệnh atomic |
+| Chi phí khi tranh chấp, máy một core | Thảm hoạ: thread chờ quay vòng hết cả time slice, trong khi thread giữ lock không được chạy để mà nhả |
+| Chi phí khi tranh chấp, máy nhiều core | Tốt **nếu** critical section ngắn hơn chi phí một lần context switch |
+
+Điều kiện cuối là mấu chốt. Cho thread đi ngủ rồi đánh thức lại tốn hai lần context switch, cỡ vài micro giây. Nếu lock chỉ bị giữ vài chục nano giây thì quay vòng chờ rẻ hơn nhiều so với đi ngủ.
+
+Spinlock vì thế là công cụ chính **bên trong kernel**, nơi critical section rất ngắn và nơi kernel kiểm soát được việc thread giữ lock không bị chiếm quyền. Trong chương trình user mode thì nguy hiểm: thread đang giữ spinlock có thể bị scheduler cho nghỉ bất cứ lúc nào, và mọi thread chờ sẽ đốt CPU vô ích suốt thời gian đó.
+
+<Expand title="Hai cải tiến thường gặp cho spinlock">
+
+**Test-and-test-and-set.** Lệnh test-and-set luôn **ghi** vào ô nhớ, kể cả khi thất bại. Mỗi lần ghi buộc cache line chứa lock phải chuyển độc quyền sang core đang ghi, nên khi nhiều core cùng quay vòng, cache line đó bị giật qua lại liên tục và làm chậm cả thread đang giữ lock. Cải tiến: chỉ đọc (rẻ, nhiều core cùng đọc được) cho tới khi thấy lock có vẻ rảnh, rồi mới thử test-and-set.
+
+```c
+void spin_lock(atomic_int *l) {
+    for (;;) {
+        if (atomic_exchange(l, 1) == 0)          // thử lấy
+            return;
+        while (atomic_load(l) == 1)              // chỉ đọc trong lúc chờ
+            __builtin_ia32_pause();              // gợi ý cho CPU: đang quay vòng chờ
+    }
+}
+```
+
+Lệnh `pause` trên x86 báo cho CPU biết đây là vòng chờ: nó giảm điện năng, và nhường tài nguyên cho thread anh em khi dùng hyper-threading.
+
+**Ticket lock.** Để có công bằng, mỗi thread lấy một số thứ tự bằng lệnh atomic `fetch_add`, rồi chờ tới lượt số của mình, như lấy số ở quầy giao dịch.
+
+```c
+typedef struct { atomic_uint next_ticket, now_serving; } ticketlock_t;
+
+void ticket_lock(ticketlock_t *l) {
+    unsigned my = atomic_fetch_add(&l->next_ticket, 1);   // lấy số
+    while (atomic_load(&l->now_serving) != my)            // chờ gọi tới số mình
+        __builtin_ia32_pause();
+}
+
+void ticket_unlock(ticketlock_t *l) {
+    atomic_fetch_add(&l->now_serving, 1);                 // gọi số kế tiếp
+}
+```
+
+Ticket lock bảo đảm bounded waiting: ai đến trước vào trước. Spinlock của kernel Linux từng là ticket lock, hiện nay là một biến thể có hàng đợi (queued spinlock) để mỗi thread chờ quay vòng trên biến riêng của nó thay vì tất cả cùng nhìn một cache line.
+
+</Expand>
+
+## Mutex: chờ mà không đốt CPU
+
+<Term>Mutex</Term> là lock mà thread không lấy được sẽ **đi ngủ**: kernel đưa nó sang trạng thái blocked, không cấp CPU cho nó nữa, cho tới khi lock được nhả.
+
+### Bài toán thiết kế
+
+Đi ngủ cần kernel, mà vào kernel thì đắt (cỡ trăm nano giây cho một system call rỗng, nhiều hơn nếu kéo theo context switch). Nếu mọi lần `lock()` và `unlock()` đều gọi kernel thì trường hợp phổ biến nhất, lock không ai tranh, sẽ chậm một cách vô lý.
+
+Lời giải của Linux là <Term>futex</Term> (fast userspace mutex), một system call cung cấp đúng hai thao tác:
+
+- `futex_wait(addr, expected)`: nếu giá trị tại `addr` vẫn bằng `expected` thì cho thread này ngủ; nếu không thì trở về ngay. Việc kiểm tra và đi ngủ là atomic đối với `futex_wake`.
+- `futex_wake(addr, n)`: đánh thức tối đa `n` thread đang ngủ trên `addr`.
+
+Với nó, mutex được chia làm hai đường:
+
+- **Fast path**: lock không ai giữ. Lấy bằng một lệnh CAS trong user mode. Không vào kernel.
+- **Slow path**: lock đang bị giữ. Gọi kernel để ngủ.
+
+### Một mutex thật, cài trên futex
+
+Đây là thiết kế trong bài "Futexes Are Tricky" của Ulrich Drepper, cũng là xương sống của `pthread_mutex` trong glibc. Biến lock có ba trạng thái:
+
+| Giá trị | Nghĩa |
+|---|---|
+| 0 | Rảnh |
+| 1 | Có người giữ, không ai chờ |
+| 2 | Có người giữ, có thể có thread đang ngủ chờ |
+
+```c
+#include <stdatomic.h>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static void futex_wait(atomic_int *addr, int expected) {
+    syscall(SYS_futex, addr, FUTEX_WAIT, expected, NULL, NULL, 0);
+}
+
+static void futex_wake(atomic_int *addr, int n) {
+    syscall(SYS_futex, addr, FUTEX_WAKE, n, NULL, NULL, 0);
+}
+
+void mutex_lock(atomic_int *m) {
+    int c = 0;
+    if (atomic_compare_exchange_strong(m, &c, 1))
+        return;                          // fast path: 0 → 1, không vào kernel
+
+    // Slow path. Tới đây c là giá trị vừa thấy (1 hoặc 2).
+    if (c != 2)
+        c = atomic_exchange(m, 2);       // báo hiệu "có người chờ"
+    while (c != 0) {                     // c == 0 nghĩa là ta vừa đổi 0 → 2: đã lấy được lock
+        futex_wait(m, 2);                // ngủ, nếu giá trị vẫn là 2
+        c = atomic_exchange(m, 2);       // thức dậy: thử lấy, vẫn để 2 vì có thể còn người chờ
+    }
+}
+
+void mutex_unlock(atomic_int *m) {
+    if (atomic_fetch_sub(m, 1) != 1) {   // giá trị cũ là 2: có thể có người đang ngủ
+        atomic_store(m, 0);
+        futex_wake(m, 1);                // đánh thức một thread
+    }
+    // giá trị cũ là 1: không ai chờ, 1 → 0 là xong, không vào kernel
+}
+```
+
+Ba điều đáng để ý:
+
+**Trạng thái 2 tồn tại để `unlock` biết có cần gọi kernel không.** Nếu chỉ có hai trạng thái, mọi lần `unlock` đều phải gọi `futex_wake` phòng khi có ai đang ngủ. Với ba trạng thái, cặp lock/unlock không tranh chấp chỉ tốn hai lệnh atomic.
+
+**Tham số `expected` của `futex_wait` chặn một lỗi tinh vi gọi là lost wakeup.** Giả sử thread A thấy lock bị giữ và sắp đi ngủ. Ngay trước khi nó ngủ, thread B nhả lock và gọi `futex_wake`, nhưng chưa có ai ngủ để mà đánh thức. Rồi A ngủ, và không ai đánh thức nó nữa. `futex_wait(m, 2)` tránh điều đó: kernel kiểm tra lại, nếu giá trị không còn là 2 (vì B đã đặt về 0) thì A không ngủ mà quay lại thử tiếp.
+
+**Thread thức dậy không được trao lock; nó phải tranh lại.** Giữa lúc được đánh thức và lúc thật sự chạy, một thread khác có thể đã lấy mất lock. Vì vậy mới có vòng `while`. Đây là mẫu sẽ gặp lại ở condition variable.
+
+Mutex thật trong glibc còn thêm vài thứ: quay vòng một chút trước khi ngủ (**adaptive spinning**, vì nếu thread giữ lock đang chạy trên core khác thì nhiều khả năng nó sắp nhả), kiểm tra lỗi, hỗ trợ khoá lồng nhau và priority inheritance.
+
+### Dùng mutex
+
+Sửa ví dụ đếm:
+
+```c
+#include <pthread.h>
+#include <stdio.h>
+
+static long counter = 0;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *worker(void *arg) {
+    for (int i = 0; i < 1000000; i++) {
+        pthread_mutex_lock(&lock);
+        counter++;                       // critical section
+        pthread_mutex_unlock(&lock);
+    }
+    return NULL;
+}
+
+int main(void) {
+    pthread_t a, b;
+    pthread_create(&a, NULL, worker, NULL);
+    pthread_create(&b, NULL, worker, NULL);
+    pthread_join(a, NULL);
+    pthread_join(b, NULL);
+    printf("counter = %ld\n", counter);  // luôn là 2000000
+    return 0;
+}
+```
+
+Giờ kết quả luôn đúng. Cái giá là tốc độ: mỗi lần tăng tốn thêm một cặp lock/unlock, và hai thread liên tục tranh nhau một lock nên phần lớn thời gian là chờ. Chương trình này chạy **chậm hơn** bản một thread. Đó là bài học đầu tiên về lock: nó biến đoạn mã song song thành tuần tự, và thêm chi phí lên trên.
+
+Một lời giải tốt hơn cho bài này là để mỗi thread đếm vào một biến cục bộ rồi cộng vào `counter` một lần ở cuối: không có dữ liệu chung trong vòng lặp thì không cần lock trong vòng lặp. **Cách đồng bộ rẻ nhất là không chia sẻ.**
+
+### Spinlock hay mutex
+
+| | Spinlock | Mutex |
+|---|---|---|
+| Khi không lấy được | Quay vòng, đốt CPU | Ngủ, nhường CPU |
+| Không tranh chấp | Một lệnh atomic | Một lệnh atomic (fast path) |
+| Tranh chấp, giữ rất ngắn | Tốt | Tốn hai lần context switch |
+| Tranh chấp, giữ lâu | Lãng phí cả một core | Tốt |
+| Dùng ở | Kernel, critical section vài chục lệnh | Gần như mọi chương trình user mode |
+
+Trong chương trình thông thường, mặc định dùng mutex. Mutex hiện đại đã tự quay vòng một chút khi hợp lý, nên hiếm khi có lý do tự viết spinlock.
+
+## Condition variable: chờ một điều kiện
+
+Lock giải quyết "không được chạy cùng lúc". Nó không giải quyết "tôi cần chờ tới khi có việc để làm".
+
+Ví dụ: một thread worker lấy việc từ hàng đợi. Hàng đợi đang rỗng thì nó làm gì? Kiểm tra liên tục trong vòng lặp là đốt CPU. Ngủ 10 ms rồi kiểm tra lại thì vừa lãng phí vừa thêm độ trễ. Thứ ta muốn là: **ngủ cho tới khi có người báo rằng hàng đợi đã có gì đó.**
+
+<Term>Condition variable</Term> là một hàng đợi các thread đang chờ, với ba thao tác:
+
+- `wait(cv, mutex)`: **nhả mutex và đi ngủ, trong một thao tác atomic.** Khi được đánh thức, lấy lại mutex rồi mới trở về.
+- `signal(cv)`: đánh thức một thread đang chờ, nếu có.
+- `broadcast(cv)`: đánh thức mọi thread đang chờ.
+
+Condition variable không tự chứa điều kiện nào. Điều kiện là trạng thái của chương trình (ví dụ `count > 0`), được bảo vệ bởi mutex. Condition variable chỉ là cách ngủ và đánh thức.
+
+### Producer/consumer với bounded buffer
+
+Bài toán kinh điển: các thread producer bỏ dữ liệu vào một bộ đệm có sức chứa cố định, các thread consumer lấy ra. Producer phải chờ khi bộ đệm đầy, consumer phải chờ khi bộ đệm rỗng. Đây cũng chính là cấu trúc của mọi thread pool, pipe trong kernel, và channel có buffer trong Go.
+
+```c
+#include <pthread.h>
+
+#define CAP 8
+
+static int buf[CAP];
+static int head = 0, tail = 0, count = 0;
+
+static pthread_mutex_t m         = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  not_full  = PTHREAD_COND_INITIALIZER;   // producer chờ ở đây
+static pthread_cond_t  not_empty = PTHREAD_COND_INITIALIZER;   // consumer chờ ở đây
+
+void put(int value) {
+    pthread_mutex_lock(&m);
+    while (count == CAP)                        // đầy: chờ
+        pthread_cond_wait(&not_full, &m);       // nhả m, ngủ; thức dậy thì đã giữ lại m
+
+    buf[tail] = value;
+    tail = (tail + 1) % CAP;
+    count++;
+
+    pthread_cond_signal(&not_empty);            // báo cho một consumer: có dữ liệu rồi
+    pthread_mutex_unlock(&m);
+}
+
+int get(void) {
+    pthread_mutex_lock(&m);
+    while (count == 0)                          // rỗng: chờ
+        pthread_cond_wait(&not_empty, &m);
+
+    int value = buf[head];
+    head = (head + 1) % CAP;
+    count--;
+
+    pthread_cond_signal(&not_full);             // báo cho một producer: có chỗ trống rồi
+    pthread_mutex_unlock(&m);
+    return value;
+}
+```
+
+Đoạn mã ngắn nhưng mỗi chi tiết đều có lý do, và sai một chi tiết là sai cả.
+
+### Vì sao wait phải nhả mutex một cách atomic
+
+Giả sử `wait` gồm hai bước tách rời: nhả mutex, rồi ngủ. Consumer thấy `count == 0`, nhả mutex, và **trước khi kịp ngủ** thì bị dừng. Producer chen vào, bỏ dữ liệu, gọi `signal`: chưa có ai ngủ nên tín hiệu rơi vào hư không. Consumer chạy lại và đi ngủ, chờ một tín hiệu đã phát rồi. Nếu producer không bỏ thêm gì nữa, consumer ngủ mãi dù bộ đệm có dữ liệu. Đây lại là lost wakeup.
+
+`pthread_cond_wait` bảo đảm không có khe hở nào giữa nhả mutex và ngủ. Đó là lý do nó nhận mutex làm tham số.
+
+### Vì sao phải là while, không phải if
+
+Đây là lỗi phổ biến nhất khi dùng condition variable:
+
+```c
+if (count == 0)                                 // SAI
+    pthread_cond_wait(&not_empty, &m);
+int value = buf[head];                          // có thể chạy khi count == 0
+```
+
+Có ba lý do khiến một thread thức dậy từ `wait` mà điều kiện vẫn sai:
+
+1. **Ngữ nghĩa Mesa.** `signal` chỉ chuyển thread đang chờ sang trạng thái ready; nó không trao mutex cho thread đó. Giữa lúc được đánh thức và lúc lấy lại được mutex, thread khác có thể chen vào. Ví dụ với hai consumer C1, C2 và một producer:
+
+   ```text
+   C1: thấy count == 0, wait (ngủ)
+   P : put một phần tử, count = 1, signal → C1 thành ready
+   C2: (vừa tới) lấy mutex trước C1, thấy count == 1, lấy phần tử, count = 0
+   C1: lấy được mutex, trở về từ wait, nếu dùng if thì đọc buf khi count == 0  ← hỏng
+   ```
+
+2. **Spurious wakeup.** Chuẩn POSIX cho phép `wait` trở về mà không ai `signal`. Cho phép điều này giúp cài condition variable hiệu quả hơn trên một số hệ thống.
+
+3. **`broadcast`.** Đánh thức mọi thread, nhưng thường chỉ một thread có việc để làm.
+
+Quy tắc không ngoại lệ: **luôn gọi `wait` trong vòng `while` kiểm tra lại điều kiện.** Tín hiệu chỉ là gợi ý rằng trạng thái có thể đã đổi, không phải lời bảo đảm.
+
+### Vì sao hai condition variable
+
+Nếu dùng chung một condition variable cho cả "đầy" lẫn "rỗng", một consumer vừa lấy xong có thể `signal` trúng một **consumer khác** thay vì producer. Consumer đó thức dậy, thấy rỗng, ngủ lại. Producer, người duy nhất làm được gì đó, vẫn ngủ. Mọi thread đều ngủ, không ai đánh thức ai.
+
+Tách thành `not_full` và `not_empty` bảo đảm tín hiệu tới đúng loại thread. Lối thoát khác là luôn dùng `broadcast`: đúng nhưng lãng phí, vì đánh thức cả đám chỉ để phần lớn ngủ lại (hiện tượng **thundering herd**).
+
+### Tóm tắt quy tắc dùng condition variable
+
+1. Luôn giữ mutex khi kiểm tra điều kiện, khi gọi `wait`, và khi thay đổi trạng thái liên quan tới điều kiện.
+2. Luôn `wait` trong `while`.
+3. Mỗi điều kiện khác nhau một condition variable, hoặc dùng `broadcast`.
+4. Đổi trạng thái trước rồi mới `signal`.
+
+## Semaphore
+
+<Term>Semaphore</Term> là một số nguyên không âm với hai thao tác atomic (tên gốc tiếng Hà Lan của Dijkstra là P và V):
+
+- `wait` (P, `sem_wait`): nếu giá trị lớn hơn 0 thì giảm đi 1 và đi tiếp; nếu bằng 0 thì ngủ cho tới khi nó lớn hơn 0.
+- `post` (V, `sem_post`): tăng giá trị lên 1, và đánh thức một thread đang ngủ nếu có.
+
+Hình dung nó như số giấy phép còn lại. Giá trị khởi tạo quyết định nó đóng vai gì.
+
+### Ba cách dùng
+
+**Giá trị khởi tạo 1: làm lock.** Một giấy phép, ai lấy được thì vào. Gọi là binary semaphore.
+
+```c
+sem_t s;
+sem_init(&s, 0, 1);
+
+sem_wait(&s);          // lấy giấy phép duy nhất
+/* critical section */
+sem_post(&s);          // trả lại
+```
+
+**Giá trị khởi tạo 0: làm tín hiệu thứ tự.** Thread A chờ thread B làm xong một việc.
+
+```c
+sem_t done;
+sem_init(&done, 0, 0);
+
+/* thread B */  do_work();  sem_post(&done);
+/* thread A */  sem_wait(&done);              // ngủ tới khi B post
+```
+
+Khác với condition variable, semaphore **nhớ**: nếu B `post` trước khi A `wait`, giá trị thành 1 và A đi qua ngay. Không có lost wakeup.
+
+**Giá trị khởi tạo N: giới hạn số thread đồng thời.** Ví dụ chỉ cho tối đa 10 thread cùng gọi một dịch vụ bên ngoài, hoặc một connection pool có 10 kết nối.
+
+```c
+sem_t slots;
+sem_init(&slots, 0, 10);
+
+sem_wait(&slots);      // còn chỗ thì vào, hết thì chờ
+call_external_service();
+sem_post(&slots);
+```
+
+### Bounded buffer bằng semaphore
+
+```c
+#include <semaphore.h>
+
+#define CAP 8
+static int buf[CAP];
+static int head = 0, tail = 0;
+
+static sem_t empty_slots;   // số ô trống, khởi tạo CAP
+static sem_t full_slots;    // số ô có dữ liệu, khởi tạo 0
+static sem_t mutex;         // bảo vệ buf, head, tail; khởi tạo 1
+
+void init(void) {
+    sem_init(&empty_slots, 0, CAP);
+    sem_init(&full_slots, 0, 0);
+    sem_init(&mutex, 0, 1);
+}
+
+void put(int value) {
+    sem_wait(&empty_slots);     // chờ có ô trống
+    sem_wait(&mutex);
+    buf[tail] = value;
+    tail = (tail + 1) % CAP;
+    sem_post(&mutex);
+    sem_post(&full_slots);      // thêm một ô có dữ liệu
+}
+
+int get(void) {
+    sem_wait(&full_slots);      // chờ có dữ liệu
+    sem_wait(&mutex);
+    int value = buf[head];
+    head = (head + 1) % CAP;
+    sem_post(&mutex);
+    sem_post(&empty_slots);     // thêm một ô trống
+    return value;
+}
+```
+
+Gọn hơn bản condition variable: không có vòng `while`, không có biến `count`, vì chính semaphore đã đếm.
+
+Nhưng **thứ tự hai lệnh `sem_wait` là sống còn**. Nếu `put` lấy `mutex` trước rồi mới chờ `empty_slots`:
+
+```text
+Producer: sem_wait(&mutex)        → giữ mutex
+Producer: sem_wait(&empty_slots)  → bộ đệm đầy, ngủ, VẪN GIỮ mutex
+Consumer: sem_wait(&full_slots)   → qua
+Consumer: sem_wait(&mutex)        → producer đang giữ, ngủ
+→ producer chờ consumer tạo chỗ trống; consumer chờ producer nhả mutex. Deadlock.
+```
+
+Quy tắc: không bao giờ ngủ chờ một điều kiện trong khi đang giữ lock mà bên sẽ làm điều kiện đó thành đúng cũng cần. Condition variable miễn nhiễm với lỗi này vì `wait` tự nhả mutex.
+
+<Expand title="Cài semaphore bằng mutex và condition variable">
+
+Semaphore không phải thứ gì cơ bản hơn; nó chỉ là một bộ đếm cộng với cách chờ.
+
+```c
+typedef struct {
+    int value;
+    pthread_mutex_t m;
+    pthread_cond_t  cv;
+} semaphore_t;
+
+void sema_init(semaphore_t *s, int value) {
+    s->value = value;
+    pthread_mutex_init(&s->m, NULL);
+    pthread_cond_init(&s->cv, NULL);
+}
+
+void sema_wait(semaphore_t *s) {
+    pthread_mutex_lock(&s->m);
+    while (s->value == 0)
+        pthread_cond_wait(&s->cv, &s->m);
+    s->value--;
+    pthread_mutex_unlock(&s->m);
+}
+
+void sema_post(semaphore_t *s) {
+    pthread_mutex_lock(&s->m);
+    s->value++;
+    pthread_cond_signal(&s->cv);
+    pthread_mutex_unlock(&s->m);
+}
+```
+
+Ngược lại, cài condition variable đúng bằng semaphore thì khó hơn hẳn và dễ sai, vì semaphore có trạng thái còn condition variable thì không.
+
+</Expand>
+
+### Mutex khác semaphore giá trị 1 ở đâu
+
+Chúng trông giống nhau nhưng khác ở **quyền sở hữu**.
+
+| | Mutex | Semaphore |
+|---|---|---|
+| Ai được nhả | Chỉ thread đã khoá | Bất kỳ thread nào cũng `post` được |
+| Ý nghĩa | "Tôi đang giữ thứ này" | "Còn bao nhiêu đơn vị tài nguyên" |
+| Priority inheritance | Làm được, vì biết ai đang giữ | Không, vì không có khái niệm người giữ |
+| Phát hiện lỗi (khoá hai lần, nhả khi không giữ) | Làm được | Không |
+| Dùng làm tín hiệu giữa hai thread | Không | Được |
+
+Dùng mutex khi cần loại trừ lẫn nhau. Dùng semaphore khi cần đếm tài nguyên hoặc báo tín hiệu.
+
+## Reader-writer lock
+
+Nhiều cấu trúc dữ liệu được đọc thường xuyên và hiếm khi bị sửa (bảng cấu hình, cache, bảng định tuyến). Nhiều thread cùng **đọc** thì không hỏng gì; chỉ khi có thread **ghi** mới cần độc quyền. Mutex thường bắt các reader xếp hàng một cách không cần thiết.
+
+Reader-writer lock có hai chế độ:
+
+- **Shared** (đọc): nhiều thread cùng giữ được.
+- **Exclusive** (ghi): chỉ một thread giữ, và không reader nào được giữ cùng lúc.
+
+```c
+#include <pthread.h>
+
+static pthread_rwlock_t rw = PTHREAD_RWLOCK_INITIALIZER;
+static int config_value;
+
+int read_config(void) {
+    pthread_rwlock_rdlock(&rw);          // nhiều reader cùng vào được
+    int v = config_value;
+    pthread_rwlock_unlock(&rw);
+    return v;
+}
+
+void write_config(int v) {
+    pthread_rwlock_wrlock(&rw);          // chờ mọi reader ra hết, rồi độc quyền
+    config_value = v;
+    pthread_rwlock_unlock(&rw);
+}
+```
+
+Hai điều cần biết trước khi dùng:
+
+**Writer có thể đói.** Nếu reader liên tục đến và lock ưu tiên reader, luôn có ít nhất một reader ở trong, và writer chờ mãi. Bản cài ưu tiên writer thì ngược lại: khi có writer chờ, reader mới bị chặn. Không có lựa chọn nào đúng cho mọi trường hợp.
+
+**Nó không tự động nhanh hơn mutex.** Reader-writer lock nặng hơn mutex: mỗi lần lấy lock đọc vẫn phải cập nhật atomic một bộ đếm reader, tức vẫn ghi vào một cache line mà mọi core cùng tranh. Nó chỉ thắng khi critical section đọc đủ dài và tỉ lệ đọc áp đảo. Với critical section vài lệnh, mutex thường nhanh hơn.
+
+## Không dùng lock: lock-free
+
+Với CAS, có thể sửa dữ liệu chung mà không cần lock, theo mẫu: đọc giá trị hiện tại, tính giá trị mới, rồi ghi **chỉ khi chưa ai đổi nó**; nếu đã bị đổi thì làm lại.
+
+```c
+#include <stdatomic.h>
+
+atomic_long counter = 0;
+
+void increment(void) {
+    long old = atomic_load(&counter);
+    // Nếu counter vẫn bằng old thì ghi old + 1 và trả về true.
+    // Nếu không, CAS chép giá trị hiện tại vào old và trả về false: thử lại.
+    while (!atomic_compare_exchange_weak(&counter, &old, old + 1))
+        ;
+}
+```
+
+Một cấu trúc phức tạp hơn một chút: đẩy phần tử vào stack dạng linked list (Treiber stack).
+
+```c
+struct node {
+    int value;
+    struct node *next;
+};
+
+static _Atomic(struct node *) top = NULL;
+
+void push(struct node *n) {
+    n->next = atomic_load(&top);
+    // Nếu top vẫn bằng n->next thì đặt top = n.
+    // Nếu ai đó đã đẩy phần tử khác, n->next được cập nhật thành top mới: thử lại.
+    while (!atomic_compare_exchange_weak(&top, &n->next, n))
+        ;
+}
+```
+
+Ưu điểm của lock-free: không thread nào chặn được thread khác. Một thread bị scheduler cho nghỉ giữa chừng không giữ gì cả, nên không có deadlock và không có priority inversion.
+
+Nhưng nó khó hơn vẻ ngoài rất nhiều. Thao tác `pop` tương ứng có một cái bẫy nổi tiếng là **ABA problem**: thread 1 đọc `top = A` và `A->next = B`, rồi bị dừng. Thread 2 lấy A ra, lấy B ra, giải phóng B, rồi đẩy lại A (cùng địa chỉ). Thread 1 chạy tiếp, CAS thấy `top` vẫn là A nên thành công và đặt `top = B`, một con trỏ tới vùng nhớ đã giải phóng. CAS chỉ so được giá trị, không biết giá trị đó đã đi một vòng rồi quay về. Các lời giải (gắn số phiên bản vào con trỏ, hazard pointer, epoch-based reclamation) đều phức tạp.
+
+Lời khuyên thực dụng: dùng lệnh atomic cho bộ đếm và cờ. Dùng cấu trúc lock-free có sẵn trong thư viện đã được kiểm chứng. Đừng tự viết trừ khi đã đo được rằng lock là điểm nghẽn.
+
+## Các ngôn ngữ gói những thứ này lại thế nào
+
+| Ngôn ngữ | Loại trừ lẫn nhau | Chờ điều kiện | Điểm đáng chú ý |
+|---|---|---|---|
+| C (pthread) | `pthread_mutex_t` | `pthread_cond_t`, `sem_t` | Tự quản mọi thứ; quên `unlock` ở một nhánh `return` là treo |
+| C++ | `std::mutex` với `std::lock_guard` | `std::condition_variable` | RAII: lock tự nhả khi ra khỏi scope, kể cả khi có exception |
+| Java | `synchronized`, `ReentrantLock` | `wait`/`notify`, `Condition` | Mọi object là một monitor: một mutex kèm một condition variable |
+| Go | `sync.Mutex` | channel, `sync.Cond` | Khuyến khích truyền dữ liệu qua channel thay vì chia sẻ bộ nhớ |
+| Rust | `Mutex<T>` | `Condvar`, channel | Dữ liệu nằm **bên trong** mutex; compiler không cho đụng vào khi chưa khoá |
+| Python | `threading.Lock` | `threading.Condition`, `queue.Queue` | `queue.Queue` chính là bounded buffer ở trên, đã cài sẵn |
+
+Hai ý tưởng thiết kế đáng học kể cả khi không dùng ngôn ngữ đó. Từ C++ và Rust: gắn việc nhả lock vào vòng đời của một biến để không thể quên. Từ Rust: gắn dữ liệu vào lock bảo vệ nó, để "quên khoá trước khi dùng" thành lỗi biên dịch thay vì bug lúc chạy.
+
+## Lock và hiệu năng
+
+Lock đúng thì dễ. Lock nhanh mới khó.
+
+### Tranh chấp, không phải lock, mới là thứ đắt
+
+Một cặp lock/unlock không tranh chấp tốn vài chục nano giây. Thứ đắt là **contention**: thread phải chờ, và trong lúc chờ nó không làm gì có ích.
+
+Định luật Amdahl cho biết giới hạn. Nếu phần `s` của công việc phải chạy tuần tự (vì nằm trong lock) thì với `n` core, tốc độ tăng tối đa là:
+
+```text
+speedup = 1 / (s + (1 − s) / n)
+
+s = 10%, n = 8    →  1 / (0.1 + 0.9 / 8)  ≈ 4.7 lần   (không phải 8)
+s = 10%, n = 64   →  1 / (0.1 + 0.9 / 64) ≈ 8.8 lần
+s = 10%, n = ∞    →  1 / 0.1              = 10 lần    (trần cứng)
+```
+
+Chỉ 10% thời gian nằm trong một lock chung là đủ để 64 core cho chưa tới 9 lần tốc độ. Hai cách giảm `s`:
+
+**Giữ lock ngắn hơn.** Chỉ giữ trong lúc đụng vào dữ liệu chung. Tính toán, cấp phát bộ nhớ, ghi log, và đặc biệt là I/O nên nằm ngoài lock.
+
+```c
+// Tệ: giữ lock trong lúc gọi mạng. Mọi thread khác chờ suốt thời gian đó.
+pthread_mutex_lock(&m);
+entry = cache_lookup(key);
+if (!entry) {
+    entry = fetch_from_network(key);      // có thể mất hàng trăm mili giây
+    cache_insert(key, entry);
+}
+pthread_mutex_unlock(&m);
+
+// Tốt hơn: nhả lock trước khi gọi mạng.
+pthread_mutex_lock(&m);
+entry = cache_lookup(key);
+pthread_mutex_unlock(&m);
+if (!entry) {
+    entry = fetch_from_network(key);
+    pthread_mutex_lock(&m);
+    cache_insert(key, entry);             // hai thread có thể cùng tải một key: chấp nhận được
+    pthread_mutex_unlock(&m);
+}
+```
+
+**Chia nhỏ lock.** Một lock cho cả hash table (coarse-grained) thì đơn giản nhưng mọi thao tác xếp hàng. Mỗi bucket hoặc mỗi nhóm bucket một lock (fine-grained, lock striping) cho phép các thao tác trên những phần khác nhau chạy song song. Cái giá là phức tạp hơn và dễ deadlock hơn khi một thao tác cần nhiều lock.
+
+### False sharing
+
+CPU cache hoạt động theo **cache line**, thường 64 byte. Khi một core ghi vào một cache line, bản sao của line đó trên mọi core khác bị vô hiệu.
+
+```c
+struct counters {
+    long a;     // thread 1 ghi liên tục
+    long b;     // thread 2 ghi liên tục
+};              // a và b nằm cạnh nhau, cùng một cache line
+```
+
+Hai thread ghi vào hai biến **khác nhau**, không có race condition nào, nhưng vì chúng chung cache line nên mỗi lần ghi của thread này làm cache của thread kia mất hiệu lực. Cache line bị giật qua lại giữa hai core, và chương trình có thể chậm đi nhiều lần. Đó là **false sharing**: chia sẻ ở mức phần cứng mà mã nguồn không thể hiện.
+
+```c
+struct counters {
+    _Alignas(64) long a;     // mỗi biến một cache line riêng
+    _Alignas(64) long b;
+};
+```
+
+Đây cũng là lý do bộ đếm theo từng thread, từng core hay được đệm cho đủ 64 byte.
+
+## Bug đồng bộ thường gặp và cách tìm
+
+Nghiên cứu trên các bug thật của MySQL, Apache, Mozilla và OpenOffice (được OSTEP chương 32 tóm tắt) cho thấy phần lớn bug không phải deadlock mà thuộc hai loại đơn giản:
+
+**Atomicity violation.** Hai thao tác lẽ ra phải đi liền nhau lại bị tách ra.
+
+```c
+// Thread 1
+if (thd->proc_info) {                    // kiểm tra
+    fputs(thd->proc_info, f);            // dùng: có thể đã thành NULL
+}
+
+// Thread 2
+thd->proc_info = NULL;
+```
+
+Kiểm tra rồi mới dùng (check-then-act) mà không giữ lock xuyên suốt là mẫu bug kinh điển. Cách sửa: bọc cả kiểm tra và sử dụng trong một lock.
+
+**Order violation.** Mã ngầm giả định A xảy ra trước B nhưng không gì bảo đảm điều đó. Ví dụ thread con dùng một biến mà thread cha gán **sau khi** tạo thread con. Cách sửa: dùng condition variable hoặc semaphore để ép thứ tự.
+
+**Deadlock.** Hai thread mỗi bên giữ một lock và chờ lock của bên kia. Có bài riêng: [Deadlock](/docs/os/deadlock).
+
+Bug đồng bộ khó tìm bằng test thông thường vì chúng phụ thuộc thời gian. Công cụ đáng dùng nhất là **ThreadSanitizer**:
+
+```bash
+gcc -fsanitize=thread -g -O1 race.c -o race
+./race
+```
+
+```text
+WARNING: ThreadSanitizer: data race (pid=4211)
+  Write of size 8 at 0x55d0c8a55010 by thread T2:
+    #0 worker race.c:8
+  Previous write of size 8 at 0x55d0c8a55010 by thread T1:
+    #0 worker race.c:8
+```
+
+Nó theo dõi mọi lần truy cập bộ nhớ và báo khi hai thread đụng cùng một ô mà không có lock chung, kể cả khi lần chạy đó tình cờ ra kết quả đúng. Chương trình chạy chậm đi 5 tới 15 lần, nên dùng trong test chứ không phải production. Go có sẵn `go test -race` cùng công nghệ; Valgrind có Helgrind.
+
+## Lưu ý
+
+- **Mọi lần truy cập dữ liệu chung đều phải được bảo vệ, kể cả đọc.** Đọc một biến trong lúc thread khác đang ghi là data race, và trong C/C++ là undefined behavior. Compiler được phép giả định điều đó không xảy ra và tối ưu theo cách làm chương trình hỏng một cách khó hiểu.
+- **Lock bảo vệ dữ liệu, không bảo vệ mã.** Câu hỏi đúng là "dữ liệu này được lock nào bảo vệ", và mọi chỗ đụng vào dữ liệu đó phải giữ đúng lock đó.
+- **`volatile` trong C không làm thao tác thành atomic.** Nó chỉ ngăn compiler tối ưu bỏ lần đọc ghi. `volatile long counter; counter++` vẫn là ba lệnh và vẫn sai.
+- **Luôn `wait` trong `while`.** Viết `if` là bug, kể cả khi test không lộ ra.
+- **Đừng giữ lock khi gọi mã không kiểm soát được.** Callback, hàm ảo, I/O: chúng có thể chậm, có thể lấy lock khác (deadlock), có thể gọi ngược lại vào chính mình.
+- **Nhiều lock hơn không phải lúc nào cũng nhanh hơn.** Lock mịn giảm tranh chấp nhưng tăng chi phí cố định và rủi ro deadlock. Bắt đầu bằng lock thô, đo, rồi mới chia nhỏ ở chỗ thật sự nghẽn.
+- **Cách tốt nhất để tránh bug đồng bộ là giảm dữ liệu chung.** Dữ liệu bất biến, dữ liệu riêng của từng thread, và truyền thông điệp qua hàng đợi đều loại bỏ cả lớp vấn đề thay vì quản lý nó.

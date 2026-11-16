@@ -89,6 +89,7 @@ sections:
         requires: [process-thread]
       - id: synchronization
         title: Synchronization
+        article: os/synchronization
         description: Mutex, semaphore, condition variable để các thread phối hợp an toàn.
         requires: [process-thread]
         resources:
@@ -104,6 +105,7 @@ sections:
         requires: [process-thread]
       - id: file-systems
         title: File Systems
+        article: os/file-systems
         description: File, thư mục, inode và cách dữ liệu nằm trên đĩa.
         requires: [virtual-memory]
         resources:
@@ -111,6 +113,7 @@ sections:
             url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-intro.pdf
       - id: io-devices
         title: I/O Devices
+        article: os/io-devices
         description: "Interrupt, DMA, driver: CPU nói chuyện với thiết bị thế nào."
         optional: true
         resources:
@@ -125,12 +128,14 @@ sections:
     nodes:
       - id: network-layers
         title: OSI & TCP/IP Model
+        article: networking/network-layers
         description: Chia mạng thành các tầng, mỗi tầng giải một bài toán.
         resources:
           - title: "Stanford CS144 — Introduction to Computer Networking"
             url: https://cs144.github.io/
       - id: ip-routing
         title: IP & Routing
+        article: networking/ip-routing
         description: Địa chỉ IP, subnet, router chọn đường đi cho gói tin.
         requires: [network-layers]
         resources:
@@ -146,6 +151,7 @@ sections:
         requires: [tcp-vs-udp]
       - id: http
         title: HTTP
+        article: networking/http
         description: Request, response, method, status code, header.
         requires: [tcp-vs-udp]
         resources:
@@ -153,6 +159,7 @@ sections:
             url: https://developer.mozilla.org/en-US/docs/Web/HTTP
       - id: tls
         title: TLS & HTTPS
+        article: networking/tls
         description: Mã hoá kết nối và chứng chỉ số.
         requires: [http]
         resources:

@@ -1,0 +1,498 @@
+---
+title: File Systems
+description: File, thư mục và inode thật sự là gì trên đĩa; một lệnh read hay write đi qua những tầng nào; vì sao mất điện có thể làm hỏng dữ liệu và journaling, fsync giải quyết điều đó ra sao.
+status: draft
+tags: [os, storage]
+authors: [tranquocvy]
+references:
+  - title: "OSTEP — Chapter 39: Interlude: Files and Directories"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-intro.pdf
+    kind: book
+    note: API file, inode, hard link, symbolic link
+  - title: "OSTEP — Chapter 40: File System Implementation"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-implementation.pdf
+    kind: book
+    note: vsfs, bố cục trên đĩa, số lần I/O của open/read/write
+  - title: "OSTEP — Chapter 41: Locality and The Fast File System"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-ffs.pdf
+    kind: book
+  - title: "OSTEP — Chapter 42: Crash Consistency: FSCK and Journaling"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-journaling.pdf
+    kind: book
+  - title: "OSTEP — Chapter 43: Log-structured File Systems"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-lfs.pdf
+    kind: book
+  - title: "Linux kernel documentation — ext4 Data Structures and Algorithms"
+    url: https://docs.kernel.org/filesystems/ext4/index.html
+    kind: web
+  - title: "Linux man-pages — fsync(2)"
+    url: https://man7.org/linux/man-pages/man2/fsync.2.html
+    kind: web
+  - title: "Pillai et al. — All File Systems Are Not Created Equal (OSDI 2014)"
+    url: https://www.usenix.org/conference/osdi14/technical-sessions/presentation/pillai
+    kind: paper
+    note: các lỗi crash consistency trong ứng dụng thật, lý do của mẫu write-fsync-rename
+---
+
+## Ý chính
+
+Đĩa chỉ biết một việc: đọc và ghi các **block** có kích thước cố định, đánh số từ 0. Nó không biết file, thư mục hay tên. **File system** là lớp phần mềm trong kernel biến dãy block đó thành thứ con người dùng được: file có tên, thư mục lồng nhau, quyền truy cập, và lời bảo đảm rằng dữ liệu còn nguyên sau khi mất điện.
+
+Nó phải giải ba bài toán:
+
+1. **Tổ chức**: file này gồm những block nào, block nào còn trống, tên này ứng với file nào.
+2. **Hiệu năng**: đĩa chậm hơn RAM hàng nghìn tới hàng trăm nghìn lần, nên phải cache và gom việc ghi.
+3. **Nhất quán khi sập**: một thao tác như "ghi thêm vào file" cần sửa nhiều block, mà máy có thể mất điện giữa chừng.
+
+Bài toán thứ ba là thứ làm file system khó, và là thứ lập trình viên ứng dụng hay hiểu sai nhất: `write()` trả về thành công **không** có nghĩa là dữ liệu đã nằm trên đĩa.
+
+## File và thư mục nhìn từ chương trình
+
+### Ba tầng bảng
+
+Chương trình không thao tác file bằng tên. Nó `open()` một đường dẫn để nhận về một <Term>file descriptor</Term> (số nguyên nhỏ), rồi dùng số đó cho mọi lệnh sau. Phía sau con số là ba tầng cấu trúc trong kernel:
+
+```text
+process A                      kernel (dùng chung toàn hệ thống)
+┌──────────────────┐
+│ bảng fd          │      bảng open file             bảng inode (trong RAM)
+│ 0 ───────────────┼──►  [offset, cờ, …] ─────────►  [inode của terminal]
+│ 1 ───────────────┼──►  [offset, cờ, …] ────┐
+│ 3 ───────────────┼──►  [offset=120, R/W] ──┼────►  [inode của data.txt]
+└──────────────────┘                         │              ▲
+process B                                    │              │
+┌──────────────────┐                         │              │
+│ 3 ───────────────┼──►  [offset=0, R]  ─────┼──────────────┘
+└──────────────────┘
+```
+
+- **Bảng file descriptor**: của riêng mỗi process. Số 3 của A và số 3 của B không liên quan gì nhau.
+- **Open file**: mỗi lần gọi `open()` tạo một mục mới, giữ **vị trí đọc ghi hiện tại** (offset) và chế độ mở. A và B cùng mở `data.txt` thì có hai offset độc lập.
+- **Inode**: mỗi file có đúng một, bất kể bao nhiêu process đang mở nó.
+
+Hai hệ quả hay gặp. Sau `fork()`, cha và con dùng **chung** mục open file, nên chung offset: con đọc 100 byte thì cha đọc tiếp từ byte 100. Còn hai process tự `open()` cùng một file thì ghi đè lên nhau từ offset 0, trừ khi mở với `O_APPEND` (kernel dời offset về cuối file và ghi trong một thao tác atomic, nên nhiều process ghi chung một file log mà không giẫm lên nhau).
+
+### API cơ bản
+
+```c
+#include <fcntl.h>
+#include <unistd.h>
+
+int fd = open("data.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);   // tạo nếu chưa có, quyền rw-r--r--
+write(fd, "hello\n", 6);        // chép 6 byte vào page cache của kernel, dời offset lên 6
+lseek(fd, 0, SEEK_SET);         // đặt lại offset về 0; KHÔNG gây ra thao tác đĩa nào
+fsync(fd);                      // ép mọi dữ liệu của file này xuống đĩa, chờ tới khi xong
+close(fd);                      // giải phóng fd; KHÔNG bảo đảm dữ liệu đã xuống đĩa
+```
+
+`read` và `write` làm việc với dòng byte, không có khái niệm bản ghi hay dòng. Chúng có thể đọc hoặc ghi **ít hơn** số byte yêu cầu, nên mã đúng luôn kiểm tra giá trị trả về và lặp lại phần còn thiếu.
+
+## Inode: file thật sự là gì
+
+### Nội dung của inode
+
+Mỗi file được đại diện bởi một <Term>inode</Term>: cấu trúc chứa mọi thông tin về file **trừ tên của nó**.
+
+```text
+$ echo "hello" > a.txt
+$ stat a.txt
+  File: a.txt
+  Size: 6               Blocks: 8          IO Block: 4096   regular file
+Device: 8,48    Inode: 52201       Links: 1
+Access: (0644/-rw-r--r--)  Uid: ( 1000/    user)   Gid: ( 1000/    user)
+Access: 2026-11-16 00:04:05.107001928 +0700
+Modify: 2026-11-16 00:04:05.107001928 +0700
+Change: 2026-11-16 00:04:05.107001928 +0700
+ Birth: 2026-11-16 00:04:05.107001928 +0700
+```
+
+| Field | Ý nghĩa |
+|---|---|
+| Inode number | Số định danh của file trong file system này (52201) |
+| Loại | File thường, thư mục, symbolic link, thiết bị, pipe, socket |
+| Size | Kích thước tính bằng byte (6) |
+| Blocks | Số block 512 byte đã cấp (8, tức một block 4 KB, dù file chỉ có 6 byte) |
+| Links | Số tên đang trỏ tới inode này |
+| Quyền, Uid, Gid | Ai được đọc, ghi, thực thi |
+| Access / Modify / Change | Lần cuối đọc nội dung / sửa nội dung / sửa chính inode |
+| Con trỏ dữ liệu | Các block chứa nội dung file nằm ở đâu trên đĩa (không hiện trong `stat`) |
+
+Tên file không có trong danh sách. Tên nằm ở chỗ khác.
+
+### Thư mục là một bảng tên
+
+Thư mục cũng là một file, có inode riêng. Nội dung của nó là một danh sách các cặp **(tên, inode number)**:
+
+```text
+nội dung thư mục /home/user/demo:
+  .          → 10397      (chính nó)
+  ..         → 10100      (thư mục cha)
+  a.txt      → 52201
+  sub        → 52208
+```
+
+Phân giải đường dẫn `/home/user/demo/a.txt` là đi từng bước: đọc inode của `/` (số 2 theo quy ước), đọc nội dung của nó để tìm `home`, đọc inode của `home`, đọc nội dung để tìm `user`, và cứ thế. Mỗi thành phần đường dẫn tốn ít nhất hai lần đọc (inode và dữ liệu thư mục); kernel cache kết quả trong **dentry cache** để các lần sau gần như miễn phí.
+
+### Hard link và symbolic link
+
+Vì tên chỉ là một mục trong thư mục trỏ tới inode, một inode có thể có **nhiều tên**.
+
+```text
+$ ln a.txt hard.txt         # hard link: thêm một tên cho cùng inode
+$ ln -s a.txt soft.txt      # symbolic link: một file mới, nội dung là chuỗi "a.txt"
+$ ls -li
+52201 -rw-r--r-- 2 user user 6 Nov 16 00:04 a.txt
+52201 -rw-r--r-- 2 user user 6 Nov 16 00:04 hard.txt
+52207 lrwxrwxrwx 1 user user 5 Nov 16 00:04 soft.txt -> a.txt
+```
+
+`a.txt` và `hard.txt` có cùng inode number 52201, và số link (cột thứ ba) là 2. Chúng không phải "bản gốc và bản sao"; chúng là hai tên ngang hàng của cùng một file. `soft.txt` là một inode khác (52207), kích thước 5 byte, đúng bằng độ dài chuỗi `a.txt`.
+
+```text
+$ rm a.txt
+$ ls -li
+52201 -rw-r--r-- 1 user user 6 Nov 16 00:04 hard.txt
+52207 lrwxrwxrwx 1 user user 5 Nov 16 00:04 soft.txt -> a.txt
+$ cat hard.txt
+hello
+$ cat soft.txt
+cat: soft.txt: No such file or directory
+```
+
+Xoá `a.txt` chỉ bỏ một tên; số link giảm còn 1 và dữ liệu vẫn nguyên qua tên `hard.txt`. Còn `soft.txt` giờ trỏ tới một cái tên không tồn tại (dangling link).
+
+| | Hard link | Symbolic link |
+|---|---|---|
+| Bản chất | Thêm một mục thư mục trỏ tới cùng inode | Một file riêng chứa đường dẫn tới đích |
+| Qua file system khác | Không (inode number chỉ có nghĩa trong một file system) | Được |
+| Trỏ tới thư mục | Không (tránh tạo vòng lặp trong cây thư mục) | Được |
+| Khi xoá đích | File vẫn còn, qua các tên khác | Link hỏng |
+| Chi phí khi truy cập | Không | Thêm một lần phân giải đường dẫn |
+
+### Xoá file thật ra là unlink
+
+Không có system call "xoá file". Chỉ có `unlink()`: bỏ một tên khỏi thư mục và giảm số link. Inode và các block dữ liệu chỉ được giải phóng khi **cả hai** điều sau đúng: số link bằng 0, và không còn process nào đang mở file.
+
+```python
+import os
+
+f = open("big.tmp", "w")
+f.write("x" * 1000)
+f.flush()
+os.unlink("big.tmp")                          # bỏ tên
+
+print(os.path.exists("big.tmp"))              # False: không còn tên nào
+print(os.fstat(f.fileno()).st_nlink)          # 0
+print(os.fstat(f.fileno()).st_size)           # 1000: dữ liệu vẫn còn, vẫn đọc ghi được qua f
+```
+
+Đây là nguồn của một sự cố vận hành quen thuộc: đĩa đầy, bạn xoá file log 50 GB, và `df` vẫn báo đầy. Process ghi log vẫn đang mở file đó, nên không gian chưa được trả. Tìm các file đã xoá mà còn bị giữ bằng `lsof +L1`; khởi động lại process (hoặc bảo nó mở lại file log) thì dung lượng mới về.
+
+Cùng cơ chế này cho phép nâng cấp một thư viện đang được dùng: file cũ bị unlink và file mới mang tên đó, còn các process đang chạy tiếp tục dùng inode cũ cho tới khi chúng kết thúc.
+
+## File system nằm trên đĩa thế nào
+
+### Bố cục
+
+Xét một file system đơn giản theo kiểu Unix kinh điển (OSTEP gọi nó là vsfs). Đĩa được chia thành các block 4 KB, và các block được phân vai:
+
+```text
+┌────────┬─────────┬─────────┬──────────────────┬───────────────────────────────────┐
+│ super  │ inode   │ data    │ inode table      │ data blocks                       │
+│ block  │ bitmap  │ bitmap  │                  │                                   │
+└────────┴─────────┴─────────┴──────────────────┴───────────────────────────────────┘
+ block 0   block 1   block 2   block 3 … 7        block 8 … hết đĩa
+```
+
+| Vùng | Chứa gì |
+|---|---|
+| **Superblock** | Thông tin về chính file system: loại, kích thước block, tổng số inode và block, vị trí các vùng khác. `mount` đọc nó đầu tiên |
+| **Inode bitmap** | Mỗi bit ứng với một inode: 1 là đang dùng, 0 là trống |
+| **Data bitmap** | Mỗi bit ứng với một data block |
+| **Inode table** | Mảng các inode. Inode 256 byte thì một block 4 KB chứa 16 inode; inode number chính là chỉ số trong mảng này |
+| **Data blocks** | Nội dung của file và thư mục |
+
+Số inode được định sẵn lúc tạo file system (với ext4). Vì vậy đĩa có thể "hết chỗ" theo hai cách: hết data block, hoặc **hết inode** dù còn hàng trăm GB trống. Trường hợp sau xảy ra khi có hàng chục triệu file nhỏ (thư mục cache, session, mail). Kiểm tra bằng `df -i`:
+
+```text
+$ df -h /            $ df -i /
+Size  Used Avail     Inodes   IUsed    IFree IUse%
+1007G 2.5G  954G     67108864 55424 67053440    1%
+```
+
+ext4 thật chia đĩa thành nhiều **block group**, mỗi nhóm lặp lại cấu trúc trên (bitmap, inode table, data block riêng). Mục đích là giữ inode của một file gần dữ liệu của nó, và giữ các file cùng thư mục gần nhau, để giảm quãng di chuyển đầu đọc trên đĩa từ. Ý tưởng này có từ Fast File System của BSD.
+
+### Inode tìm dữ liệu bằng cách nào
+
+Inode có kích thước cố định nhưng file có thể từ 0 byte tới hàng TB. Lời giải kinh điển là **chỉ mục nhiều mức**, cùng ý tưởng với page table nhiều mức:
+
+```text
+inode
+├── 12 direct pointer       ──► 12 data block
+├── 1 single indirect       ──► [1024 con trỏ] ──► 1024 data block
+├── 1 double indirect       ──► [1024] ──► [1024 mỗi cái] ──► 1024² data block
+└── 1 triple indirect       ──► [1024] ──► [1024] ──► [1024] ──► 1024³ data block
+```
+
+Với block 4 KB và con trỏ 4 byte (mỗi block con trỏ chứa 1024 con trỏ):
+
+| Mức | Số block dữ liệu | Dung lượng phủ được |
+|---|---|---|
+| 12 direct | 12 | 48 KB |
+| Single indirect | 1 024 | 4 MB |
+| Double indirect | 1 048 576 | 4 GB |
+| Triple indirect | 1 073 741 824 | 4 TB |
+
+Thiết kế này lệch có chủ ý: phần lớn file trên một máy bất kỳ là file nhỏ, nên 12 con trỏ trực tiếp cho phép đọc chúng mà không tốn thêm lần đọc đĩa nào; file lớn trả thêm một tới ba lần đọc gián tiếp.
+
+Nhược điểm: file 1 GB cần hơn 262 nghìn con trỏ, mỗi block một con trỏ, dù các block đó thường nằm liền nhau. ext4, XFS, NTFS thay bằng **extent**: mỗi mục ghi "bắt đầu từ block X, dài N block liên tiếp". Một file 1 GB không phân mảnh chỉ cần vài extent. Xem các extent của một file bằng `filefrag -v <file>`.
+
+### Đọc và ghi tốn bao nhiêu lần I/O
+
+Đếm số lần chạm đĩa cho thấy vì sao cache là bắt buộc. Mở và đọc `/foo/bar` khi chưa có gì trong cache:
+
+| Bước | Đọc |
+|---|---|
+| `open("/foo/bar")` | inode của `/` → dữ liệu của `/` (tìm `foo`) → inode của `foo` → dữ liệu của `foo` (tìm `bar`) → inode của `bar` |
+| `read()` block đầu | inode của `bar` (lấy con trỏ) → data block → **ghi** lại inode (cập nhật thời điểm truy cập) |
+
+Năm lần đọc chỉ để mở, và số đó tăng theo độ sâu của đường dẫn.
+
+Tạo một file mới và ghi một block vào nó còn đắt hơn: đọc và ghi inode bitmap (cấp inode), ghi inode mới, ghi dữ liệu thư mục (thêm tên), ghi inode của thư mục, rồi đọc và ghi data bitmap (cấp block), ghi data block, ghi lại inode của file. Cỡ mười thao tác đĩa cho một file một block.
+
+Ghi nhớ con số này cho phần sau: **một thao tác logic là nhiều lần ghi vật lý ở những chỗ khác nhau trên đĩa.**
+
+## Page cache và ghi trễ
+
+Để không phải chạm đĩa cho mọi thao tác, kernel giữ các block đã đọc trong RAM. Trên Linux đó là **page cache**, cùng cơ chế với file ánh xạ bằng `mmap` (xem [Virtual Memory](/docs/os/virtual-memory)).
+
+**Đọc.** Lần đầu đọc từ đĩa và giữ lại trong cache; các lần sau lấy từ RAM. Khi thấy chương trình đọc tuần tự, kernel đọc trước các block kế tiếp (**read-ahead**).
+
+**Ghi.** `write()` chỉ chép dữ liệu vào page cache, đánh dấu trang là **dirty**, rồi trở về ngay. Các thread nền của kernel ghi trang dirty xuống đĩa sau đó. Các ngưỡng mặc định trên Linux:
+
+```text
+vm.dirty_writeback_centisecs = 500     # thread nền thức dậy mỗi 5 giây
+vm.dirty_expire_centisecs = 3000       # trang dirty quá 30 giây thì phải ghi
+vm.dirty_background_ratio = 10         # dirty vượt 10% RAM: bắt đầu ghi nền
+vm.dirty_ratio = 20                    # dirty vượt 20% RAM: process đang write() bị chặn lại để ghi
+```
+
+Ghi trễ có lợi rõ ràng: nhiều lần ghi nhỏ vào cùng một block gộp thành một lần ghi đĩa; file tạm được tạo rồi xoá ngay không bao giờ chạm đĩa; kernel sắp xếp được thứ tự ghi cho hiệu quả.
+
+Cái giá: **dữ liệu đã `write()` thành công có thể mất nếu máy sập trong vòng vài chục giây sau đó.** Process chết thì không sao (dữ liệu đã nằm trong kernel), nhưng mất điện hoặc kernel panic thì mất.
+
+### fsync
+
+`fsync(fd)` ép mọi dữ liệu và metadata của file xuống thiết bị lưu trữ, và chỉ trở về khi thiết bị xác nhận đã ghi. Đây là công cụ duy nhất chương trình có để nói "tôi cần cái này bền".
+
+Nó đắt: một lần `fsync` tốn từ dưới một mili giây (SSD tốt) tới hơn chục mili giây (HDD). Một database gọi `fsync` cho mỗi transaction trên HDD chỉ đạt cỡ một trăm transaction mỗi giây. Vì vậy mọi database đều có kỹ thuật **group commit**: gom nhiều transaction đang chờ rồi `fsync` một lần cho cả nhóm.
+
+Ba mức bền, từ rẻ tới đắt:
+
+| Cách ghi | Sống sót khi process chết | Sống sót khi mất điện |
+|---|---|---|
+| Ghi vào bộ đệm của thư viện (`fwrite`, `print`) chưa flush | Không | Không |
+| `write()` vào page cache | Có | Không |
+| `write()` rồi `fsync()` | Có | Có |
+
+### Cập nhật file một cách atomic
+
+Bài toán rất hay gặp: ghi đè một file cấu hình hoặc file trạng thái, sao cho sau khi sập, file hoặc là bản cũ nguyên vẹn hoặc là bản mới nguyên vẹn, không bao giờ là một nửa.
+
+Mở file với `O_TRUNC` rồi ghi là sai: giữa lúc cắt file về 0 byte và lúc ghi xong, sập là mất cả hai bản. Mẫu đúng dựa trên việc `rename()` là **atomic** trong một file system:
+
+```c
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
+
+int atomic_write(const char *path, const char *tmp, const char *dir,
+                 const void *data, size_t len) {
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+
+    if (write(fd, data, len) != (ssize_t)len) { close(fd); return -1; }
+    if (fsync(fd) != 0)                       { close(fd); return -1; }   // (1) nội dung file tạm đã bền
+    close(fd);
+
+    if (rename(tmp, path) != 0) return -1;    // (2) đổi tên: atomic, thay luôn file cũ
+
+    int dfd = open(dir, O_RDONLY);            // (3) fsync thư mục để chính việc đổi tên cũng bền
+    if (dfd < 0) return -1;
+    int rc = fsync(dfd);
+    close(dfd);
+    return rc;
+}
+```
+
+Mỗi bước có lý do:
+
+1. Không `fsync` file tạm trước khi đổi tên thì có thể sập ở thời điểm tên mới đã trỏ sang file tạm nhưng nội dung file tạm chưa xuống đĩa: kết quả là một file rỗng mang tên thật.
+2. `rename` thay tên cũ bằng tên mới trong một bước; mọi process khác thấy hoặc file cũ hoặc file mới.
+3. Việc đổi tên là một thay đổi trong **thư mục**. Muốn nó bền thì phải `fsync` thư mục chứa file.
+
+File tạm phải nằm cùng file system với file đích, vì `rename` không atomic (và không hoạt động) qua file system khác. Mẫu write-fsync-rename này được dùng ở khắp nơi: trình soạn thảo lưu file, package manager, và cách các database thay file metadata.
+
+## Crash consistency
+
+### Vấn đề
+
+Xét thao tác đơn giản nhất: ghi thêm một block vào cuối một file đã có. File system phải ghi **ba** chỗ:
+
+1. **Data bitmap**: đánh dấu block mới là đã dùng.
+2. **Inode**: thêm con trỏ tới block mới, tăng kích thước file.
+3. **Data block**: nội dung mới.
+
+Đĩa chỉ bảo đảm ghi từng block (hoặc sector) một cách atomic. Ba lần ghi này là ba thao tác riêng, và máy có thể mất điện sau bất kỳ lần nào:
+
+| Đã ghi xuống đĩa | Hậu quả |
+|---|---|
+| Chỉ data block | Dữ liệu nằm đó nhưng không inode nào trỏ tới. Như chưa từng ghi. Nhất quán |
+| Chỉ inode | Inode trỏ tới một block chứa **rác** (nội dung cũ, có thể là dữ liệu của file đã xoá của người khác). Bitmap lại bảo block đó trống |
+| Chỉ bitmap | Block bị đánh dấu đã dùng nhưng không ai dùng: mất dung lượng vĩnh viễn (space leak) |
+| Inode và bitmap | Metadata nhất quán với nhau, nhưng file chứa rác |
+| Inode và data block | File đọc đúng, nhưng bitmap bảo block trống: block sẽ bị cấp cho file khác và bị ghi đè |
+| Bitmap và data block | Block bị chiếm, có dữ liệu, nhưng không thuộc file nào |
+
+Chỉ có "ghi được cả ba" hoặc "không ghi gì" là kết quả đúng. Cần một cách biến nhiều lần ghi thành một thao tác atomic.
+
+### Cách cũ: fsck
+
+Để mặc cho không nhất quán xảy ra, rồi sau khi khởi động lại thì quét **toàn bộ** file system để tìm và sửa: đối chiếu bitmap với các inode, kiểm tra số link, tìm block được hai inode cùng nhận.
+
+Hai vấn đề. `fsck` chỉ khôi phục được sự nhất quán của **metadata**; nó không biết nội dung file có đúng không. Và nó tỉ lệ với kích thước đĩa: quét một mảng đĩa hàng chục TB mất nhiều giờ, chỉ vì ba block có thể đang dở.
+
+### Journaling
+
+Ý tưởng lấy từ database, gọi là **write-ahead logging**: trước khi sửa các cấu trúc tại chỗ, ghi **ý định** sẽ sửa gì vào một vùng riêng trên đĩa, gọi là <Term>journal</Term>.
+
+```text
+journal:  │ TxB │ inode mới │ bitmap mới │ data block │ TxE │
+            │                                           │
+     bắt đầu transaction                        commit record
+```
+
+Trình tự cho một cập nhật:
+
+1. **Journal write**: ghi TxB (đánh dấu bắt đầu, kèm danh sách các block sắp sửa) và nội dung mới của các block vào journal. Chờ xong.
+2. **Journal commit**: ghi TxE (commit record). Đây là một lần ghi một sector, nên atomic. Chờ xong. **Từ thời điểm này cập nhật được coi là đã xảy ra.**
+3. **Checkpoint**: ghi các block vào vị trí thật của chúng trong file system. Có thể làm muộn hơn, gom nhiều transaction.
+4. **Free**: đánh dấu transaction trong journal là xong để tái dùng chỗ.
+
+Khi khởi động lại sau khi sập, file system chỉ cần đọc journal (cỡ vài chục tới vài trăm MB), không cần quét cả đĩa:
+
+| Sập ở đâu | Khi khôi phục |
+|---|---|
+| Trước khi ghi xong TxE | Transaction không có commit record: bỏ qua. Như chưa từng xảy ra |
+| Sau TxE, trước hoặc giữa checkpoint | Transaction đã commit: **phát lại** (replay), ghi lại các block vào vị trí thật. Ghi lại một block đã ghi rồi không sao, vì kết quả như nhau |
+
+Mỗi cập nhật hoặc xảy ra trọn vẹn, hoặc không xảy ra. Thời gian khôi phục tỉ lệ với kích thước journal thay vì kích thước đĩa: vài giây thay vì vài giờ.
+
+### Journal cái gì: ba chế độ của ext4
+
+Ghi cả dữ liệu vào journal nghĩa là mỗi byte được ghi **hai lần** (một lần vào journal, một lần vào chỗ thật), cắt đôi thông lượng ghi. Vì metadata nhỏ còn dữ liệu lớn, phần lớn file system chỉ journal metadata.
+
+| Chế độ (`data=`) | Journal gì | Thứ tự | Sau khi sập |
+|---|---|---|---|
+| `journal` | Metadata và dữ liệu | — | An toàn nhất; ghi chậm nhất vì ghi hai lần |
+| `ordered` (mặc định) | Chỉ metadata | Data block được ghi xuống đĩa **trước khi** metadata trỏ tới nó được commit | Metadata nhất quán và không bao giờ trỏ tới rác. File có thể thiếu những lần ghi cuối |
+| `writeback` | Chỉ metadata | Không ép thứ tự | Metadata nhất quán, nhưng file có thể chứa rác: inode đã trỏ tới block mà dữ liệu chưa kịp ghi |
+
+Quy tắc của chế độ `ordered`, **ghi thứ được trỏ tới trước, rồi mới ghi con trỏ**, là nguyên tắc chung của crash consistency: không bao giờ để một cấu trúc bền vững tham chiếu tới thứ chưa bền.
+
+Cần hiểu đúng lời hứa của journaling: nó bảo đảm **cấu trúc của file system** nhất quán sau khi sập. Nó không bảo đảm dữ liệu ứng dụng của bạn không mất; những gì chưa `fsync` vẫn có thể biến mất. Nó cũng không bảo đảm một chuỗi nhiều lệnh `write` của bạn là atomic.
+
+### Các hướng thiết kế khác
+
+**Copy-on-write (ZFS, btrfs, APFS).** Không bao giờ ghi đè block đang dùng. Mỗi lần sửa ghi nội dung mới vào block trống, rồi cập nhật con trỏ ở tầng trên, cũng bằng cách ghi bản mới, lan lên tới gốc. Thay đổi có hiệu lực khi con trỏ gốc được đổi trong một lần ghi atomic. Không cần journal, và bản cũ còn nguyên cho tới lúc đó. Từ đây có **snapshot** gần như miễn phí (giữ lại một con trỏ gốc cũ) và **checksum** cho mọi block (phát hiện được dữ liệu hỏng âm thầm). Đổi lại, file bị sửa nhiều lần sẽ phân mảnh, bất lợi cho database trên đĩa từ.
+
+**Log-structured (LFS, F2FS).** Coi cả đĩa như một cuốn log ghi tuần tự: mọi lần ghi, cả dữ liệu lẫn metadata, đều nối vào cuối. Ghi rất nhanh vì hoàn toàn tuần tự. Đổi lại cần một tiến trình dọn dẹp (garbage collection) để thu hồi chỗ của các bản cũ. Ý tưởng này sống lại mạnh mẽ ở tầng trên: LSM-tree trong RocksDB và Cassandra, và chính firmware của SSD, đều là cấu trúc log.
+
+| File system | Chống sập bằng | Điểm nổi bật |
+|---|---|---|
+| ext4 | Journaling (metadata) | Mặc định trên nhiều bản Linux; ổn định, dễ đoán |
+| XFS | Journaling (metadata) | Tốt với file lớn và ghi song song |
+| btrfs, ZFS | Copy-on-write | Snapshot, checksum, quản lý nhiều đĩa |
+| NTFS | Journaling (metadata) | Windows |
+| APFS | Copy-on-write | macOS, iOS; snapshot, clone file |
+| F2FS | Log-structured | Thiết kế cho bộ nhớ flash |
+
+## VFS: một API cho mọi file system
+
+Chương trình gọi cùng `open`, `read`, `write` cho file trên ext4, trên ổ USB định dạng FAT, trên thư mục mạng NFS, và cả cho `/proc/cpuinfo`, thứ không nằm trên đĩa nào. Làm được vậy nhờ **VFS** (virtual file system): một lớp trong kernel định nghĩa các đối tượng chung (superblock, inode, dentry, file) và bộ thao tác mỗi file system phải cài.
+
+```text
+chương trình:    open()  read()  write()  stat()
+                         │
+                    ┌────▼────┐
+                    │   VFS   │   bảng fd, dentry cache, page cache
+                    └────┬────┘
+        ┌────────┬───────┼────────┬─────────┐
+      ext4      XFS     NFS     procfs    tmpfs
+        │        │       │        │         │
+       đĩa      đĩa    mạng    cấu trúc    RAM
+                               trong kernel
+```
+
+`mount` gắn một file system vào một thư mục của cây chung. Nhờ đó mới có thể nói "mọi thứ là file" trên Unix:
+
+- **procfs** (`/proc`) và **sysfs** (`/sys`): trạng thái của kernel dưới dạng file. `cat /proc/meminfo` không đọc đĩa; kernel sinh nội dung ngay lúc bạn đọc.
+- **tmpfs** (`/tmp`, `/dev/shm`): file system sống hoàn toàn trong page cache, không có thiết bị phía sau.
+- **Thiết bị** (`/dev/sda`, `/dev/null`): file đặc biệt mà đọc ghi được chuyển cho driver; xem [I/O Devices](/docs/os/io-devices).
+
+## Quyền truy cập
+
+Mỗi inode mang ba bộ quyền, cho chủ sở hữu (user), nhóm (group) và mọi người còn lại (other). Mỗi bộ có ba bit: đọc (`r` = 4), ghi (`w` = 2), thực thi (`x` = 1).
+
+```text
+-rw-r--r--   = 0644     chủ: đọc + ghi     nhóm: đọc     người khác: đọc
+drwxr-xr-x   = 0755     chủ: toàn quyền    nhóm và người khác: đọc + vào được
+```
+
+Với **thư mục**, ba bit có nghĩa khác, và đây là chỗ hay nhầm:
+
+| Bit | Trên file | Trên thư mục |
+|---|---|---|
+| `r` | Đọc nội dung | Liệt kê tên các mục bên trong |
+| `w` | Sửa nội dung | Tạo, xoá, đổi tên các mục bên trong |
+| `x` | Chạy như chương trình | Đi **qua** thư mục: truy cập được các mục bên trong nếu biết tên |
+
+Hệ quả: xoá một file cần quyền `w` trên **thư mục chứa nó**, không cần quyền gì trên chính file, vì xoá là sửa nội dung thư mục. Và một thư mục có `x` nhưng không có `r` cho phép mở file bên trong nếu biết đúng tên, nhưng không cho `ls`.
+
+Quyền của file mới tạo là quyền chương trình yêu cầu trừ đi `umask` của process. Với `umask` phổ biến `0022`: file xin `0666` thành `0644`, thư mục xin `0777` thành `0755`.
+
+## Quan sát và chẩn đoán
+
+```bash
+df -h                     # dung lượng theo từng file system
+df -i                     # số inode còn trống
+du -sh * | sort -h        # thư mục nào chiếm chỗ
+ls -li                    # kèm inode number và số link
+stat <file>               # toàn bộ metadata của inode
+lsblk -f                  # thiết bị, loại file system, điểm mount
+findmnt                   # cây mount và tuỳ chọn mount (data=ordered, noatime...)
+filefrag -v <file>        # các extent của file, mức độ phân mảnh
+lsof +L1                  # file đã bị xoá nhưng còn process giữ
+iostat -x 1               # tải, độ trễ và hàng đợi của từng thiết bị
+strace -e trace=file,desc ./prog    # mọi system call liên quan tới file
+```
+
+| Triệu chứng | Nguyên nhân thường gặp | Kiểm tra |
+|---|---|---|
+| "No space left on device" nhưng `df -h` còn chỗ | Hết inode | `df -i` |
+| Xoá file lớn mà dung lượng không tăng | File còn bị một process giữ mở | `lsof +L1` |
+| `du` và `df` lệch nhau nhiều | Như trên, hoặc có file bị một điểm mount che | `lsof +L1`, `findmnt` |
+| Ghi nhanh rồi thỉnh thoảng khựng vài giây | Trang dirty vượt ngưỡng, process bị ép ghi đồng bộ | `grep Dirty /proc/meminfo` |
+| File rỗng hoặc cụt sau khi mất điện | Ghi đè tại chỗ, hoặc thiếu `fsync` trước `rename` | Xem lại mã ghi file |
+
+## Lưu ý
+
+- **`write()` thành công không có nghĩa dữ liệu đã bền.** Nó nằm trong page cache. Cần bền thì `fsync`, và chấp nhận chi phí.
+- **`close()` không `fsync`.** Đóng file không ép gì xuống đĩa.
+- **Luôn kiểm tra lỗi của `fsync`.** Nếu nó báo lỗi, không thể giả định dữ liệu đã an toàn, và gọi lại lần nữa cũng không bảo đảm gì: kernel có thể đã bỏ các trang lỗi khỏi cache. PostgreSQL từng phải sửa lớn vì vấn đề này, và hiện nay chọn dừng hẳn khi `fsync` thất bại.
+- **Journaling bảo vệ file system, không bảo vệ dữ liệu ứng dụng.** Sau khi sập, cấu trúc nhất quán, nhưng những gì chưa `fsync` có thể mất.
+- **Muốn thay nội dung file an toàn, dùng write-fsync-rename**, không ghi đè tại chỗ.
+- **Tên file không nằm trong file.** Nó nằm trong thư mục. Đổi tên, hard link, xoá đều là thao tác trên thư mục, và quyền cần có là quyền trên thư mục.
+- **Xoá file không giải phóng chỗ ngay nếu còn process đang mở nó.**
+- **Thư mục có hàng triệu mục là gánh nặng.** Liệt kê chậm, và mỗi file nhỏ tốn tối thiểu một inode cộng một block. Chia thành nhiều thư mục con theo tiền tố hash, hoặc gom vào một file lớn hay một database.
+- **Thời điểm truy cập (atime) biến mỗi lần đọc thành một lần ghi.** Linux mặc định dùng `relatime` để chỉ cập nhật thỉnh thoảng; nhiều máy chủ mount với `noatime`.

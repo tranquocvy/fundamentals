@@ -1,7 +1,21 @@
 ---
 title: Operating Systems
-description: Process, thread, scheduling, virtual memory.
+description: Process, thread, scheduling, synchronization, deadlock, virtual memory, file system và I/O.
 tags: [os]
 ---
 
-Phần này ghi chú các khái niệm cốt lõi của hệ điều hành. Nên đọc theo thứ tự: [Process vs Thread](/docs/os/process-thread) → [CPU Scheduling](/docs/os/cpu-scheduling) → [Virtual Memory](/docs/os/virtual-memory) → [Deadlock](/docs/os/deadlock).
+Phần này đi qua các khái niệm cốt lõi của hệ điều hành, mỗi bài đủ sâu để hiểu cơ chế bên dưới chứ không chỉ định nghĩa: có mã chạy được, ví dụ tính tay và cách quan sát trên Linux.
+
+Nên đọc theo thứ tự, vì bài sau dùng khái niệm của bài trước:
+
+| Bài | Trả lời câu hỏi |
+|---|---|
+| [Process vs Thread](/docs/os/process-thread) | Một chương trình đang chạy là gì trong kernel, và thread thêm vào điều gì |
+| [CPU Scheduling](/docs/os/cpu-scheduling) | Nhiều task, ít core: ai được chạy, bao lâu |
+| [Synchronization](/docs/os/synchronization) | Nhiều thread dùng chung dữ liệu mà không làm hỏng nó |
+| [Deadlock](/docs/os/deadlock) | Vì sao các thread chờ nhau mãi mãi, và cách phòng |
+| [Virtual Memory](/docs/os/virtual-memory) | Mỗi process có bộ nhớ riêng bằng cách nào |
+| [File Systems](/docs/os/file-systems) | Dữ liệu nằm trên đĩa thế nào và sống sót qua mất điện ra sao |
+| [I/O Devices](/docs/os/io-devices) | CPU nói chuyện với thiết bị, và các mô hình I/O của server |
+
+Khung của phần này theo sách [Operating Systems: Three Easy Pieces](https://pages.cs.wisc.edu/~remzi/OSTEP/) (OSTEP), miễn phí và là nguồn nên đọc song song.

@@ -1,0 +1,687 @@
+---
+title: I/O Devices
+description: CPU nói chuyện với thiết bị qua register, interrupt và DMA; driver và block layer che giấu sự khác biệt; HDD và SSD chậm ở đâu; và các mô hình I/O từ blocking tới epoll, io_uring.
+status: draft
+tags: [os, io, storage]
+authors: [tranquocvy]
+references:
+  - title: "OSTEP — Chapter 36: I/O Devices"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-devices.pdf
+    kind: book
+    note: thiết bị chuẩn, polling, interrupt, DMA, driver
+  - title: "OSTEP — Chapter 37: Hard Disk Drives"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-disks.pdf
+    kind: book
+    note: seek, rotation, disk scheduling
+  - title: "OSTEP — Chapter 38: Redundant Arrays of Inexpensive Disks (RAIDs)"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-raid.pdf
+    kind: book
+  - title: "OSTEP — Chapter 44: Flash-based SSDs"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-ssd.pdf
+    kind: book
+    note: read/program/erase, FTL, garbage collection, wear leveling
+  - title: "Linux man-pages — epoll(7)"
+    url: https://man7.org/linux/man-pages/man7/epoll.7.html
+    kind: web
+  - title: "Linux man-pages — io_uring(7)"
+    url: https://man7.org/linux/man-pages/man7/io_uring.7.html
+    kind: web
+  - title: "Linux kernel documentation — Driver implementer's API guide"
+    url: https://docs.kernel.org/driver-api/index.html
+    kind: web
+  - title: "Dan Kegel — The C10K problem"
+    url: http://www.kegel.com/c10k.html
+    kind: web
+    note: bài viết kinh điển về việc phục vụ 10 000 kết nối đồng thời
+  - title: "Operating System Concepts (Silberschatz) — Chapter 11: Mass-Storage Structure, Chapter 12: I/O Systems"
+    kind: book
+---
+
+## Ý chính
+
+Một máy tính chỉ có CPU và RAM thì không làm được gì có ích: nó không đọc được dữ liệu, không lưu được kết quả, không nói chuyện được với ai. Mọi thứ đó đi qua **thiết bị I/O**: đĩa, card mạng, bàn phím, màn hình.
+
+Thiết bị khác CPU ở hai điểm, và mọi thiết kế trong bài này xoay quanh hai điểm đó:
+
+- **Chúng chậm.** Trong lúc một ổ đĩa từ đọc xong một block, CPU chạy được hàng chục triệu lệnh. OS phải làm sao để CPU không ngồi chờ.
+- **Chúng rất khác nhau.** Hàng nghìn loại thiết bị, mỗi loại một giao thức riêng. OS phải che giấu sự khác biệt đó sau một giao diện chung.
+
+Lời giải cho điểm thứ nhất là <Term>interrupt</Term>, <Term>DMA</Term> và các mô hình I/O không chặn. Lời giải cho điểm thứ hai là <Term>device driver</Term> và các tầng trừu tượng phía trên nó.
+
+## Thiết bị nối vào máy thế nào
+
+Các thiết bị không nối thẳng vào CPU mà qua một hệ thống **bus** phân cấp: bus càng gần CPU thì càng nhanh, càng ngắn và càng đắt.
+
+```text
+┌───────┐   memory bus (nhanh nhất)   ┌───────┐
+│  CPU  │─────────────────────────────│  RAM  │
+└───┬───┘                             └───────┘
+    │ PCIe (nhanh)
+    ├───────────── card đồ hoạ
+    ├───────────── SSD NVMe
+    ├───────────── card mạng
+    │
+    │ bus ngoại vi (chậm hơn)
+    ├── SATA ───── HDD, SSD SATA
+    └── USB ────── bàn phím, chuột, ổ ngoài
+```
+
+Phân cấp vì lý do vật lý và kinh tế: tín hiệu tốc độ cao chỉ truyền tốt trên quãng ngắn, và không đáng làm bus đắt tiền cho bàn phím.
+
+Mỗi thiết bị gồm hai phần: phần cơ điện làm việc thật (đĩa quay, chip flash, cổng mạng), và một **controller**, một máy tính nhỏ chạy firmware riêng, nói chuyện với OS qua một giao diện chuẩn. Một SSD hiện đại có CPU nhiều nhân và hàng GB RAM riêng của nó.
+
+OS chia thiết bị thành hai họ theo cách chúng được truy cập:
+
+| | Block device | Character device |
+|---|---|---|
+| Đơn vị | Block kích thước cố định, có địa chỉ | Dòng byte, không có địa chỉ |
+| Truy cập ngẫu nhiên | Có | Không |
+| Ví dụ | HDD, SSD, USB flash | Bàn phím, chuột, cổng serial, terminal |
+| Có cache của kernel | Có (page cache) | Không |
+
+Card mạng là họ thứ ba, đi qua network stack chứ không qua file.
+
+## Giao thức với một thiết bị
+
+### Thiết bị chuẩn
+
+Nhìn từ phía OS, giao diện của một thiết bị là vài **register**:
+
+```text
+┌──────────┬───────────┬──────────┐
+│  STATUS  │  COMMAND  │   DATA   │   giao diện: OS đọc và ghi vào đây
+├──────────┴───────────┴──────────┤
+│  vi điều khiển, bộ nhớ, firmware │   bên trong: thiết bị tự lo
+│  phần cơ điện                    │
+└──────────────────────────────────┘
+```
+
+- **STATUS**: thiết bị đang bận hay rảnh, có lỗi không.
+- **COMMAND**: OS ghi vào để ra lệnh (đọc, ghi, reset).
+- **DATA**: dữ liệu đi vào hoặc đi ra.
+
+Giao thức đơn giản nhất:
+
+```c
+while (STATUS == BUSY)
+    ;                           // chờ thiết bị rảnh
+write_register(DATA, data);     // đưa dữ liệu
+write_register(COMMAND, WRITE); // ra lệnh; thiết bị bắt đầu làm
+while (STATUS == BUSY)
+    ;                           // chờ thiết bị làm xong
+```
+
+Hai vòng `while` là **polling**: CPU hỏi đi hỏi lại "xong chưa". Nó đúng và đơn giản, nhưng với thiết bị chậm thì CPU đốt hàng triệu chu kỳ chỉ để hỏi.
+
+### Đọc ghi register bằng cách nào
+
+Có hai cách để CPU chạm vào register của thiết bị:
+
+- **Port I/O**: một không gian địa chỉ riêng cho thiết bị, truy cập bằng các lệnh đặc quyền `in` và `out` (trên x86). Chỉ kernel mode chạy được.
+- **Memory-mapped I/O**: register của thiết bị xuất hiện như những ô nhớ ở một dải địa chỉ vật lý nhất định. Đọc ghi bằng lệnh `mov` bình thường, phần cứng chuyển chúng tới thiết bị thay vì RAM. Kernel bảo vệ bằng cách không ánh xạ dải đó vào address space của chương trình.
+
+Thiết bị hiện đại gần như đều dùng memory-mapped I/O, vì không cần lệnh đặc biệt và hợp với mọi kiến trúc CPU.
+
+## Interrupt: thiết bị chủ động báo
+
+### Cơ chế
+
+Thay vì CPU hỏi liên tục, để thiết bị tự báo khi xong. OS gửi lệnh cho thiết bị, cho <Term>thread</Term> đang yêu cầu đi ngủ, và chạy việc khác. Khi xong, thiết bị kích một tín hiệu phần cứng: interrupt.
+
+Chuyện xảy ra khi có interrupt:
+
+1. Thiết bị kích một đường ngắt; bộ điều khiển ngắt báo cho một CPU core.
+2. CPU chạy nốt lệnh đang dở, rồi lưu program counter và các cờ trạng thái lên stack, chuyển sang kernel mode.
+3. CPU dùng số hiệu ngắt làm chỉ số tra **bảng vector ngắt** (IDT trên x86) để tìm địa chỉ trình xử lý mà kernel đã đăng ký lúc khởi động.
+4. Trình xử lý (interrupt handler, một phần của driver) chạy: đọc STATUS, lấy dữ liệu, báo cho thiết bị biết đã nhận, và đánh thức thread đang chờ kết quả.
+5. Kernel khôi phục trạng thái đã lưu. Chương trình bị ngắt chạy tiếp như không có gì xảy ra, hoặc scheduler chọn thread vừa được đánh thức.
+
+```text
+polling:    CPU: [A][hỏi][hỏi][hỏi][hỏi][hỏi][hỏi][A tiếp]
+            đĩa:    [──────── đang đọc ────────]
+
+interrupt:  CPU: [A][── B chạy trong lúc chờ ──][xử lý ngắt][A tiếp]
+            đĩa:    [──────── đang đọc ────────]↑ ngắt
+```
+
+Đây chính là cơ chế đứng sau trạng thái **blocked** của process (xem [Process vs Thread](/docs/os/process-thread)) và là thứ làm cho việc ưu tiên task I/O-bound có ý nghĩa (xem [CPU Scheduling](/docs/os/cpu-scheduling)).
+
+### Interrupt không phải lúc nào cũng thắng
+
+Mỗi interrupt có chi phí cố định: lưu và khôi phục trạng thái, làm lạnh cache, có thể kéo theo context switch. Cỡ vài micro giây.
+
+| Tình huống | Nên dùng | Lý do |
+|---|---|---|
+| Thiết bị chậm (HDD, bàn phím) | Interrupt | CPU làm được rất nhiều việc trong lúc chờ |
+| Thiết bị rất nhanh (NVMe, card mạng 100 Gb) | Polling | Kết quả về trước cả khi kịp chuyển sang việc khác; chi phí ngắt lớn hơn thời gian chờ |
+| Không biết trước | Kết hợp: polling một lúc ngắn, chưa xong thì chuyển sang interrupt | Được cả hai |
+
+Còn một hiện tượng nguy hiểm hơn: **interrupt livelock**. Card mạng nhận một triệu gói mỗi giây, mỗi gói một interrupt, và CPU dành toàn bộ thời gian để chạy trình xử lý ngắt. Chương trình cần xử lý các gói đó không bao giờ được chạy; máy bận 100% mà không phục vụ được request nào.
+
+Linux đối phó bằng ba kỹ thuật:
+
+- **NAPI** (cho card mạng): gói đầu tiên gây interrupt, driver liền **tắt** ngắt của card và chuyển sang polling để rút hết các gói đang chờ theo lô. Hết gói thì bật ngắt lại. Tải thấp thì hành xử như interrupt, tải cao thì như polling.
+- **Interrupt coalescing**: thiết bị chờ một chút để gom nhiều sự kiện rồi mới ngắt một lần. Giảm số ngắt, đổi lại tăng độ trễ một ít.
+- **Chia đôi trình xử lý**: xem ngay dưới.
+
+### Top half và bottom half
+
+Trong lúc xử lý một interrupt, CPU thường tắt các ngắt khác. Trình xử lý chạy lâu thì ngắt khác bị trễ hoặc mất. Vì vậy Linux tách việc xử lý làm hai:
+
+- **Top half** (hardirq): chạy ngay, ngắt bị tắt, phải cực ngắn. Chỉ làm việc gấp: xác nhận với thiết bị, chép dữ liệu ra khỏi bộ đệm nhỏ của thiết bị, đặt lịch cho phần còn lại.
+- **Bottom half** (softirq, tasklet, workqueue): chạy sau đó một chút, ngắt được bật lại, làm phần nặng: đưa gói tin qua network stack, hoàn tất yêu cầu I/O và đánh thức thread chờ.
+
+Khi softirq quá nhiều, kernel giao chúng cho các thread `ksoftirqd`, mỗi core một cái, để scheduler chia CPU công bằng giữa việc xử lý ngắt và chương trình. Thấy `ksoftirqd` ngốn CPU trong `top` nghĩa là máy đang ngập trong I/O, thường là mạng.
+
+Xem số interrupt theo từng nguồn và từng core:
+
+```text
+$ cat /proc/interrupts
+           CPU0       CPU1       CPU2       CPU3
+  1:          9          0          0          0   IO-APIC   1-edge      i8042          ← bàn phím
+ 24:          0    1203394          0          0   PCI-MSI   524288-edge nvme0q1        ← hàng đợi 1 của SSD NVMe
+ 27:     884213          0          0          0   PCI-MSI   1048576-edge eth0-rx-0     ← card mạng, hàng đợi nhận 0
+LOC:    8812340    8790112    8801934    8795521   Local timer interrupts               ← ngắt timer của scheduler
+```
+
+Nếu mọi ngắt của card mạng dồn vào một core, core đó thành điểm nghẽn trong khi các core khác rảnh. Card hiện đại có nhiều hàng đợi, mỗi hàng đợi ngắt một core khác nhau; `irqbalance` hoặc cấu hình tay qua `/proc/irq/<n>/smp_affinity` phân phối chúng.
+
+## DMA: không bắt CPU chép dữ liệu
+
+Interrupt giải quyết việc **chờ**. Còn việc **chuyển dữ liệu** thì sao? Nếu đĩa đọc xong 4 KB mà CPU phải lấy từng word từ register DATA rồi ghi vào RAM (gọi là programmed I/O, PIO), CPU lại bị trói vào một việc thuần sao chép.
+
+**DMA** (direct memory access) cho thiết bị tự ghi thẳng vào RAM:
+
+1. Driver nói với thiết bị: "đọc N block bắt đầu từ block X, đặt dữ liệu vào địa chỉ vật lý Y".
+2. Thiết bị tự đọc và tự chép dữ liệu vào RAM qua bus. CPU không tham gia, đang chạy việc khác.
+3. Chép xong toàn bộ, thiết bị gây **một** interrupt.
+
+```text
+PIO:  CPU: [A][chép][chép][chép][chép][chép][A tiếp]      CPU bận suốt lúc truyền
+DMA:  CPU: [A][─────── B chạy ───────][ngắt][A tiếp]      CPU chỉ bận lúc ra lệnh và lúc nhận ngắt
+```
+
+Mọi thiết bị lưu trữ và card mạng hiện đại đều dùng DMA. Vì cho một thiết bị quyền ghi vào RAM bất kỳ là rủi ro lớn (thiết bị độc hại hoặc lỗi có thể ghi đè kernel), CPU hiện đại có **IOMMU**: một lớp dịch địa chỉ cho thiết bị, giống MMU cho process, giới hạn mỗi thiết bị chỉ chạm được vùng RAM đã cấp cho nó.
+
+## Device driver
+
+### Che giấu sự khác biệt
+
+Driver là đoạn mã trong kernel biết giao thức cụ thể của một loại thiết bị và cung cấp ra ngoài một giao diện chuẩn. File system gửi cùng một yêu cầu "đọc block 1000" bất kể bên dưới là HDD SATA, SSD NVMe hay ổ USB; driver tương ứng dịch nó thành chuỗi thao tác register riêng.
+
+Cái giá của trừu tượng: giao diện chung chỉ diễn đạt được những khả năng chung. Thiết bị có tính năng riêng thì tính năng đó dễ bị bỏ quên vì không tầng nào phía trên biết cách dùng.
+
+Driver chiếm phần lớn mã nguồn của kernel Linux (trên hai phần ba). Chúng cũng là nguồn lỗi lớn nhất: do nhiều tác giả viết, ít được kiểm thử trên diện rộng, và chạy với toàn quyền của kernel, nên một lỗi trong driver làm sập cả máy.
+
+### Một driver tối giản
+
+Trên Linux, một character device là một bộ hàm mà kernel gọi khi chương trình `open`, `read`, `write` file thiết bị tương ứng. Đây là một kernel module hoàn chỉnh tạo ra `/dev/hello`; đọc từ nó trả về một dòng chữ:
+
+```c
+#include <linux/fs.h>
+#include <linux/miscdevice.h>
+#include <linux/module.h>
+#include <linux/uaccess.h>
+
+static const char msg[] = "xin chao tu kernel\n";
+
+/* Kernel gọi hàm này khi một process read() từ /dev/hello. */
+static ssize_t hello_read(struct file *file, char __user *buf, size_t len, loff_t *off)
+{
+    /* Chép từ bộ nhớ kernel sang bộ nhớ của process, có kiểm tra địa chỉ và cập nhật offset. */
+    return simple_read_from_buffer(buf, len, off, msg, sizeof(msg) - 1);
+}
+
+static const struct file_operations hello_fops = {
+    .owner = THIS_MODULE,
+    .read  = hello_read,          /* các thao tác không khai báo sẽ trả về lỗi */
+};
+
+static struct miscdevice hello_dev = {
+    .minor = MISC_DYNAMIC_MINOR,  /* để kernel tự chọn số minor */
+    .name  = "hello",             /* sẽ xuất hiện là /dev/hello */
+    .fops  = &hello_fops,
+};
+
+module_misc_device(hello_dev);    /* đăng ký khi nạp module, gỡ khi tháo module */
+MODULE_LICENSE("GPL");
+```
+
+```text
+$ sudo insmod hello.ko
+$ cat /dev/hello
+xin chao tu kernel
+$ sudo rmmod hello
+```
+
+Ba điều đáng chú ý:
+
+- **`struct file_operations` chính là "giao diện"** mà phần VFS của bài [File Systems](/docs/os/file-systems) nhắc tới: một bảng con trỏ hàm. `cat` gọi `read()`, VFS tra bảng này và gọi `hello_read`. Driver thật cho thiết bị thật chỉ khác ở chỗ bên trong hàm là các thao tác register và chờ interrupt.
+- **`char __user *buf`** là con trỏ do chương trình đưa vào, tức không tin được. Kernel không bao giờ dereference nó trực tiếp mà dùng các hàm chép có kiểm tra (`copy_to_user`, ở đây gói trong `simple_read_from_buffer`). Quên điều này là một lỗ hổng bảo mật kinh điển.
+- **Mã này chạy trong kernel.** Một con trỏ sai ở đây không gây segmentation fault cho một process mà làm sập cả hệ thống.
+
+### File thiết bị
+
+```text
+$ ls -l /dev/sda /dev/tty /dev/null
+brw-rw---- 1 root disk 8, 0 Nov 16 09:12 /dev/sda
+crw-rw-rw- 1 root tty  5, 0 Nov 16 09:12 /dev/tty
+crw-rw-rw- 1 root root 1, 3 Nov 16 09:12 /dev/null
+```
+
+Chữ đầu là loại: `b` block device, `c` character device. Hai số thay cho kích thước là **major** (driver nào) và **minor** (thiết bị thứ mấy do driver đó quản lý). File thiết bị không chứa dữ liệu; nó chỉ là một cái tên trỏ tới cặp số này. `udev` tạo chúng tự động khi kernel phát hiện thiết bị.
+
+## Đường đi của một yêu cầu I/O
+
+Từ lệnh `read()` của chương trình tới thiết bị, một yêu cầu đọc file đi qua:
+
+```text
+chương trình        read(fd, buf, 4096)
+──────────────────────────────────────────────── system call
+VFS                 fd → file → inode; gọi hàm read của file system cụ thể
+file system         offset trong file → block số mấy trên thiết bị (qua inode, extent)
+page cache          block đã có trong RAM? có: chép cho chương trình, xong
+                    không: tạo yêu cầu đọc ↓
+block layer         gom, sắp xếp, xếp hàng các yêu cầu (I/O scheduler)
+device driver       dịch thành lệnh của thiết bị (NVMe, SCSI/SATA), cài đặt DMA
+──────────────────────────────────────────────── phần cứng
+thiết bị            thực hiện, chép dữ liệu vào RAM bằng DMA, gây interrupt
+```
+
+Đường về: trình xử lý ngắt đánh dấu yêu cầu đã xong, trang vào page cache, thread đang ngủ được đánh thức, dữ liệu được chép từ page cache sang `buf`, và `read()` trở về.
+
+### Block layer và I/O scheduler
+
+Block layer nhận yêu cầu từ mọi file system và quyết định gửi xuống thiết bị theo thứ tự nào. Nó cũng **gộp** các yêu cầu liền nhau (đọc block 100 tới 103 và 104 tới 107 thành một yêu cầu 8 block).
+
+Với HDD, thứ tự là tất cả: phục vụ theo đúng thứ tự đến khiến đầu đọc chạy qua chạy lại khắp mặt đĩa. Bốn chiến lược kinh điển, với đầu đọc đang ở cylinder 53 và hàng đợi `98, 183, 37, 122, 14, 124, 65, 67`:
+
+```python
+def sstf(head, reqs):
+    pending, order = list(reqs), []
+    while pending:
+        nxt = min(pending, key=lambda r: abs(r - head))   # yêu cầu gần đầu đọc nhất
+        pending.remove(nxt)
+        order.append(nxt)
+        head = nxt
+    return order
+
+
+def look(head, reqs):
+    """Đi về phía cylinder nhỏ trước, hết yêu cầu thì quay đầu (thang máy)."""
+    down = sorted((r for r in reqs if r <= head), reverse=True)
+    up = sorted(r for r in reqs if r > head)
+    return down + up
+
+
+def c_look(head, reqs):
+    """Chỉ phục vụ theo một chiều (đi lên); tới cuối thì nhảy về yêu cầu nhỏ nhất."""
+    up = sorted(r for r in reqs if r >= head)
+    wrap = sorted(r for r in reqs if r < head)
+    return up + wrap
+
+
+def distance(head, order):
+    total = 0
+    for r in order:
+        total += abs(r - head)
+        head = r
+    return total
+```
+
+```text
+FCFS     640 cylinder   [98, 183, 37, 122, 14, 124, 65, 67]
+SSTF     236 cylinder   [65, 67, 37, 14, 98, 122, 124, 183]
+LOOK     208 cylinder   [37, 14, 65, 67, 98, 122, 124, 183]
+C-LOOK   322 cylinder   [65, 67, 98, 122, 124, 183, 14, 37]
+```
+
+| Thuật toán | Ý tưởng | Nhận xét |
+|---|---|---|
+| FCFS | Theo thứ tự đến | Công bằng, nhưng đầu đọc di chuyển gấp ba lần cần thiết |
+| SSTF | Luôn chọn yêu cầu gần nhất | Ít di chuyển, nhưng yêu cầu ở xa có thể đói nếu luôn có yêu cầu gần hơn đến |
+| LOOK (thang máy) | Đi hết một chiều rồi quay lại | Ít di chuyển và không ai đói |
+| C-LOOK | Chỉ phục vụ một chiều, rồi nhảy về đầu | Di chuyển nhiều hơn LOOK, nhưng thời gian chờ đồng đều hơn: vùng giữa đĩa không được ưu ái hơn hai đầu |
+
+Đây là cùng bài toán với CPU scheduling: SSTF là "việc ngắn nhất trước" và mắc đúng bệnh starvation của nó.
+
+Với SSD, không có đầu đọc nào để di chuyển, nên sắp xếp theo vị trí là vô ích. Linux hiện có các scheduler sau, chọn cho từng thiết bị:
+
+| Scheduler | Làm gì | Hợp với |
+|---|---|---|
+| `none` | Không sắp xếp, chuyển thẳng xuống thiết bị | NVMe nhanh: thiết bị tự xử lý song song tốt hơn kernel đoán |
+| `mq-deadline` | Sắp theo vị trí, nhưng mỗi yêu cầu có hạn chót để không ai đói; ưu tiên đọc hơn ghi | HDD, SSD SATA |
+| `bfq` | Chia công bằng băng thông I/O giữa các process | Máy để bàn, nơi độ mượt quan trọng hơn thông lượng |
+| `kyber` | Điều chỉnh độ sâu hàng đợi để giữ độ trễ dưới mục tiêu | SSD nhanh cần độ trễ ổn định |
+
+```bash
+cat /sys/block/nvme0n1/queue/scheduler     # [none] mq-deadline kyber bfq
+```
+
+## Thiết bị lưu trữ
+
+Hai công nghệ lưu trữ chính có đặc tính khác nhau tới mức phần mềm phía trên phải được thiết kế khác đi.
+
+### HDD
+
+Một ổ đĩa từ gồm các đĩa phủ từ quay quanh một trục, và một cần mang đầu đọc di chuyển theo bán kính. Dữ liệu nằm trên các vòng tròn đồng tâm gọi là **track**, mỗi track chia thành các **sector** (512 byte hoặc 4 KB).
+
+Đọc một sector tốn ba khoảng thời gian:
+
+```text
+T = seek  +  rotation  +  transfer
+    │         │            └─ sector đi qua dưới đầu đọc
+    │         └─ chờ đĩa quay tới sector cần
+    └─ di chuyển cần tới đúng track
+```
+
+Tính cho một ổ 7200 vòng/phút điển hình:
+
+```text
+một vòng quay      = 60 000 ms / 7200 = 8.33 ms
+rotation trung bình = nửa vòng        = 4.17 ms
+seek trung bình                       ≈ 8.5 ms
+transfer 4 KB ở 150 MB/s              ≈ 0.03 ms
+
+đọc ngẫu nhiên 4 KB ≈ 8.5 + 4.17 + 0.03 ≈ 12.7 ms
+                    → khoảng 79 thao tác mỗi giây, tức 0.31 MB/s
+đọc tuần tự         → khoảng 150 MB/s
+```
+
+Chênh lệch giữa tuần tự và ngẫu nhiên là gần **500 lần**, hoàn toàn do chuyển động cơ học. Con số này định hình hàng chục năm thiết kế phần mềm:
+
+- File system cố xếp dữ liệu của một file liền nhau và gần inode của nó.
+- Database dùng B-tree với node to bằng một block đĩa để mỗi lần seek mang về nhiều khoá nhất.
+- Write-ahead log và LSM-tree biến ghi ngẫu nhiên thành ghi tuần tự.
+- Kafka đạt thông lượng cao trên đĩa từ vì chỉ ghi nối đuôi vào file log.
+
+### SSD
+
+SSD lưu dữ liệu trong chip flash NAND, không có phần chuyển động. Nhưng flash có những ràng buộc kỳ lạ của riêng nó:
+
+- Đơn vị đọc và ghi là **page** (thường 4 tới 16 KB).
+- Các page gom thành **erase block** (vài trăm page, cỡ vài MB).
+- Một page chỉ ghi được khi nó đang ở trạng thái đã xoá. **Không ghi đè được.**
+- Xoá chỉ làm được trên **cả một erase block**.
+- Mỗi block chỉ chịu được một số lần xoá hữu hạn (từ khoảng một nghìn lần với flash mật độ cao tới một trăm nghìn lần với loại bền nhất), sau đó hỏng.
+
+| Thao tác | Đơn vị | Thời gian điển hình |
+|---|---|---|
+| Read | Page | Vài chục µs |
+| Program (ghi) | Page | Vài trăm µs |
+| Erase | Erase block | Vài ms |
+
+Muốn sửa 4 KB trong một block đang đầy dữ liệu, theo lý thuyết phải đọc cả block ra, xoá block, rồi ghi lại toàn bộ. Không ai làm vậy. Controller của SSD chạy một lớp phần mềm gọi là **FTL** (flash translation layer):
+
+- **Ánh xạ logic sang vật lý.** OS nói "ghi block logic 1000". FTL ghi dữ liệu vào một page trống bất kỳ, cập nhật bảng ánh xạ để 1000 trỏ tới page mới, và đánh dấu page cũ là rác. Ghi đè trở thành ghi nối đuôi. Đây chính là một file system log-structured thu nhỏ, chạy trong firmware.
+- **Garbage collection.** Khi gần hết page trống, FTL chọn một erase block có nhiều rác, chép các page còn sống sang chỗ khác, rồi xoá cả block.
+- **Wear leveling.** Rải đều số lần xoá ra mọi block, kể cả di chuyển dữ liệu ít thay đổi, để không block nào chết sớm.
+
+Hệ quả cho người dùng:
+
+- **Write amplification.** Ghi 4 KB từ phía OS có thể khiến SSD ghi nhiều hơn thế vào flash, vì garbage collection phải chép dữ liệu còn sống. Hệ số này càng tệ khi ổ càng đầy, do còn ít chỗ để xoay xở.
+- **Độ trễ ghi không đều.** Phần lớn lần ghi rất nhanh, thỉnh thoảng một lần phải chờ garbage collection và chậm hơn hàng chục lần. Tail latency của SSD xấu hơn nhiều so với mức trung bình gợi ý.
+- **TRIM.** File system xoá một file chỉ bằng cách sửa metadata của mình; SSD không biết các block đó giờ là rác và tiếp tục chép chúng khi dọn dẹp. Lệnh TRIM báo cho SSD những block logic nào không còn dùng. Linux chạy `fstrim` định kỳ cho việc này.
+- **Hiệu năng giảm khi ổ gần đầy.** Lý do các nhà sản xuất giữ lại một phần dung lượng không cho người dùng thấy (over-provisioning).
+
+### So sánh
+
+| | HDD 7200 rpm | SSD SATA | SSD NVMe |
+|---|---|---|---|
+| Độ trễ đọc ngẫu nhiên | Khoảng 10 ms | Khoảng 100 µs | Vài chục µs |
+| Đọc ngẫu nhiên 4 KB mỗi giây (IOPS) | Khoảng 100 | Vài chục nghìn | Vài trăm nghìn trở lên |
+| Thông lượng tuần tự | 150 tới 250 MB/s | Tới khoảng 550 MB/s (giới hạn của SATA) | Vài GB/s |
+| Tuần tự so với ngẫu nhiên | Chênh hàng trăm lần | Chênh ít | Chênh ít |
+| Giao thức | SATA: một hàng đợi, 32 lệnh | SATA: một hàng đợi, 32 lệnh | NVMe: tới 65 535 hàng đợi, mỗi hàng 65 536 lệnh |
+| Giá mỗi GB | Thấp nhất | Trung bình | Cao hơn |
+| Hỏng vì | Cơ học, va đập | Hết số lần ghi | Hết số lần ghi |
+
+Dòng về giao thức giải thích vì sao NVMe không chỉ là "SSD nhanh hơn". SATA được thiết kế cho đĩa từ, nơi mỗi lúc chỉ làm được một việc. NVMe được thiết kế cho flash: mỗi CPU core có hàng đợi riêng tới thiết bị, không tranh chấp lock, và thiết bị xử lý nhiều lệnh song song thật sự.
+
+### RAID
+
+Gộp nhiều đĩa thành một thiết bị logic để tăng dung lượng, tốc độ hoặc độ tin cậy.
+
+| Mức | Cách làm | Dung lượng dùng được (N đĩa) | Chịu hỏng | Ghi ngẫu nhiên |
+|---|---|---|---|---|
+| RAID 0 | Chia dữ liệu đều ra các đĩa (striping) | N | Không: hỏng một đĩa là mất hết | Nhanh nhất |
+| RAID 1 | Mỗi block ghi lên hai đĩa (mirroring) | N / 2 | Một đĩa trong mỗi cặp | Bằng một đĩa |
+| RAID 5 | Striping cộng một block parity cho mỗi dải, parity xoay vòng qua các đĩa | N − 1 | Một đĩa | Chậm: mỗi lần ghi nhỏ phải đọc dữ liệu cũ và parity cũ, rồi ghi cả hai (4 thao tác) |
+| RAID 6 | Như RAID 5 với hai block parity | N − 2 | Hai đĩa | Chậm hơn RAID 5 |
+| RAID 10 | Striping trên các cặp mirror | N / 2 | Một đĩa mỗi cặp | Nhanh |
+
+Parity là phép XOR của các block dữ liệu trong cùng dải: mất một block bất kỳ thì XOR các block còn lại ra được nó.
+
+RAID bảo vệ khỏi **hỏng đĩa**. Nó không bảo vệ khỏi xoá nhầm, lỗi phần mềm, mã độc mã hoá dữ liệu, hay cháy phòng máy; mọi thao tác sai được nhân bản trung thành ra mọi đĩa. RAID không thay cho backup.
+
+## Mô hình I/O nhìn từ chương trình
+
+Phần trên là chuyện bên trong kernel. Câu hỏi của người viết ứng dụng là: khi gọi một thao tác I/O mà dữ liệu chưa sẵn sàng, chuyện gì xảy ra với thread của tôi? Câu trả lời quyết định kiến trúc của mọi server.
+
+### Blocking I/O
+
+Mặc định. `read()` trên một socket chưa có dữ liệu thì thread ngủ cho tới khi có.
+
+```c
+ssize_t n = read(client_fd, buf, sizeof buf);   // ngủ tại đây cho tới khi client gửi gì đó
+```
+
+Mã đơn giản, đọc từ trên xuống. Nhưng một thread chỉ chờ được một thứ một lúc, nên phục vụ 10 000 kết nối cần 10 000 thread. Mỗi thread tốn bộ nhớ cho stack và tài nguyên kernel, và context switch giữa chúng ăn dần CPU. Đây là **C10K problem**, vấn đề đã định hình thiết kế server từ cuối thập niên 1990.
+
+### Non-blocking I/O
+
+Đặt cờ `O_NONBLOCK` cho file descriptor. `read()` không có dữ liệu thì trả về ngay với lỗi `EAGAIN` thay vì ngủ.
+
+```c
+ssize_t n = read(fd, buf, sizeof buf);
+if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    // chưa có dữ liệu; làm việc khác rồi quay lại sau
+}
+```
+
+Tự nó chưa đủ: thread phải hỏi lần lượt từng kết nối trong một vòng lặp, tức lại là polling, đốt CPU khi không ai gửi gì.
+
+### I/O multiplexing: epoll
+
+Thứ còn thiếu là một cách nói với kernel: "tôi quan tâm tới những file descriptor này; cho tôi ngủ tới khi **bất kỳ cái nào** trong số đó sẵn sàng, rồi cho tôi biết là những cái nào". Trên Linux đó là **epoll** (BSD và macOS có kqueue, Windows có IOCP).
+
+Một echo server phục vụ hàng nghìn kết nối bằng **một** thread:
+
+```c
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#define MAX_EVENTS 64
+
+static void set_nonblocking(int fd) {
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+}
+
+int main(void) {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    int one = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(8080),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    bind(listener, (struct sockaddr *)&addr, sizeof addr);
+    listen(listener, SOMAXCONN);
+    set_nonblocking(listener);
+
+    int ep = epoll_create1(0);                              // tạo một đối tượng epoll trong kernel
+    struct epoll_event ev = { .events = EPOLLIN, .data.fd = listener };
+    epoll_ctl(ep, EPOLL_CTL_ADD, listener, &ev);            // đăng ký: báo khi listener đọc được
+
+    struct epoll_event events[MAX_EVENTS];
+    for (;;) {
+        // Ngủ tới khi có ít nhất một fd sẵn sàng. Trả về SỐ fd sẵn sàng, không phải tổng số fd.
+        int n = epoll_wait(ep, events, MAX_EVENTS, -1);
+
+        for (int i = 0; i < n; i++) {
+            int fd = events[i].data.fd;
+
+            if (fd == listener) {                           // có kết nối mới
+                for (;;) {
+                    int client = accept(listener, NULL, NULL);
+                    if (client < 0)
+                        break;                              // EAGAIN: đã nhận hết
+                    set_nonblocking(client);
+                    struct epoll_event cev = { .events = EPOLLIN, .data.fd = client };
+                    epoll_ctl(ep, EPOLL_CTL_ADD, client, &cev);
+                }
+            } else {                                        // một client gửi dữ liệu
+                char buf[4096];
+                ssize_t r = read(fd, buf, sizeof buf);
+                if (r > 0) {
+                    write(fd, buf, r);                      // gửi lại đúng thứ vừa nhận
+                } else if (r == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+                    close(fd);                              // client đóng kết nối, hoặc lỗi
+                }                                           // close() tự gỡ fd khỏi epoll
+            }
+        }
+    }
+}
+```
+
+(Để gọn, ví dụ bỏ qua kiểm tra lỗi của các lệnh khởi tạo, và giả định `write()` gửi được hết ngay. Server thật phải giữ phần chưa gửi được trong bộ đệm của từng kết nối và đăng ký thêm sự kiện `EPOLLOUT` để gửi tiếp khi socket ghi được.)
+
+Vì sao epoll mở rộng được mà các cơ chế cũ hơn (`select`, `poll`) thì không:
+
+| | `select` / `poll` | `epoll` |
+|---|---|---|
+| Danh sách fd cần theo dõi | Truyền lại toàn bộ ở **mỗi** lần gọi | Đăng ký một lần bằng `epoll_ctl`, kernel giữ |
+| Kernel tìm fd sẵn sàng | Quét toàn bộ danh sách: O(n) mỗi lần gọi | Thiết bị sẵn sàng thì tự thêm fd vào danh sách ready: O(số fd sẵn sàng) |
+| Chương trình tìm fd sẵn sàng | Tự quét lại cả danh sách | Chỉ nhận về đúng những fd sẵn sàng |
+| Giới hạn | `select` tối đa 1024 fd | Chỉ giới hạn bởi bộ nhớ |
+
+Với 10 000 kết nối mà mỗi lúc chỉ vài chục cái hoạt động, `poll` làm 10 000 phần việc mỗi vòng còn `epoll` làm vài chục.
+
+Đây là **event loop**, mô hình của Nginx, Redis, Node.js và runtime mạng của Go: một thread (hoặc mỗi core một thread) chờ sự kiện rồi xử lý từng cái. Ràng buộc đi kèm: mỗi bước xử lý phải ngắn và không được block, vì trong lúc đó mọi kết nối khác đều chờ. Một lệnh tính toán nặng hoặc một lời gọi blocking lọt vào event loop là cả server khựng lại.
+
+<Expand title="Level-triggered và edge-triggered">
+
+epoll có hai chế độ báo.
+
+**Level-triggered** (mặc định): `epoll_wait` báo fd sẵn sàng **chừng nào** còn dữ liệu chưa đọc. Đọc một phần rồi gọi lại `epoll_wait` thì vẫn được báo lần nữa. Dễ dùng và khó sai.
+
+**Edge-triggered** (cờ `EPOLLET`): chỉ báo **một lần** khi trạng thái chuyển từ không sẵn sàng sang sẵn sàng. Nếu chưa đọc hết mà gọi `epoll_wait`, sẽ không được báo lại cho tới khi có dữ liệu **mới** đến. Vì vậy với edge-triggered, bắt buộc dùng fd non-blocking và đọc trong vòng lặp cho tới khi nhận `EAGAIN`:
+
+```c
+for (;;) {
+    ssize_t r = read(fd, buf, sizeof buf);
+    if (r > 0) { handle(buf, r); continue; }
+    if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;   // đã rút hết
+    close(fd);                                                       // r == 0 hoặc lỗi thật
+    break;
+}
+```
+
+Edge-triggered giảm số lần `epoll_wait` trả về, có lợi khi nhiều thread cùng chờ trên một epoll. Đổi lại, quên rút hết dữ liệu là kết nối treo im lặng. Nginx dùng edge-triggered; nhiều thư viện mặc định level-triggered.
+
+</Expand>
+
+### I/O bất đồng bộ: io_uring
+
+epoll báo khi **có thể** đọc; bạn vẫn phải tự gọi `read()`. Mô hình này gọi là readiness, và có hai hạn chế. Nó không dùng được cho file trên đĩa: file thường luôn "sẵn sàng" theo nghĩa của epoll, nhưng `read()` vẫn block nếu dữ liệu không nằm trong page cache. Và mỗi thao tác vẫn là một system call.
+
+**io_uring** (Linux từ 5.1) đi theo mô hình completion: chương trình **nộp** các thao tác (đọc, ghi, accept, fsync...), kernel thực hiện, rồi báo **kết quả**. Hai hàng đợi vòng nằm trong vùng nhớ chung giữa chương trình và kernel:
+
+```text
+chương trình                                   kernel
+    │   submission queue (SQ)                    │
+    ├──► [read fd=5][write fd=7][accept] ───────►│ thực hiện
+    │                                            │
+    │   completion queue (CQ)                    │
+    │◄── [read: 4096 byte][write: 512 byte] ◄────┤ báo kết quả
+```
+
+Chương trình ghi nhiều yêu cầu vào SQ rồi gọi một system call cho cả lô, hoặc không gọi system call nào nếu để một thread của kernel tự theo dõi hàng đợi. Nó dùng được cho cả mạng lẫn đĩa, và là giao diện I/O nhanh nhất hiện có trên Linux.
+
+### So sánh
+
+| Mô hình | Thread làm gì khi chưa có dữ liệu | Số thread cho N kết nối | Dùng cho đĩa | Ai dùng |
+|---|---|---|---|---|
+| Blocking | Ngủ trong `read()` | N | Được | Mô hình thread-per-request truyền thống |
+| Non-blocking + polling | Chạy vòng lặp hỏi | 1, nhưng đốt CPU | Không | Hầu như không dùng riêng |
+| Multiplexing (epoll) | Ngủ trong `epoll_wait` chờ nhiều fd | 1 hoặc bằng số core | Không | Nginx, Redis, Node.js, runtime của Go |
+| Bất đồng bộ (io_uring) | Nộp yêu cầu rồi làm việc khác | 1 hoặc bằng số core | Được | Database và server mới, hiệu năng cao |
+
+Goroutine của Go và `async/await` trong các ngôn ngữ khác cho bạn viết mã trông như blocking, còn runtime bên dưới dùng epoll hoặc io_uring. Đó là cách có được cả hai: mã dễ đọc của mô hình thứ nhất và khả năng mở rộng của mô hình thứ ba.
+
+### Zero-copy
+
+Gửi một file qua mạng theo cách thông thường:
+
+```c
+read(file_fd, buf, len);      // đĩa → page cache → buf của chương trình
+write(socket_fd, buf, len);   // buf → bộ đệm socket trong kernel → card mạng
+```
+
+Dữ liệu bị chép bốn lần (hai lần bằng DMA, hai lần bằng CPU) và có hai system call, trong khi chương trình không hề nhìn vào nội dung. `sendfile()` bảo kernel chuyển thẳng từ page cache sang socket:
+
+```c
+#include <sys/sendfile.h>
+
+sendfile(socket_fd, file_fd, &offset, len);   // không đi qua bộ nhớ của chương trình
+```
+
+Dữ liệu không rời kernel, và với card mạng hỗ trợ, CPU không chép byte nào: card đọc thẳng từ page cache bằng DMA. Nginx phục vụ file tĩnh và Kafka gửi message cho consumer đều dựa vào kỹ thuật này.
+
+## Quan sát trên Linux
+
+```bash
+lsblk                         # các block device và phân vùng
+lspci; lsusb                  # thiết bị trên bus PCI và USB
+dmesg | tail                  # thông báo của kernel: thiết bị được phát hiện, lỗi driver, lỗi đĩa
+cat /proc/interrupts          # số interrupt theo nguồn và theo core
+iostat -x 1                   # thống kê theo thiết bị, mỗi giây
+iotop                         # process nào đang đọc ghi nhiều nhất
+```
+
+Đọc `iostat -x`:
+
+```text
+Device    r/s     w/s    rkB/s    wkB/s  r_await  w_await  aqu-sz  %util
+nvme0n1  812.0  2210.0  12992.0  88400.0    0.21     0.84    2.03   38.2
+sda       96.0    11.0   1536.0    176.0   11.40    14.20    1.24   99.6
+```
+
+| Cột | Ý nghĩa |
+|---|---|
+| `r/s`, `w/s` | Số thao tác đọc, ghi mỗi giây (IOPS) |
+| `rkB/s`, `wkB/s` | Thông lượng |
+| `r_await`, `w_await` | Thời gian trung bình (ms) một yêu cầu mất từ lúc vào hàng đợi tới lúc xong. **Đây là con số quan trọng nhất** |
+| `aqu-sz` | Số yêu cầu trung bình đang chờ hoặc đang được xử lý |
+| `%util` | Phần thời gian thiết bị có ít nhất một yêu cầu đang xử lý |
+
+Trong ví dụ, `sda` là HDD đang quá tải: 107 thao tác mỗi giây là đúng giới hạn vật lý của nó, `%util` gần 100% và mỗi yêu cầu chờ hơn 11 ms. `nvme0n1` làm khối lượng gấp gần 30 lần với độ trễ dưới 1 ms.
+
+Một lưu ý khi đọc `%util`: với HDD, 100% nghĩa là bão hoà. Với SSD và NVMe thì không, vì chúng xử lý nhiều yêu cầu song song; `%util` 100% chỉ nói rằng lúc nào cũng có **ít nhất một** yêu cầu, không nói thiết bị hết khả năng. Với chúng, hãy nhìn `await` tăng lên.
+
+Muốn biết một thiết bị thật sự làm được gì, đo bằng `fio` thay vì tin thông số:
+
+```bash
+# đọc ngẫu nhiên 4 KB, bỏ qua page cache, 32 yêu cầu đồng thời, trong 30 giây
+fio --name=randread --filename=/data/fio.test --size=4G \
+    --rw=randread --bs=4k --direct=1 --ioengine=io_uring --iodepth=32 \
+    --runtime=30 --time_based
+```
+
+## Lưu ý
+
+- **Chênh lệch tốc độ là thứ chi phối mọi thiết kế.** RAM cỡ 100 ns, NVMe cỡ vài chục µs, HDD cỡ 10 ms. Một thuật toán đúng mà gây thêm một lần đọc đĩa ngẫu nhiên có thể chậm hơn một thuật toán "tệ hơn" chạy hoàn toàn trong RAM.
+- **Trên HDD, tuần tự và ngẫu nhiên khác nhau hàng trăm lần.** Trên SSD khoảng cách đó nhỏ hơn nhiều, nhưng ghi tuần tự vẫn tốt hơn vì giảm việc cho garbage collection.
+- **SSD không phải HDD nhanh hơn.** Nó không ghi đè được, phải dọn rác, mòn theo số lần ghi, và có tail latency xấu. Giữ ổ không quá đầy và bật TRIM.
+- **Interrupt không miễn phí.** Ở tốc độ rất cao, polling theo lô thắng. Thấy `ksoftirqd` ngốn CPU là dấu hiệu máy đang ngập trong ngắt.
+- **Không được block trong event loop.** Một lời gọi đồng bộ chậm làm đứng mọi kết nối mà thread đó phục vụ.
+- **epoll không giúp gì cho file trên đĩa.** File thường luôn được báo là sẵn sàng. Muốn I/O đĩa không chặn thì dùng thread pool hoặc io_uring.
+- **`%util` 100% trên NVMe không có nghĩa là bão hoà.** Nhìn `await`.
+- **RAID không phải backup.**
+- **Driver chạy với toàn quyền của kernel.** Một driver lỗi làm sập máy, và một driver độc hại thấy được mọi thứ. Đây là lý do các OS yêu cầu ký driver và đang chuyển dần việc ra user mode khi có thể.

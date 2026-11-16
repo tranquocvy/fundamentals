@@ -20,6 +20,8 @@ File này dành cho **cả người lẫn AI agent** (Claude Code, Codex, Cursor
 | Bảng so sánh khi có ≥ 2 khái niệm song song | Danh sách gạch đầu dòng dài > 7 ý |
 | Nguồn cụ thể: sách + chương, link bài gốc | "Theo internet", link blog không rõ tác giả |
 
+**Độ sâu**: bài ở đây dài và có code tự cài, output chạy thật, bảng so sánh, phần quan sát trên hệ thống thật. Chuẩn chi tiết và các bài mẫu nằm ở [content/AGENTS.md](content/AGENTS.md); đọc trước khi viết, vì quy ước ngắn gọn ở bảng trên không nói về độ sâu.
+
 Cấu trúc bài gợi ý: `## Ý chính` → các phần giải thích → `## Khi nào dùng / Lưu ý` (tuỳ bài). Không cần mục "Tài liệu tham khảo" trong nội dung vì trang tự hiển thị từ frontmatter `references`.
 
 ### Giọng điệu ký hiệu code (quan trọng)
@@ -152,6 +154,8 @@ sections:                            # mỗi section là một "chặng" trên t
 - Node có `article` lưu tiến trình theo bài, nên học "Process vs Thread" ở cây nào thì mọi cây chứa bài đó đều hiện đã xong.
 
 `npm run check` (và CI) kiểm: YAML hợp lệ, khoá đúng tên, id duy nhất, `requires` trỏ tới node có thật, **không có vòng phụ thuộc**, `article` tồn tại, `subject` có thật, node chưa có `article` thì có `resources`, và **không id nào bị xoá so với `main`** (so với nhánh khác: `ROADMAP_BASE_REF=origin/<nhánh> npm run check`). Node có hơn một `requires` trong cùng chặng chỉ bị cảnh báo, không chặn.
+
+Ngữ cảnh thiết kế của roadmap (cách trang vẽ cây, vì sao id bất biến, đánh đổi khi gắn `article`) ở [content/roadmaps/AGENTS.md](content/roadmaps/AGENTS.md).
 
 Khi viết bài cho một node chưa có bài: tạo bài bằng `npm run new`, rồi thêm `article: <môn>/<slug>` vào node đó trong file roadmap.
 

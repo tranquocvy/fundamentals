@@ -2,6 +2,8 @@
 
 **Trước khi viết bài hoặc sửa code, đọc [CONTRIBUTING.md](CONTRIBUTING.md).** File đó có quy ước viết, frontmatter, các bước thêm bài/môn, quy tắc thiết kế và checklist.
 
+Ngữ cảnh theo thư mục (chuẩn chất lượng bài, mẫu để bắt chước, quy trình, môi trường thí nghiệm): [content/AGENTS.md](content/AGENTS.md) cho bài viết và glossary, [content/roadmaps/AGENTS.md](content/roadmaps/AGENTS.md) cho roadmap, [src/AGENTS.md](src/AGENTS.md) cho giao diện và component, [scripts/AGENTS.md](scripts/AGENTS.md) cho script kiểm tra và tạo bài, [templates/AGENTS.md](templates/AGENTS.md) cho khuôn bài mới. Đọc file tương ứng **trước khi** thêm hoặc sửa gì trong thư mục đó; chúng ghi sẵn quy ước để khỏi phải suy ra từ code cũ. Thêm một thư mục mới nhận đóng góp thì thêm AGENTS.md (và `CLAUDE.md` chứa `@AGENTS.md`) cho nó. Riêng `content/docs/` thì **không** đặt `.md` vào, vì Fumadocs coi mọi `.md` ở đó là một trang.
+
 Tóm tắt điều không được vi phạm:
 
 - Nội dung tiếng Việt, **giữ thuật ngữ tiếng Anh**. Không phải site luyện phỏng vấn.

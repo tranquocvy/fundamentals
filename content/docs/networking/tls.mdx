@@ -1,0 +1,645 @@
+---
+title: TLS & HTTPS
+description: TLS 1.3 từ nền móng mật mã (hash, MAC, AEAD, Diffie-Hellman, chữ ký) tự cài và chạy thử, bắt tay từng message trên gói tin thật, chứng chỉ và chuỗi tin cậy, tự dựng CA với mTLS, đo chi phí so với TLS 1.2, và các lỗi cấu hình hay gặp.
+status: draft
+tags: [networking, security, tls]
+authors: [tranquocvy]
+references:
+  - title: "RFC 8446 — The Transport Layer Security (TLS) Protocol Version 1.3"
+    url: https://www.rfc-editor.org/rfc/rfc8446
+    kind: web
+    note: mục 2 (tổng quan handshake), mục 4 (các message), mục 7 (key schedule)
+  - title: "The Illustrated TLS 1.3 Connection"
+    url: https://tls13.xargs.org/
+    kind: web
+    note: từng byte của một handshake TLS 1.3, bổ sung tốt cho phần bóc ClientHello trong bài
+  - title: "RFC 5280 — Internet X.509 Public Key Infrastructure Certificate and CRL Profile"
+    url: https://www.rfc-editor.org/rfc/rfc5280
+    kind: web
+    note: định dạng chứng chỉ, các bước kiểm chứng chuỗi
+  - title: "RFC 7748 — Elliptic Curves for Security (X25519 và X448)"
+    url: https://www.rfc-editor.org/rfc/rfc7748
+    kind: web
+    note: thuật toán Montgomery ladder đã cài trong bài, kèm test vector
+  - title: "RFC 5869 — HKDF: HMAC-based Extract-and-Expand Key Derivation Function"
+    url: https://www.rfc-editor.org/rfc/rfc5869
+    kind: web
+  - title: "RFC 8555 — Automatic Certificate Management Environment (ACME)"
+    url: https://www.rfc-editor.org/rfc/rfc8555
+    kind: web
+  - title: "Ilya Grigorik — High Performance Browser Networking, Chapter 4: Transport Layer Security (TLS)"
+    url: https://hpbn.co/transport-layer-security-tls/
+    kind: web
+  - title: "Kurose & Ross, Computer Networking: A Top-Down Approach — Chapter 8: Security in Computer Networks"
+    kind: book
+    note: mật mã đối xứng, bất đối xứng, chữ ký, chứng chỉ
+  - title: "Mozilla — Security/Server Side TLS"
+    url: https://wiki.mozilla.org/Security/Server_Side_TLS
+    kind: web
+    note: cấu hình khuyến nghị cho server
+---
+
+## Ý chính
+
+Dữ liệu đi qua Internet đi qua tay rất nhiều bên: router của quán cà phê, nhà mạng, các mạng trung gian. Không bên nào trong số đó nên đọc được mật khẩu của bạn, và càng không được phép **sửa** nội dung bạn tải về. **TLS** (Transport Layer Security) là giao thức đặt giữa TCP và ứng dụng để bảo đảm ba điều trên một kết nối:
+
+| Tính chất | Nghĩa là | Cơ chế |
+|---|---|---|
+| **Bí mật** (confidentiality) | kẻ nghe lén chỉ thấy dữ liệu vô nghĩa | mã hoá đối xứng |
+| **Toàn vẹn** (integrity) | dữ liệu bị sửa trên đường thì phát hiện được | mã xác thực (MAC) gắn trong mã hoá |
+| **Xác thực** (authentication) | bạn đang nói chuyện đúng với `example.com` chứ không phải kẻ giả mạo | chứng chỉ và chữ ký số |
+
+**HTTPS** chính là HTTP chạy bên trong một kết nối TLS: cùng message như bài [HTTP](/docs/networking/http), chỉ là được mã hoá. Bài này đọc theo phiên bản hiện hành, **TLS 1.3** (RFC 8446, 2018). TLS 1.0 và 1.1 đã bị khai tử; TLS 1.2 còn rất phổ biến và khác ở những điểm sẽ nêu.
+
+Cách học nhanh nhất là bắt đầu từ cái gì dưới nó. TLS không phát minh ra thuật toán mật mã nào mới; nó là một **giao thức lắp ghép** sáu loại viên gạch (hash, MAC, mã hoá có xác thực, trao đổi khoá, chữ ký, hàm sinh khoá) thành một cuộc trò chuyện. Vì vậy bài này đi theo thứ tự: tự cài và chạy từng viên gạch (viết tay X25519 và kiểm tra bằng test vector của RFC), rồi **bóc handshake trên gói tin thật** (ClientHello đọc được từng trường vì chưa mã hoá), rồi chứng chỉ và chuỗi tin cậy (kể cả tự dựng một CA riêng để thấy mọi thứ hoạt động), đo chi phí so với TLS 1.2, và cuối cùng là bảo mật, công cụ, lỗi hay gặp.
+
+Output lấy từ máy Linux (WSL2, OpenSSL 3.0.13, Python 3.12): handshake với `example.com` là thật, CA và server cục bộ dựng ngay trong bài. Các giá trị ngẫu nhiên (khoá, nonce) sẽ khác mỗi lần chạy, còn cấu trúc và kích thước thì giống nhau.
+
+## Sáu viên gạch mật mã
+
+| Viên gạch | Làm gì | Ví dụ | Dùng trong TLS để |
+|---|---|---|---|
+| **Hash** | nén dữ liệu bất kỳ thành dấu vân tay cố định, một chiều | SHA-256, SHA-384 | tóm tắt toàn bộ handshake, ký |
+| **MAC** | hash có khoá: chỉ ai có khoá mới tạo hoặc kiểm được | HMAC-SHA256 | xác thực handshake (`Finished`), nền của HKDF |
+| **KDF** | từ một bí mật sinh ra nhiều khoá độc lập | HKDF | sinh khoá cho từng chiều và từng giai đoạn |
+| **Mã hoá có xác thực (<Term>AEAD</Term>)** | vừa mã hoá vừa xác thực, một lần | AES-GCM, ChaCha20-Poly1305 | mã hoá mọi dữ liệu sau handshake |
+| **Trao đổi khoá** | hai bên cùng suy ra một bí mật chung qua kênh công khai | X25519 (ECDH) | tạo khoá phiên |
+| **Chữ ký số** | chứng minh "tôi giữ khoá riêng này" | ECDSA, RSA | chứng chỉ, `CertificateVerify` |
+
+Mã hoá **đối xứng** (cùng một khoá để mã hoá và giải mã) rất nhanh nhưng đặt ra câu hỏi "làm sao hai bên có chung khoá khi chưa từng gặp nhau". Mã hoá **bất đối xứng** (khoá công khai, khoá riêng) giải được câu hỏi đó nhưng chậm hơn hàng trăm lần. TLS **lai cả hai**: dùng bất đối xứng ở đầu để thoả thuận khoá, rồi dùng đối xứng cho toàn bộ dữ liệu.
+
+Đoạn code dưới chạy từng viên gạch, dùng thư viện `cryptography` cho AEAD và để đối chiếu, còn lại tự viết:
+
+```python
+import hashlib, hmac, os
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+
+print('=== 1. hash và hiệu ứng avalanche ===')
+a, b = hashlib.sha256(b'hello').digest(), hashlib.sha256(b'hellp').digest()
+diff = bin(int.from_bytes(a, 'big') ^ int.from_bytes(b, 'big')).count('1')
+print('sha256("hello") =', a.hex()[:32] + '...'); print('sha256("hellp") =', b.hex()[:32] + '...')
+print(f'đổi 1 ký tự → {diff}/256 bit khác nhau ({diff/256:.0%})')
+
+print('\n=== 2. HMAC viết tay (RFC 2104) ===')
+def hmac_sha256(key, msg):
+    if len(key) > 64: key = hashlib.sha256(key).digest()
+    key = key.ljust(64, b'\0')
+    ipad, opad = bytes(k ^ 0x36 for k in key), bytes(k ^ 0x5c for k in key)
+    return hashlib.sha256(opad + hashlib.sha256(ipad + msg).digest()).digest()
+print('khớp thư viện hmac:', hmac_sha256(b'khoa-bi-mat', b'noi dung') == hmac.new(b'khoa-bi-mat', b'noi dung', 'sha256').digest())
+print('đổi 1 byte nội dung → MAC khác:', hmac_sha256(b'khoa-bi-mat', b'noi dunG').hex()[:16], 'vs', hmac_sha256(b'khoa-bi-mat', b'noi dung').hex()[:16])
+
+print('\n=== 3. X25519 (Diffie-Hellman trên đường cong) viết tay, RFC 7748 ===')
+P = 2**255 - 19
+def x25519(k, u):
+    k = bytearray(k); k[0] &= 248; k[31] &= 127; k[31] |= 64
+    k = int.from_bytes(k, 'little'); x1 = int.from_bytes(u, 'little') & ((1 << 255) - 1)
+    x2, z2, x3, z3, swap = 1, 0, x1, 1, 0
+    for t in reversed(range(255)):                                    # Montgomery ladder
+        kt = (k >> t) & 1; swap ^= kt
+        if swap: x2, x3, z2, z3 = x3, x2, z3, z2
+        swap = kt
+        A, B = (x2 + z2) % P, (x2 - z2) % P; AA, BB = A * A % P, B * B % P; E = (AA - BB) % P
+        C, D = (x3 + z3) % P, (x3 - z3) % P; DA, CB = D * A % P, C * B % P
+        x3 = (DA + CB) ** 2 % P; z3 = x1 * (DA - CB) ** 2 % P
+        x2 = AA * BB % P; z2 = E * (AA + 121665 * E) % P
+    if swap: x2, x3, z2, z3 = x3, x2, z3, z2
+    return (x2 * pow(z2, P - 2, P) % P).to_bytes(32, 'little')
+BASE = (9).to_bytes(32, 'little')
+vec_k = bytes.fromhex('a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4')
+vec_u = bytes.fromhex('e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c')
+print('vector RFC 7748:', x25519(vec_k, vec_u).hex()[:32], '(mong đợi c3da55379de9c690...)')
+alice, bob = os.urandom(32), os.urandom(32)
+A_pub, B_pub = x25519(alice, BASE), x25519(bob, BASE)
+s1, s2 = x25519(alice, B_pub), x25519(bob, A_pub)
+print('Alice công khai:', A_pub.hex()[:16] + '...  Bob công khai:', B_pub.hex()[:16] + '...')
+print('bí mật chung của hai bên giống nhau:', s1 == s2, '|', s1.hex()[:16] + '...')
+lib = X25519PrivateKey.from_private_bytes(alice).exchange(X25519PublicKey.from_public_bytes(B_pub))
+print('khớp thư viện cryptography:', lib == s1)
+
+print('\n=== 4. HKDF (RFC 5869): từ một bí mật chung sinh nhiều khoá ===')
+def hkdf(secret, salt, info, n):
+    prk = hmac.new(salt, secret, 'sha256').digest()                   # extract
+    out, t = b'', b''
+    for i in range(1, -(-n // 32) + 1):                               # expand
+        t = hmac.new(prk, t + info + bytes([i]), 'sha256').digest(); out += t
+    return out[:n]
+okm = hkdf(bytes([0x0b]) * 22, bytes(range(13)), bytes(range(0xf0, 0xfa)), 42)
+print('vector RFC 5869:', okm.hex()[:32], '(mong đợi 3cb25f25faacd57a...)')
+k_c2s, k_s2c = hkdf(s1, b'', b'client write', 16), hkdf(s1, b'', b'server write', 16)
+print('khoá client→server:', k_c2s.hex(), '| server→client:', k_s2c.hex())
+
+print('\n=== 5. AEAD (AES-GCM): mã hoá + xác thực ===')
+key, nonce = AESGCM.generate_key(128), os.urandom(12)
+g = AESGCM(key); aad = b'header-khong-ma-hoa'
+ct = g.encrypt(nonce, b'GET /mat-khau HTTP/1.1', aad)
+print('bản mã (+16 byte tag):', ct.hex()); print('giải mã:', g.decrypt(nonce, ct, aad))
+bad = bytearray(ct); bad[3] ^= 1
+try: g.decrypt(nonce, bytes(bad), aad)
+except InvalidTag: print('sửa 1 bit của bản mã → InvalidTag (bị từ chối)')
+try: g.decrypt(nonce, ct, b'header-bi-sua')
+except InvalidTag: print('sửa AAD → InvalidTag')
+p1, p2 = b'mat khau: hunter2!', b'mat khau: correct!'
+c1, c2 = g.encrypt(nonce, p1, None)[:-16], g.encrypt(nonce, p2, None)[:-16]        # DÙNG LẠI nonce: lỗi chết người
+xor_c = bytes(a ^ b for a, b in zip(c1, c2)); xor_p = bytes(a ^ b for a, b in zip(p1, p2))
+print('dùng lại nonce: c1 xor c2 == p1 xor p2 ?', xor_c == xor_p, '(lộ quan hệ giữa hai bản rõ mà không cần khoá)')
+
+print('\n=== 6. RSA đồ chơi: ký và kiểm chứng ===')
+p, q = 1000003, 1000033; n = p * q; phi = (p - 1) * (q - 1); e = 65537; d = pow(e, -1, phi)
+h = int.from_bytes(hashlib.sha256(b'chung chi cua example.com').digest(), 'big') % n
+sig = pow(h, d, n)                                                     # ký bằng khoá riêng d
+print('chữ ký hợp lệ:', pow(sig, e, n) == h)                           # kiểm bằng khoá công khai (n, e)
+h2 = int.from_bytes(hashlib.sha256(b'chung chi cua evil.com').digest(), 'big') % n
+print('chữ ký dùng cho nội dung khác:', pow(sig, e, n) == h2)
+```
+
+```text
+=== 1. hash và hiệu ứng avalanche ===
+sha256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e...
+sha256("hellp") = fdd7585e08c4e2afd71dcabdb4636c89...
+đổi 1 ký tự → 131/256 bit khác nhau (51%)
+
+=== 2. HMAC viết tay (RFC 2104) ===
+khớp thư viện hmac: True
+đổi 1 byte nội dung → MAC khác: 7c00e7bd501ded26 vs 656c9814ae6f1026
+
+=== 3. X25519 (Diffie-Hellman trên đường cong) viết tay, RFC 7748 ===
+vector RFC 7748: c3da55379de9c6908e94ea4df28d084f (mong đợi c3da55379de9c690...)
+Alice công khai: 6dca24b018433fda...  Bob công khai: 85f84e322ecf50a8...
+bí mật chung của hai bên giống nhau: True | ef06497658d04944...
+khớp thư viện cryptography: True
+
+=== 4. HKDF (RFC 5869): từ một bí mật chung sinh nhiều khoá ===
+vector RFC 5869: 3cb25f25faacd57a90434f64d0362f2a (mong đợi 3cb25f25faacd57a...)
+khoá client→server: 7ab1bfa5b8f203788d13149570840095 | server→client: db047bca145b6a39083d8711c1377fa7
+
+=== 5. AEAD (AES-GCM): mã hoá + xác thực ===
+bản mã (+16 byte tag): fd14c53f5c29b05be2dcd00ff176a0caed3c6499c98677b7e4966ba47ec44849659bfad2792c
+giải mã: b'GET /mat-khau HTTP/1.1'
+sửa 1 bit của bản mã → InvalidTag (bị từ chối)
+sửa AAD → InvalidTag
+dùng lại nonce: c1 xor c2 == p1 xor p2 ? True (lộ quan hệ giữa hai bản rõ mà không cần khoá)
+
+=== 6. RSA đồ chơi: ký và kiểm chứng ===
+chữ ký hợp lệ: True
+chữ ký dùng cho nội dung khác: False
+```
+
+Đọc từng phần:
+
+- **Hash**: đổi **một ký tự** (`hello` thành `hellp`) làm khoảng **một nửa** (131 trên 256) bit của kết quả đổi: hiệu ứng avalanche. Không có cách nào từ hash đoán ngược nội dung hay đoán hai đầu vào "gần nhau". TLS dùng hash để **cam kết** với toàn bộ cuộc trò chuyện: mọi message của handshake được băm liên tục thành một "transcript hash", và `Finished` ký lên đó.
+- **HMAC** chỉ là hash bọc hai lần với khoá: `H(khoá ⊕ opad ‖ H(khoá ⊕ ipad ‖ nội dung))`. Viết tay 5 dòng cho cùng kết quả như thư viện chuẩn. Đổi 1 byte nội dung thì MAC đổi hoàn toàn, nên ai không có khoá không làm giả được.
+- **X25519**: khoảng 15 dòng Python cho cả thuật toán (Montgomery ladder trên đường cong Curve25519), và **khớp test vector của RFC 7748** cũng như thư viện `cryptography`. Điều cần nhìn thấy là kết quả: Alice chỉ gửi `A_pub`, Bob chỉ gửi `B_pub` qua kênh mà kẻ nghe lén thấy hết, nhưng cả hai **cùng tính ra một bí mật chung** (`s1 == s2`), còn kẻ nghe lén chỉ có hai số công khai và không tính được. Đây là phép màu của Diffie-Hellman: bí mật chung chưa từng đi qua dây. (Độ khó dựa trên bài toán logarit rời rạc trên đường cong elliptic.)
+- **HKDF**: từ một bí mật chung `s1`, sinh ra **hai khoá khác nhau** cho hai chiều (`client write`, `server write`). Dùng khoá riêng cho từng chiều và từng mục đích là nguyên tắc cơ bản: lộ một khoá không kéo theo các khoá khác. Hàm cũng khớp test vector của RFC 5869.
+- **AEAD (AES-GCM)** vừa mã hoá vừa tạo một **tag 16 byte** xác thực cả bản mã lẫn phần **AAD** (dữ liệu kèm theo không mã hoá, nhưng được xác thực: trong TLS là header của record). Sửa **một bit** của bản mã, hoặc sửa AAD, là `InvalidTag` và bản giải mã bị từ chối: ta không bao giờ nhận dữ liệu đã bị chỉnh sửa.
+- **Dùng lại nonce là lỗi chết người.** Mỗi lần mã hoá bằng cùng khoá phải có nonce **khác nhau**. Dòng cuối chứng minh: với cùng khoá và nonce, `c1 XOR c2 = p1 XOR p2`, nên kẻ tấn công thấy hai bản mã là suy ra quan hệ giữa hai bản rõ **mà không cần khoá**. Đoán được một bản rõ (như phần đầu `mat khau: `) là lộ phần còn lại. TLS 1.3 tránh bằng cách tính nonce từ **số thứ tự record**, nên không bao giờ lặp.
+- **RSA đồ chơi** (số nguyên tố 7 chữ số, thật cần 2048 bit trở lên): ký bằng **khoá riêng** `d`, kiểm bằng **khoá công khai** `(n, e)`. Chữ ký chỉ hợp lệ với đúng nội dung đã ký; dùng nó cho nội dung khác (`evil.com`) thì kiểm thất bại. Đó chính là cách một CA "bảo chứng" cho một chứng chỉ: ký lên nội dung của chứng chỉ, ai có khoá công khai của CA kiểm được.
+
+## Handshake TLS 1.3
+
+Trước khi gửi dữ liệu, client và server phải thống nhất khoá và server phải **chứng minh danh tính**. TLS 1.3 làm được việc đó trong **một vòng đi về (1 RTT)**:
+
+```text
+Client                                              Server
+
+ClientHello
+  + key_share (khoá công khai X25519 của client)
+  + supported_versions, SNI, ALPN ...        ───────►
+                                                    ServerHello
+                                                      + key_share (khoá công khai của server)
+                                            {EncryptedExtensions}
+                                            {Certificate}
+                                            {CertificateVerify}
+                                            ◄───────  {Finished}
+{Finished}                                   ───────►
+[Application Data]                          ◄──────►  [Application Data]
+
+         {} = đã mã hoá bằng khoá handshake      [] = đã mã hoá bằng khoá ứng dụng
+```
+
+Mấu chốt nằm ở dòng đầu: client **đoán trước** server sẽ chọn nhóm đường cong nào (thường X25519) và gửi luôn khoá công khai của mình trong `ClientHello`. Server trả khoá công khai của nó trong `ServerHello`. Đến đây hai bên đã tính ra bí mật chung (như ví dụ Alice và Bob ở trên), và **mọi thứ sau `ServerHello` đã được mã hoá**. TLS 1.2 phải chờ thêm một vòng để thoả thuận trước khi trao đổi khoá, nên tốn 2 RTT.
+
+### Đọc ClientHello trên gói tin thật
+
+`ClientHello` và `ServerHello` là hai message duy nhất còn ở dạng rõ, nên bắt được và đọc từng trường. Đoạn dưới bắt các khung TCP khi Python kết nối tới `example.com:443`, rồi tự giải mã record và handshake (dùng lại bộ bắt gói `Sniffer` của bài [OSI & TCP/IP Model](/docs/networking/network-layers)):
+
+```python
+"""Bắt TLS handshake và đọc ClientHello / ServerHello (còn ở dạng rõ) bằng tay."""
+import socket, ssl, struct
+from frames import Sniffer
+
+CIPHERS = {0x1301: 'TLS_AES_128_GCM_SHA256', 0x1302: 'TLS_AES_256_GCM_SHA384', 0x1303: 'TLS_CHACHA20_POLY1305_SHA256'}
+EXT = {0: 'server_name', 10: 'supported_groups', 11: 'ec_point_formats', 13: 'signature_algorithms', 16: 'ALPN', 23: 'extended_master_secret',
+       43: 'supported_versions', 45: 'psk_key_exchange_modes', 51: 'key_share', 35: 'session_ticket', 22: 'encrypt_then_mac', 21: 'padding', 65281: 'renegotiation_info'}
+GROUPS = {256: 'ffdhe2048', 257: 'ffdhe3072', 258: 'ffdhe4096', 259: 'ffdhe6144', 260: 'ffdhe8192', 29: 'x25519', 23: 'secp256r1', 24: 'secp384r1', 30: 'x448', 25: 'secp521r1'}
+
+def u16(b, i): return struct.unpack('!H', b[i:i+2])[0]
+
+def parse_hello(rec):
+    typ, ver, ln = rec[0], u16(rec, 1), u16(rec, 3)
+    hs = rec[5:5 + ln]; ht, hlen = hs[0], int.from_bytes(hs[1:4], 'big'); b = hs[4:4 + hlen]
+    print(f'record: type={typ} (handshake) version=0x{ver:04x} dài={ln} | handshake: loại={ht} ({"ClientHello" if ht == 1 else "ServerHello"}) dài={hlen}')
+    i = 2 + 32; print(f'  random = {b[2:34].hex()[:24]}... (32 byte)')
+    sid = b[i]; i += 1 + sid; print(f'  session_id dài {sid} byte')
+    if ht == 1:
+        n = u16(b, i); suites = [u16(b, i + 2 + 2*k) for k in range(n // 2)]; i += 2 + n
+        print('  cipher suites:', ', '.join(CIPHERS.get(s, f'0x{s:04x}') for s in suites[:6]), f'... ({len(suites)} mục)')
+        i += 1 + b[i]                                         # compression methods
+    else:
+        print(f'  cipher suite chọn: {CIPHERS.get(u16(b, i), hex(u16(b, i)))}'); i += 2 + 1            # + compression
+    el = u16(b, i); i += 2; end = i + el
+    while i < end:
+        t, l = u16(b, i), u16(b, i + 2); d = b[i + 4:i + 4 + l]; i += 4 + l; desc = ''
+        if t == 0 and ht == 1: desc = ' → ' + d[5:].decode()
+        if t == 16 and ht == 1:
+            j, names = 2, []
+            while j < len(d): names.append(d[j+1:j+1+d[j]].decode()); j += 1 + d[j]
+            desc = ' → ' + ', '.join(names)
+        if t == 43: desc = ' → ' + ('0x%04x' % u16(d, 0) if ht == 2 else ', '.join('0x%04x' % u16(d, 1 + 2*k) for k in range(d[0] // 2)))
+        if t == 51:
+            if ht == 1: g, kl = u16(d, 2), u16(d, 4); desc = f' → nhóm {GROUPS.get(g, g)}, khoá công khai {kl} byte: {d[6:6+8].hex()}...'
+            else: g, kl = u16(d, 0), u16(d, 2); desc = f' → nhóm {GROUPS.get(g, g)}, khoá công khai {kl} byte'
+        if t == 10 and ht == 1: desc = ' → ' + ', '.join(GROUPS.get(u16(d, 2 + 2*k), str(u16(d, 2 + 2*k))) for k in range(u16(d, 0) // 2))
+        print(f'  extension {t:>5} {EXT.get(t, "?"):<24} {l:>4} byte{desc}')
+
+sn = Sniffer('eth0', lambda f, m: f[12:14] == b'\x08\x00' and f[23] == 6)
+ctx = ssl.create_default_context(); ctx.set_alpn_protocols(['h2', 'http/1.1'])
+s = ctx.wrap_socket(socket.create_connection(('example.com', 443), timeout=5), server_hostname='example.com'); s.close(); sn.stop()
+seen = set()
+for t, k, f in sn.frames:
+    ihl = (f[14] & 15) * 4; tcp = f[14 + ihl:]; hl = (tcp[12] >> 4) * 4; data = tcp[hl:]
+    sp = struct.unpack('!H', tcp[:2])[0]
+    if len(data) > 9 and data[0] == 22 and data[5] in (1, 2) and data[5] not in seen:
+        seen.add(data[5]); print('→' if sp != 443 else '←'); parse_hello(data)
+```
+
+```text
+→
+record: type=22 (handshake) version=0x0301 dài=512 | handshake: loại=1 (ClientHello) dài=508
+  random = 7f24a2ef69f7b996bd366416... (32 byte)
+  session_id dài 32 byte
+  cipher suites: TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256, TLS_AES_128_GCM_SHA256, 0xc02c, 0xc030, 0x009f ... (31 mục)
+  extension     0 server_name                16 byte → example.com
+  extension    11 ec_point_formats            4 byte
+  extension    10 supported_groups           22 byte → x25519, secp256r1, x448, secp521r1, secp384r1, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192
+  extension    35 session_ticket              0 byte
+  extension    16 ALPN                       14 byte → h2, http/1.1
+  extension    22 encrypt_then_mac            0 byte
+  extension    23 extended_master_secret      0 byte
+  extension    13 signature_algorithms       42 byte
+  extension    43 supported_versions          5 byte → 0x0304, 0x0303
+  extension    45 psk_key_exchange_modes      2 byte
+  extension    51 key_share                  38 byte → nhóm x25519, khoá công khai 32 byte: f051bb27377590ac...
+  extension    21 padding                   182 byte
+←
+record: type=22 (handshake) version=0x0303 dài=122 | handshake: loại=2 (ServerHello) dài=118
+  random = 370a7c40b8502d4511580770... (32 byte)
+  session_id dài 32 byte
+  cipher suite chọn: TLS_AES_256_GCM_SHA384
+  extension    51 key_share                  36 byte → nhóm x25519, khoá công khai 32 byte
+  extension    43 supported_versions          2 byte → 0x0304
+```
+
+Đọc kỹ `ClientHello` (512 byte, client gửi):
+
+- **`version=0x0301`** ở header record và 0x0303 trong handshake là **hằng số giả** giữ lại cho các middlebox cũ. Phiên bản thật nằm ở extension **`supported_versions`**: client liệt kê `0x0304` (TLS 1.3) và `0x0303` (TLS 1.2). Đây là hậu quả của ossification mà bài [TCP vs UDP](/docs/networking/tcp-vs-udp) đã nhắc: hạ tầng mạng từng chặn mọi gói TLS có số phiên bản lạ nên TLS 1.3 phải ngụy trang thành 1.2.
+- **`server_name` = `example.com`** nằm ở dạng **rõ**. Đó là <Term>SNI</Term> (Server Name Indication): vì một địa chỉ IP phục vụ nhiều tên miền (cùng lý do header `Host` của HTTP), client phải cho server biết nó muốn chứng chỉ của tên nào **trước khi** có gì được mã hoá. Hệ quả riêng tư: bất kỳ ai trên đường (nhà mạng, quán cà phê) **thấy bạn đang vào site nào**, dù không thấy nội dung. Bản mở rộng **ECH** (Encrypted Client Hello) mã hoá phần này và đang được triển khai dần.
+- **`ALPN`** = `h2, http/1.1`: client nói luôn giao thức tầng ứng dụng nó biết nói, để server chọn và **không tốn thêm RTT** (đó là cách HTTP/2 được thương lượng ở bài [HTTP](/docs/networking/http)).
+- **31 cipher suites**, ba cái đầu là của TLS 1.3 (chỉ gồm thuật toán AEAD và hash, ví dụ `TLS_AES_256_GCM_SHA384`), phần còn lại là bộ TLS 1.2 để tương thích. TLS 1.3 gọn hơn nhiều: chỉ còn **năm** cipher suite chuẩn, mọi cái đều AEAD, bỏ hết thứ yếu (RC4, CBC, RSA key exchange, nén).
+- **`key_share`**: khoá công khai X25519 dài 32 byte của client (`f051bb27...`): đây là phần "đoán trước" cho phép xong trong 1 RTT. **`supported_groups`** liệt kê các đường cong khác để server chọn nếu không thích X25519 (khi đó server trả `HelloRetryRequest` và tốn thêm 1 RTT).
+- **`padding`** 182 byte: chỉ để đệm `ClientHello` cho kích thước đẹp (có lỗi cũ ở một số firewall với kích thước nhất định). **`session_ticket`** và **`psk_key_exchange_modes`** cho phép resume (xem bên dưới).
+
+`ServerHello` (122 byte) ngắn hơn nhiều: chọn **`TLS_AES_256_GCM_SHA384`**, xác nhận version `0x0304`, và trả `key_share` X25519 của server. Ngay sau message này, hai bên đã có đủ dữ kiện để tính khoá, và **mọi thứ còn lại là bản mã** (một `ChangeCipherSpec` giả cũng được gửi chỉ để tương thích).
+
+### Các message được mã hoá
+
+OpenSSL cho xem loại và kích thước từng message của handshake (`-msg`):
+
+```text
+>>> TLS 1.3, Handshake [length 00f0], ClientHello
+<<< TLS 1.3, Handshake [length 007a], ServerHello
+<<< TLS 1.3, Handshake [length 000a], EncryptedExtensions
+<<< TLS 1.3, Handshake [length 0e66], Certificate
+<<< TLS 1.3, Handshake [length 004f], CertificateVerify
+<<< TLS 1.3, Handshake [length 0034], Finished
+>>> TLS 1.3, ChangeCipherSpec [length 0001]
+>>> TLS 1.3, Handshake [length 0034], Finished
+>>> TLS 1.3, Alert [length 0002], warning close_notify
+```
+
+| Message | Kích thước | Làm gì |
+|---|---|---|
+| `ClientHello` | 240 byte (`0x0f0`) | (bản này của OpenSSL không có padding, nên nhỏ hơn bản của Python ở trên) |
+| `ServerHello` | 122 byte | chốt thuật toán, trao khoá công khai |
+| `EncryptedExtensions` | 10 byte | các thương lượng còn lại, như ALPN đã chọn |
+| `Certificate` | **3.686 byte** (`0xe66`) | **chuỗi chứng chỉ** của server |
+| `CertificateVerify` | 79 byte | server **ký** lên transcript bằng khoá riêng ứng với chứng chỉ |
+| `Finished` (server) | 52 byte | MAC của toàn bộ handshake: xác nhận không ai sửa gì |
+| `Finished` (client) | 52 byte | như trên, chiều ngược lại |
+
+Ba message này là cốt lõi của **xác thực**:
+
+- **`Certificate`** chứa chuỗi chứng chỉ: khoảng 3,7 KB. Đây là **phần lớn dữ liệu của cả handshake**: OpenSSL báo tổng cộng `handshake has read 3981 bytes and written 325 bytes`, tức server gửi 3981 byte, trong đó 3686 là chứng chỉ (93%). Đó là lý do chứng chỉ ECDSA (nhỏ hơn RSA) và **nén chứng chỉ** (RFC 8879) có ích, và vì sao chuỗi dài làm chậm: nó thường chiếm vài gói TCP đầu của cửa sổ khởi đầu.
+- **`CertificateVerify`** là chỗ giải bài toán "ai cũng gửi được chứng chỉ công khai, vậy chứng minh bạn **sở hữu** nó thế nào": server **ký** hash của transcript bằng **khoá riêng**. Chỉ người giữ khoá riêng của chứng chỉ mới tạo được chữ ký này (giống chữ ký RSA đồ chơi ở trên), và chữ ký bao gồm cả khoá công khai trao đổi, nên gắn danh tính với **đúng phiên này**.
+- **`Finished`** là HMAC của toàn bộ transcript handshake bằng khoá dẫn xuất từ bí mật chung. Hai bên kiểm tra nhau: nếu kẻ tấn công **sửa bất kỳ byte nào** của handshake (như xoá cipher suite mạnh để ép hạ cấp), HMAC lệch và kết nối bị huỷ. Đó là cơ chế chống hạ cấp (downgrade).
+
+Từ sau `Finished`, các bên dùng **khoá ứng dụng** (dẫn xuất từ cùng bí mật qua HKDF, như ví dụ hai khoá hai chiều ở trên) và gửi dữ liệu dưới dạng **record** được AEAD mã hoá. Mỗi record có header 5 byte, tối đa 16 KB dữ liệu, cộng tag 16 byte (phí tổn khoảng 22 byte trên mỗi record).
+
+### Forward secrecy
+
+Khoá X25519 của hai bên là **tạm thời (ephemeral)**: sinh mới cho **mỗi** kết nối và vứt đi sau khi tính xong bí mật chung. Hệ quả quan trọng: nếu một năm sau kẻ tấn công lấy được **khoá riêng** của chứng chỉ server, thì nó **không giải mã được** các cuộc trò chuyện đã ghi lại trước đó, vì khoá phiên không dẫn xuất từ khoá riêng đó (khoá riêng chỉ dùng để **ký**). Tính chất này gọi là <Term>forward secrecy</Term>. TLS 1.2 với RSA key exchange (client mã hoá bí mật bằng khoá công khai của server) **không có** tính chất này; một kẻ ghi lại lưu lượng hôm nay có thể giải mã tất cả khi nào lấy được khoá. Đó là lý do TLS 1.3 loại bỏ hoàn toàn RSA key exchange.
+
+### Resumption và 0-RTT
+
+Sau handshake đầu, server gửi một hoặc vài **session ticket** (mã hoá, chỉ server giải được) chứa trạng thái để dựng lại khoá. Lần sau client gửi ticket trong `ClientHello` (extension `pre_shared_key`) và hai bên **bỏ qua phần chứng chỉ**, tiết kiệm hàng nghìn byte và một số bước tính toán đắt (chữ ký). Khi resume, client còn có thể gửi luôn **dữ liệu 0-RTT** (early data) kèm `ClientHello`, tức xong 0 RTT cho dữ liệu đầu tiên.
+
+0-RTT có cái giá: dữ liệu early **không có forward secrecy** hoàn toàn và **có thể bị phát lại (replay)**: kẻ tấn công ghi lại gói đầu và gửi lại cho server, và server sẽ xử lý như một request mới. Vì vậy early data chỉ nên chứa các request **an toàn để lặp** (idempotent, như `GET`; xem bài [HTTP](/docs/networking/http)), và server/CDN thường từ chối hoặc giới hạn 0-RTT với `POST`.
+
+### Chi phí đo được: TLS 1.2 so với 1.3
+
+Đo thời gian tới khi TLS xong (`time_appconnect` của `curl`) trừ đi thời gian TCP xong (`time_connect`), ba lần mỗi phiên bản, tới `example.com` với RTT khoảng 40 ms:
+
+```text
+TLS 1.2 tcp=0.046922 tls_done=0.124463
+TLS 1.2 tcp=0.050232 tls_done=0.135946
+TLS 1.2 tcp=0.050060 tls_done=0.149799
+TLS 1.3 tcp=0.045934 tls_done=0.088689
+TLS 1.3 tcp=0.052615 tls_done=0.107855
+TLS 1.3 tcp=0.038973 tls_done=0.078282
+```
+
+| | Phần TLS (ms) | Số RTT xấp xỉ |
+|---|---|---|
+| TLS 1.2 | 78, 86, 100 | khoảng 2 RTT |
+| TLS 1.3 | 43, 55, 39 | khoảng 1 RTT |
+
+TLS 1.3 nhanh gần **gấp đôi** ở bước bắt tay, đúng như phân tích 1 RTT so với 2 RTT. Với client ở xa server (RTT 150 ms), chênh lệch là 150 ms mỗi kết nối mới. Cộng với TCP (1 RTT) và request (1 RTT), tổng thời gian tới byte đầu tiên của trang là 4 RTT với TLS 1.2 và 3 RTT với TLS 1.3 (như bảng ở bài [HTTP](/docs/networking/http)). QUIC gộp cả handshake transport và TLS 1.3 vào một vòng, còn 1 RTT (hoặc 0 khi resume).
+
+## Chứng chỉ và chuỗi tin cậy
+
+Mật mã giải được bài toán "nói chuyện bí mật với **người có khoá này**". Còn lại bài toán khó hơn: **khoá này có đúng là của `example.com` không?** Nếu chỉ nhận khoá công khai từ chính server, kẻ đứng giữa (man-in-the-middle) trả khoá của nó và bạn mã hoá thẳng cho nó. Cách giải của TLS là **chứng chỉ**: một bên thứ ba mà bạn **đã tin sẵn** (<Term>CA</Term>, Certificate Authority) ký xác nhận "khoá công khai này thuộc tên miền này".
+
+### Bên trong một chứng chỉ
+
+Chứng chỉ X.509 là một cấu trúc có chữ ký, chứa: tên chủ thể (subject), **Subject Alternative Name (SAN)** liệt kê các tên miền hợp lệ, khoá công khai, thời hạn hiệu lực, tên CA phát hành (issuer), mục đích sử dụng, và chữ ký của CA lên toàn bộ phần đó. Xem chuỗi chứng chỉ thật của `example.com` bằng `openssl s_client`:
+
+```text
+Certificate chain
+ 0 s:CN = example.com
+   i:C = US, O = SSL Corporation, CN = Cloudflare TLS Issuing ECC CA 3
+   a:PKEY: id-ecPublicKey, 256 (bit); sigalg: ecdsa-with-SHA256
+   v:NotBefore: Sep 26 22:49:11 2026 GMT; NotAfter: Dec 25 22:56:35 2026 GMT
+ 1 s:C = US, O = SSL Corporation, CN = Cloudflare TLS Issuing ECC CA 3
+   i:C = US, O = SSL Corporation, CN = SSL.com TLS Transit ECC CA R2
+   a:PKEY: id-ecPublicKey, 256 (bit); sigalg: ecdsa-with-SHA384
+   v:NotBefore: May 29 19:49:45 2025 GMT; NotAfter: May 27 19:49:44 2035 GMT
+ 2 s:C = US, O = SSL Corporation, CN = SSL.com TLS Transit ECC CA R2
+   i:C = US, O = SSL Corporation, CN = SSL.com TLS ECC Root CA 2022
+   a:PKEY: id-ecPublicKey, 384 (bit); sigalg: ecdsa-with-SHA384
+   v:NotBefore: Oct 21 17:02:23 2022 GMT; NotAfter: Oct 17 17:02:22 2037 GMT
+ 3 s:C = US, O = SSL Corporation, CN = SSL.com TLS ECC Root CA 2022
+   i:C = GB, ST = Greater Manchester, L = Salford, O = Comodo CA Limited, CN = AAA Certificate Services
+   a:PKEY: id-ecPublicKey, 384 (bit); sigalg: RSA-SHA256
+   v:NotBefore: Aug  1 00:00:00 2025 GMT; NotAfter: Dec 31 23:59:59 2028 GMT
+---
+Server public key is 256 bit
+Peer signing digest: SHA256
+Peer signature type: ECDSA
+Server Temp Key: X25519, 253 bits
+Verification: OK
+New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+```
+
+Mỗi dòng `s:` là chủ thể (subject) và `i:` là người ký (issuer). Chuỗi đọc ngược từ trên xuống: chứng chỉ 0 (`example.com`) do `Cloudflare TLS Issuing ECC CA 3` ký, chứng chỉ 1 do `SSL.com TLS Transit ECC CA R2` ký, chứng chỉ 2 do `SSL.com TLS ECC Root CA 2022` ký, và chứng chỉ 3 là một bản **cross-sign** của root đó do một root cũ hơn (`AAA Certificate Services`) ký.
+
+| Thứ | Ý nghĩa |
+|---|---|
+| **Chứng chỉ lá (leaf)** (0) | chứng chỉ của chính server, chỉ có thời hạn **90 ngày** (26/9 tới 25/12/2026) |
+| **Intermediate CA** (1, 2) | CA trung gian: root không ký trực tiếp chứng chỉ lá để giữ khoá root offline, an toàn hơn; thời hạn dài hơn (tới 2035, 2037) |
+| **Root CA** | điểm khởi đầu của tin cậy, **được cài sẵn** trong trình duyệt và hệ điều hành |
+| **Cross-sign** (3) | một root mới chưa kịp có mặt trong mọi thiết bị cũ được ký chéo bởi root cũ đã có mặt; thiết bị cũ lần theo chuỗi tới root cũ |
+| `ecdsa-with-SHA256` | thuật toán chữ ký (ECDSA trên P-256, hash SHA-256); chứng chỉ ECDSA nhỏ và nhanh hơn RSA |
+| `Verification: OK` | OpenSSL kiểm chuỗi tới một root nằm trong kho tin cậy của hệ thống |
+
+Client kiểm tra chứng chỉ theo các bước (RFC 5280 và RFC 6125), **mọi bước đều phải qua**:
+
+1. **Chữ ký**: mỗi chứng chỉ trong chuỗi được ký đúng bởi khoá công khai của chứng chỉ ngay trên nó, và chuỗi kết thúc ở một **root có trong kho tin cậy** của client.
+2. **Thời hạn**: hôm nay nằm giữa `NotBefore` và `NotAfter` của **từng** chứng chỉ trong chuỗi.
+3. **Tên**: tên miền đang kết nối (`example.com`) có trong **SAN** của chứng chỉ lá (khớp cả wildcard như `*.example.com`). Tên trong `CN` cũ không còn được dùng để kiểm.
+4. **Mục đích**: chứng chỉ có quyền `serverAuth`, và các CA trung gian có cờ được phép làm CA.
+5. **Thu hồi**: chứng chỉ chưa bị CA thu hồi (CRL hoặc OCSP, xem dưới).
+
+Kho tin cậy chứa vài chục tới vài trăm root (Mozilla, Apple, Microsoft, Google mỗi bên quản lý một kho). Một CA bị phát hiện cấp bừa bãi thì bị **gỡ khỏi kho** và mọi chứng chỉ của nó ngừng hoạt động (đã xảy ra với Symantec, DigiNotar). Đó là lý do hệ thống đòi **Certificate Transparency**: mọi chứng chỉ phát hành phải ghi vào log công khai (chứng chỉ lá ở trên có nhúng các SCT, bằng chứng đã được ghi log), để chủ tên miền phát hiện được chứng chỉ lạ cấp cho tên của mình.
+
+### Tự dựng một CA và chạy thử
+
+Cách hiểu chắc nhất là tự làm. Các lệnh dưới dựng một CA riêng (khoá ECDSA P-256), cấp một chứng chỉ server cho `localhost` (có SAN đúng) và một chứng chỉ **client**:
+
+```bash
+openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+openssl req -x509 -new -key ca.key -sha256 -days 365 -subj "/CN=Demo Root CA" -out ca.pem       # chứng chỉ root tự ký
+
+openssl ecparam -name prime256v1 -genkey -noout -out server.key
+openssl req -new -key server.key -subj "/CN=localhost" -out server.csr                          # yêu cầu cấp chứng chỉ (CSR)
+printf "subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n" > server.ext
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 30 -sha256 -extfile server.ext -out server.pem
+
+openssl ecparam -name prime256v1 -genkey -noout -out client.key
+openssl req -new -key client.key -subj "/CN=vy-laptop" -out client.csr
+printf "extendedKeyUsage=clientAuth\n" > client.ext
+openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 30 -sha256 -extfile client.ext -out client.pem
+```
+
+```text
+$ openssl x509 -in server.pem -noout -subject -issuer -dates -ext subjectAltName,extendedKeyUsage
+subject=CN = localhost
+issuer=CN = Demo Root CA
+notBefore=Nov 16 04:36:55 2026 GMT
+notAfter=Dec 16 04:36:55 2026 GMT
+X509v3 Subject Alternative Name:
+    DNS:localhost, IP Address:127.0.0.1
+X509v3 Extended Key Usage:
+    TLS Web Server Authentication
+
+$ openssl verify -CAfile ca.pem server.pem
+server.pem: OK
+```
+
+Quy trình chính là **CSR**: chủ server tự sinh cặp khoá, giữ **khoá riêng** (`server.key` không bao giờ rời máy), và chỉ gửi **yêu cầu ký** chứa khoá công khai cho CA. CA kiểm chứng việc bạn kiểm soát tên (xem ACME bên dưới), rồi ký ra chứng chỉ. Đó cũng là điều Let's Encrypt và mọi CA khác làm, ở quy mô lớn.
+
+Server HTTPS tối thiểu, bắt buộc TLS 1.3, có hoặc không đòi chứng chỉ client (mTLS):
+
+```python
+import ssl, sys, http.server
+mtls = sys.argv[1] == 'mtls'
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+ctx.load_cert_chain('pki/server.pem', 'pki/server.key')
+if mtls: ctx.load_verify_locations('pki/ca.pem'); ctx.verify_mode = ssl.CERT_REQUIRED     # đòi chứng chỉ client
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        who = self.connection.getpeercert()['subject'][0][0][1] if mtls else '(không xác thực client)'
+        body = f'chào, client = {who}\n'.encode(); self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(('127.0.0.1', 8443 if mtls else 8444), H)
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True); srv.serve_forever()
+```
+
+Thử bốn tình huống lỗi quen thuộc bằng `curl` (cổng 8444 là TLS thường, 8443 là mTLS):
+
+```text
+$ curl -sS https://localhost:8444/                                    # không tin CA của ta
+curl: (60) SSL certificate problem: unable to get local issuer certificate
+
+$ curl -sS --cacert pki/ca.pem https://localhost:8444/                # tin CA của ta
+chào, client = (không xác thực client)
+
+$ curl -sS --cacert pki/ca.pem --resolve demo.test:8444:127.0.0.1 https://demo.test:8444/    # tên không có trong SAN
+curl: (60) SSL: no alternative certificate subject name matches target host name 'demo.test'
+
+$ curl -sS --cacert pki/ca.pem --tls-max 1.2 https://localhost:8444/  # ép TLS 1.2 vào server chỉ nhận 1.3
+curl: (35) OpenSSL/3.0.13: error:0A00042E:SSL routines::tlsv1 alert protocol version
+```
+
+Bốn kết quả là bốn bước kiểm của client ở trên: (1) **chữ ký/chuỗi**: không có root `Demo Root CA` trong kho tin cậy thì chuỗi không dẫn tới root nào, lỗi `unable to get local issuer certificate` (thông báo kinh điển nhất của TLS); (2) khi thêm CA vào kho (`--cacert`) thì qua; (3) **tên**: chứng chỉ hợp lệ nhưng cấp cho `localhost`, còn ta gọi `demo.test` nên bị từ chối vì không có trong SAN; (4) **thương lượng phiên bản**: server từ chối TLS 1.2 bằng alert `protocol version`.
+
+Python cho thấy các thông tin giống vậy ở phía client:
+
+```python
+import ssl, socket
+ctx = ssl.create_default_context(cafile='pki/ca.pem')
+with ctx.wrap_socket(socket.create_connection(('localhost', 8444)), server_hostname='localhost') as s:
+    c = s.getpeercert()
+    print(s.version(), s.cipher())
+    print('subject', c['subject'], '| issuer', c['issuer'])
+    print('SAN', c['subjectAltName'], '| hết hạn', c['notAfter'])
+```
+
+```text
+TLSv1.3 ('TLS_AES_256_GCM_SHA384', 'TLSv1.3', 256)
+subject ((('commonName', 'localhost'),),) | issuer ((('commonName', 'Demo Root CA'),),)
+SAN (('DNS', 'localhost'), ('IP Address', '127.0.0.1')) | hết hạn Dec 16 08:15:46 2026 GMT
+```
+
+`ssl.create_default_context()` bật **kiểm chứng đầy đủ** (chữ ký, thời hạn, **hostname**) theo mặc định, và đó là lý do bạn không bao giờ nên tắt nó: `verify=False` hay `rejectUnauthorized: false` trong code **vô hiệu hoá toàn bộ phần xác thực**, biến TLS thành mã hoá cho một người lạ, và đó là một trong những lỗi bảo mật phổ biến nhất trong mã thật.
+
+### mTLS: xác thực cả hai chiều
+
+Bình thường chỉ server chứng minh danh tính; client xác thực bằng cách khác (mật khẩu, token). <Term>mTLS</Term> (mutual TLS) bắt **cả client** cũng trình chứng chỉ và chứng minh sở hữu khoá. Server cấu hình ở trên (`verify_mode = CERT_REQUIRED`) chạy thử:
+
+```text
+$ curl -sS --cacert pki/ca.pem https://localhost:8443/                # thiếu chứng chỉ client
+curl: (55) getpeername() failed with errno 107: Transport endpoint is not connected
+
+$ curl -sS --cacert pki/ca.pem --cert pki/client.pem --key pki/client.key https://localhost:8443/
+chào, client = vy-laptop
+```
+
+Không có chứng chỉ client, kết nối bị cắt (curl báo lỗi 55 hoặc 56 tuỳ lần chạy; ở TLS 1.3 client thấy handshake xong **trước khi** server từ chối chứng chỉ client, nên lỗi hiện ra muộn khi đọc response). Có chứng chỉ thì server biết ngay `client = vy-laptop` từ chứng chỉ, mà **không cần mật khẩu**. mTLS được dùng nhiều ở: giao tiếp giữa các service trong cụm (service mesh như Istio và Linkerd tự cấp và xoay chứng chỉ cho mỗi pod), API nhạy cảm giữa các tổ chức, và mô hình "zero trust". Cái giá: phải **cấp và thu hồi chứng chỉ cho từng client**, nên hạ tầng quản lý chứng chỉ phải tự động.
+
+### Hết hạn, thu hồi, và vì sao chứng chỉ ngắn dần
+
+Chứng chỉ lá của `example.com` chỉ sống **90 ngày**. Hạn sử dụng ngắn là có chủ ý và đang ngắn dần (Let's Encrypt dùng 90 ngày; xu hướng của CA/Browser Forum đi tới thời hạn ngắn hơn nữa): vì **thu hồi (revocation) hoạt động kém**. Hai cơ chế thu hồi chính:
+
+- **CRL** (Certificate Revocation List): CA công bố danh sách số serial đã bị thu hồi; client tải về. Danh sách lớn, chậm.
+- **OCSP**: client hỏi CA trực tuyến "chứng chỉ này còn hiệu lực không?". Nhưng mỗi lần kết nối thì thêm một RTT, lộ cho CA biết bạn vào site nào, và nếu CA không trả lời thì trình duyệt thường **cho qua** (soft-fail), nên kẻ tấn công chỉ cần chặn OCSP. **OCSP stapling**: server tự hỏi OCSP định kỳ và đính kèm câu trả lời có chữ ký vào handshake, giải quyết hai vấn đề đầu.
+
+Vì thu hồi không tin cậy, chứng chỉ sống ngắn là cách để một khoá bị lộ chỉ gây hại trong vài tuần. Nhưng chứng chỉ ngắn chỉ khả thi khi **việc gia hạn hoàn toàn tự động**, và đó là việc của ACME.
+
+### ACME và Let's Encrypt
+
+**ACME** (RFC 8555) là giao thức để máy tự lấy chứng chỉ mà không cần con người. Client (`certbot`, `acme.sh`, Caddy, Traefik, cert-manager) chứng minh với CA rằng nó **kiểm soát tên miền** bằng một thử thách:
+
+| Thử thách | Cách chứng minh | Hợp với |
+|---|---|---|
+| **HTTP-01** | đặt một file có nội dung CA cho tại `http://<tên>/.well-known/acme-challenge/<token>` | một web server công khai, không wildcard |
+| **DNS-01** | tạo bản ghi `TXT` tại `_acme-challenge.<tên>` có giá trị CA cho (xem bài [DNS](/docs/networking/dns)) | chứng chỉ **wildcard**, server không công khai |
+| **TLS-ALPN-01** | trả một chứng chỉ đặc biệt qua ALPN trên cổng 443 | khi chỉ mở cổng 443 |
+
+Vì chỉ chủ của tên miền mới đặt được file hay bản ghi DNS đó, CA tin rằng người yêu cầu có quyền với tên. Let's Encrypt cấp chứng chỉ miễn phí và đã làm HTTPS gần như phổ biến toàn Web. Nên **đặt cron/timer gia hạn sớm** (thường khi còn 30 ngày), và **giám sát hạn chứng chỉ**: chứng chỉ hết hạn là nguyên nhân gây sự cố "ngừng dịch vụ" ngớ ngẩn thường gặp nhất, ngay cả ở các công ty lớn.
+
+## Chọn thuật toán
+
+TLS 1.3 thu gọn lựa chọn về một tập nhỏ đã được kiểm chứng. Máy thí nghiệm hỗ trợ ba cipher suite TLS 1.3:
+
+```text
+TLS_AES_256_GCM_SHA384         TLSv1.3 Kx=any      Au=any   Enc=AESGCM(256)            Mac=AEAD
+TLS_CHACHA20_POLY1305_SHA256   TLSv1.3 Kx=any      Au=any   Enc=CHACHA20/POLY1305(256) Mac=AEAD
+TLS_AES_128_GCM_SHA256         TLSv1.3 Kx=any      Au=any   Enc=AESGCM(128)            Mac=AEAD
+```
+
+Cột `Kx=any, Au=any` nói lên điểm khác với TLS 1.2: tên cipher suite **không còn chứa** thuật toán trao đổi khoá và xác thực, vì chúng được chọn riêng ở các extension (`supported_groups`, `signature_algorithms`). Cipher suite chỉ còn là **AEAD cộng hash của HKDF**.
+
+| Quyết định | Lựa chọn thực tế | Vì sao |
+|---|---|---|
+| Mã hoá dữ liệu | AES-GCM nếu CPU có lệnh AES (gần như mọi CPU hiện đại); **ChaCha20-Poly1305** nếu không (điện thoại cũ) | cả hai an toàn; ChaCha20 nhanh trên phần cứng không có AES-NI |
+| Trao đổi khoá | **X25519** | nhanh, khoá nhỏ (32 byte), thiết kế khó cài sai; P-256 là lựa chọn thay thế; đang thêm lai hậu lượng tử (X25519 kèm ML-KEM) |
+| Khoá chứng chỉ | **ECDSA P-256** hoặc RSA 2048 | ECDSA: chứng chỉ và chữ ký nhỏ hơn, nhanh hơn; RSA vẫn rộng rãi nhất về tương thích |
+| Phiên bản tối thiểu | TLS 1.2, ưu tiên 1.3 | TLS 1.0 và 1.1 đã lỗi thời |
+
+## So sánh TLS 1.2 và 1.3
+
+| | TLS 1.2 | TLS 1.3 |
+|---|---|---|
+| Số vòng bắt tay | 2 RTT | **1 RTT** (0 RTT khi resume) |
+| Trao đổi khoá | RSA hoặc (EC)DHE, tuỳ cipher suite | **chỉ (EC)DHE tạm thời** (forward secrecy bắt buộc) |
+| Cipher | nhiều: CBC, RC4, AEAD... | chỉ AEAD |
+| Chứng chỉ khi truyền | **rõ** (ai cũng thấy site nào) | **mã hoá** (chỉ SNI còn rõ) |
+| Nén, thương lượng lại (renegotiation) | có (nguồn của CRIME và nhiều lỗi) | **bỏ** |
+| Số cipher suite chuẩn | hàng chục | 5 |
+| Chống hạ cấp | yếu hơn | `Finished` ký cả transcript; server nhúng dấu hiệu trong `random` |
+
+## Các lỗi cấu hình và tấn công hay gặp
+
+- **Chứng chỉ hết hạn**: nguyên nhân số một của sự cố. Triệu chứng: mọi client đột ngột lỗi `certificate has expired`. Phòng: tự động gia hạn và cảnh báo khi còn dưới 14 ngày.
+- **Thiếu chứng chỉ trung gian**: server chỉ gửi chứng chỉ lá mà quên chuỗi. Trình duyệt hay "chữa cháy" bằng cách tự tải intermediate từ trường AIA nên bạn thấy chạy tốt, nhưng `curl`, ứng dụng di động, và code Java/Python **thất bại** với `unable to get local issuer certificate` (chính thông báo đã gặp ở phần tự dựng CA). Server phải gửi **đầy đủ chuỗi** (chứng chỉ lá và intermediate, không gồm root). Khi "trình duyệt vào được mà API gọi lỗi" thì nghi ngay điều này.
+- **Sai tên (SAN)**: chứng chỉ cấp cho `example.com` nhưng gọi bằng `www.example.com` hay bằng địa chỉ IP. Wildcard `*.example.com` chỉ phủ **một cấp** (`a.example.com`, không phủ `a.b.example.com`) và không phủ chính `example.com`.
+- **Tắt kiểm chứng trong code** (`verify=False`, `InsecureSkipVerify`, `-k` của curl): mã hoá mà không xác thực, tức mở cửa cho man-in-the-middle. Nếu chứng chỉ riêng là vấn đề, **thêm CA của bạn vào kho tin cậy** như bước `--cacert` ở trên.
+- **Hạ cấp và thương lượng yếu**: bật TLS 1.0 hay các cipher cũ vì "tương thích". Hãy dùng cấu hình khuyến nghị của Mozilla và công cụ kiểm tra như `testssl.sh`, SSL Labs.
+- **Lỗi cài đặt, không phải lỗi giao thức**: **Heartbleed** (2014) là lỗi đọc tràn bộ đệm trong phần mở rộng heartbeat của OpenSSL, cho phép đọc vùng nhớ của server (kể cả khoá riêng), mà giao thức không hề sai. Bài học: TLS an toàn tới đâu còn tuỳ **thư viện** và việc cập nhật nó.
+- **Kết thúc TLS ở load balancer**: thường kết thúc TLS ở LB rồi chuyển HTTP thường vào trong. Nhanh và tập trung, nhưng đoạn từ LB tới backend **không được bảo vệ**: trong mạng không tin cậy hoặc môi trường cloud chung, nên **mã hoá lại** (re-encrypt, thậm chí mTLS) tới backend.
+- **HSTS** và `Secure` cookie (xem bài [HTTP](/docs/networking/http)): không có chúng thì trình duyệt lần đầu vào bằng `http://` có thể bị chặn đường và hạ cấp (SSL stripping).
+
+## Quan sát và chẩn đoán
+
+```bash
+openssl s_client -connect example.com:443 -servername example.com            # handshake, chuỗi chứng chỉ, kết quả kiểm chứng
+openssl s_client -connect example.com:443 -servername example.com -tls1_3 -msg    # từng message của handshake
+openssl s_client -connect example.com:443 -servername example.com -showcerts  # in cả chuỗi dạng PEM
+openssl s_client -connect example.com:443 -servername example.com -tls1_2 </dev/null   # thử một phiên bản cụ thể
+echo | openssl s_client -connect example.com:443 -servername example.com 2>/dev/null | openssl x509 -noout -subject -issuer -dates -ext subjectAltName
+openssl verify -CAfile ca.pem server.pem                                     # kiểm chuỗi cục bộ
+curl -v https://example.com                                                  # dòng "SSL connection using TLSv1.3 / ..." và thông tin chứng chỉ
+curl -sS -o /dev/null -w '%{ssl_verify_result} %{time_appconnect}\n' https://example.com   # 0 là kiểm chứng thành công
+```
+
+`-servername` rất quan trọng: thiếu nó, `openssl s_client` không gửi SNI và với server dùng chung IP (CDN, hosting) bạn nhận **chứng chỉ mặc định** của server, không phải chứng chỉ của tên miền bạn muốn kiểm. Đó là nguồn gây hiểu nhầm "sao chứng chỉ không khớp" khi gỡ lỗi. Để kiểm tra cấu hình toàn diện, dùng `testssl.sh` hoặc dịch vụ SSL Labs; để xem hạn chứng chỉ hàng loạt, dùng một giám sát (Prometheus `blackbox_exporter` có `probe_ssl_earliest_cert_expiry`).
+
+Trình duyệt hiện thông tin tương tự qua biểu tượng ổ khoá → chi tiết chứng chỉ, và tab **Security** của DevTools.
+
+| Triệu chứng | Hướng kiểm tra |
+|---|---|
+| `certificate has expired` / `NET::ERR_CERT_DATE_INVALID` | chứng chỉ lá hết hạn, hoặc **đồng hồ máy client sai** (kiểm cả hai) |
+| `unable to get local issuer certificate` | server thiếu chứng chỉ trung gian, hoặc client thiếu CA (môi trường nội bộ dùng CA riêng) |
+| `no alternative certificate subject name matches` / `ERR_CERT_COMMON_NAME_INVALID` | tên truy cập không có trong SAN; wildcard không phủ cấp đó |
+| `self-signed certificate` | chứng chỉ tự ký, không dẫn tới root nào đáng tin |
+| `tlsv1 alert protocol version` / `handshake failure` | hai bên không có chung phiên bản hoặc cipher (client quá cũ, hay server tắt phiên bản) |
+| `tlsv13 alert certificate required` hoặc lỗi 55/56 ở mTLS | server đòi chứng chỉ client mà client không gửi hoặc không hợp lệ |
+| Hoạt động trong trình duyệt nhưng `curl` hay Java lỗi chứng chỉ | gần như chắc chắn thiếu intermediate trong chuỗi server gửi |
+| Handshake chậm dù mạng nhanh | chuỗi chứng chỉ dài, OCSP không stapling và client đi hỏi trực tiếp, hoặc RTT lớn (đếm RTT theo bảng ở trên) |
+| Kết nối OK nhưng thấy `http://` bên trong trang HTTPS bị chặn (mixed content) | tài nguyên con vẫn tải bằng `http://`; đổi sang `https://` |
+
+## Lưu ý
+
+- **TLS bảo vệ đường truyền, không phải ứng dụng.** HTTPS không làm site hết lỗi SQL injection hay XSS; nó chỉ bảo đảm không ai nghe lén hay sửa dữ liệu giữa client và điểm kết thúc TLS.
+- **Mã hoá không có xác thực là vô dụng.** Kẻ man-in-the-middle cũng có thể "mã hoá" với bạn. Mọi giá trị của TLS đến từ việc kiểm chứng chứng chỉ; **đừng bao giờ tắt kiểm chứng** trong code thật.
+- **Không bao giờ dùng lại nonce với cùng một khoá AEAD.** Một lần lặp là lộ quan hệ giữa các bản rõ (và với GCM còn lộ khoá xác thực). Dùng thư viện đã chuẩn hoá và để nó quản lý nonce.
+- **Forward secrecy là lý do để dùng (EC)DHE tạm thời.** Khoá riêng của chứng chỉ chỉ dùng để ký; lộ nó không làm lộ các phiên cũ. Cấu hình còn RSA key exchange là cấu hình lỗi thời.
+- **Chứng chỉ sống ngắn và tự động gia hạn.** Thu hồi hoạt động kém, nên ngắn là bảo vệ tốt hơn. Giám sát hạn chứng chỉ vì nó là nguyên nhân sự cố ngớ ngẩn nhất.
+- **Gửi đủ chuỗi chứng chỉ (lá và intermediate, không gồm root).** "Trình duyệt vào được" không chứng minh chuỗi đủ.
+- **SNI vẫn rõ trong TLS 1.3**: nhà mạng thấy tên site bạn vào. Chỉ ECH mới che được, nên đừng nói "HTTPS giấu hết".
+- **0-RTT là đánh đổi.** Chỉ dùng với request an toàn để lặp lại; mặc định hãy tắt hoặc giới hạn cho `GET`.
+- **Wildcard chỉ phủ một cấp**, không phủ chính tên trần. Cấp chứng chỉ có cả `example.com` và `*.example.com`.
+- **TLS chấm dứt ở load balancer thì đoạn sau đó là HTTP thường.** Mã hoá lại, hoặc dùng mTLS, nếu mạng nội bộ không đáng tin.
+- **`-servername` khi dùng `openssl s_client`.** Thiếu SNI sẽ nhận chứng chỉ mặc định và dẫn tới kết luận sai.

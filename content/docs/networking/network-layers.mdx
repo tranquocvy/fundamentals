@@ -1,0 +1,524 @@
+---
+title: OSI & TCP/IP Model
+description: Vì sao mạng được chia tầng, mô hình OSI và TCP/IP khác nhau thế nào, một gói tin được bọc qua từng lớp header ra sao (bóc từng byte của một khung thật), cùng Ethernet, ARP, MTU và phân mảnh, và đường đi của một lần send() từ ứng dụng tới dây.
+status: draft
+tags: [networking, fundamentals]
+authors: [tranquocvy]
+references:
+  - title: "Kurose & Ross, Computer Networking: A Top-Down Approach — Chapter 1: Computer Networks and the Internet"
+    kind: book
+    note: tầng giao thức, encapsulation, delay và throughput; Chapter 6 cho tầng link, Ethernet, ARP, switch
+  - title: "Stanford CS144 — Introduction to Computer Networking"
+    url: https://cs144.github.io/
+    kind: web
+    note: bài giảng về mô hình tầng và nguyên lý end-to-end
+  - title: "RFC 1122 — Requirements for Internet Hosts: Communication Layers"
+    url: https://www.rfc-editor.org/rfc/rfc1122
+    kind: web
+    note: định nghĩa chính thức các tầng của TCP/IP (mục 1.1.3)
+  - title: "RFC 826 — An Ethernet Address Resolution Protocol"
+    url: https://www.rfc-editor.org/rfc/rfc826
+    kind: web
+  - title: "RFC 1191 — Path MTU Discovery"
+    url: https://www.rfc-editor.org/rfc/rfc1191
+    kind: web
+  - title: "Saltzer, Reed, Clark — End-to-End Arguments in System Design"
+    url: https://web.mit.edu/Saltzer/www/publications/endtoend/endtoend.pdf
+    kind: paper
+    note: lý do IP chỉ làm best effort và để độ tin cậy cho đầu cuối
+  - title: "Linux kernel documentation — Networking: sk_buff and scaling"
+    url: https://docs.kernel.org/networking/index.html
+    kind: web
+    note: đường đi của gói tin trong kernel, offload và NAPI
+---
+
+## Ý chính
+
+Một lần mở trang web kéo theo hàng chục vấn đề rất khác nhau: tín hiệu điện hay sóng radio chạy thế nào trên dây hay Wi-Fi, hai máy cạnh nhau tìm nhau ra sao, gói tin đi qua hàng chục router tới đúng nước khác thế nào, dữ liệu mất thì ai gửi lại, và `GET /index.html` nghĩa là gì. Nếu viết một chương trình giải tất cả cùng lúc thì không ai làm nổi.
+
+Cách mạng máy tính giải quyết là **chia tầng (layering)**: mỗi tầng giải đúng một bài toán, dựa vào dịch vụ của tầng ngay dưới, và cung cấp dịch vụ cho tầng ngay trên. Tầng trên không cần biết tầng dưới làm thế nào, chỉ cần biết nó **hứa** điều gì. Nhờ vậy Wi-Fi thay Ethernet mà trình duyệt không phải sửa, và HTTP chạy được trên cả TCP lẫn QUIC.
+
+Kỹ thuật chạy được ý tưởng này gọi là **<Term>encapsulation</Term>** (đóng gói): khi đi xuống, mỗi tầng gói dữ liệu của tầng trên vào bên trong gói của mình, thêm một **header** chứa thông tin riêng. Phía nhận làm ngược lại, bóc từng lớp. Bài này mở một gói tin thật ra, đếm từng byte header của từng lớp, rồi đi tiếp vào các câu hỏi mà mô hình tầng đặt ra ở lớp dưới cùng: cách hai máy trong cùng một mạng tìm nhau (Ethernet và ARP), vì sao gói tin có kích thước tối đa (MTU, phân mảnh), và đường đi của dữ liệu trong máy từ lệnh `send()` tới dây.
+
+Mọi output trong bài lấy từ máy Linux (WSL2): khung được bắt từ interface bằng raw socket và tự giải mã bằng Python, và hai ví dụ tự dựng gói bằng `struct`. Các tầng trên (IP, TCP, DNS, HTTP) có bài riêng, bài này chỉ đủ để thấy chúng nằm ở đâu.
+
+## Vì sao phải chia tầng
+
+Chia tầng không phải chỉ để dễ giảng. Nó mang lại các tính chất cụ thể:
+
+| Tính chất | Nghĩa là | Ví dụ |
+|---|---|---|
+| **Thay thế độc lập** | đổi một tầng mà không đụng tầng khác, miễn giữ giao diện | Ethernet sang Wi-Fi, IPv4 sang IPv6, TCP sang QUIC |
+| **Giấu chi tiết** | tầng trên không cần biết tầng dưới có bao nhiêu router, loại cáp nào | `connect()` chạy cùng một cách qua cáp quang hay 4G |
+| **Chuẩn hoá điểm nối** | chỉ cần thống nhất định dạng ở ranh giới | router của hãng nào cũng đọc được header IP |
+| **Phân việc** | mỗi tầng tối ưu một việc | chuyên gia mạng vật lý không cần biết HTTP |
+
+Giá của chia tầng: **header cộng dồn** (bảng bên dưới), có những tối ưu cần xuyên qua nhiều tầng mà mô hình không cho phép làm gọn (TCP cần biết về Wi-Fi mất gói để khỏi hiểu nhầm là nghẽn), và có chức năng bị lặp lại ở nhiều tầng (kiểm lỗi có ở Ethernet, IP, TCP).
+
+### Hình đồng hồ cát
+
+Mọi thứ trên Internet đều hội tụ ở **một** giao thức duy nhất ở giữa: IP.
+
+```text
+        HTTP   SMTP   DNS   SSH   gRPC   ...   (hàng nghìn ứng dụng)
+          └──────┴──────┼──────┴──────┘
+              TCP       UDP       QUIC             (vài giao thức transport)
+                └─────────┼─────────┘
+                         IP                        (MỘT giao thức: eo của đồng hồ cát)
+                └─────────┼─────────┘
+        Ethernet   Wi-Fi   4G/5G   cáp quang   ... (hàng chục công nghệ link)
+```
+
+Chính vì "eo" hẹp mà một ứng dụng mới (chỉ cần chạy được trên IP) và một công nghệ đường truyền mới (chỉ cần chở được IP) đều hoà vào Internet mà không cần xin phép ai. Mặt trái: eo khó thay, nên IPv6 mất hơn 25 năm để phổ biến.
+
+### Nguyên lý end-to-end
+
+IP chỉ hứa "cố gắng chuyển gói" (best effort), không đảm bảo tới nơi, không đảm bảo thứ tự. Đó là quyết định có chủ ý, theo bài báo kinh điển "End-to-End Arguments" (1984): những chức năng chỉ **đúng** khi làm ở hai đầu (độ tin cậy, mã hoá, toàn vẹn) thì không nên bắt mọi router ở giữa làm hộ, vì các router đó dù làm cũng không đủ, hai đầu vẫn phải kiểm tra lại. Giữ mạng lõi đơn giản, đẩy trí thông minh ra rìa: đó là lý do TCP chạy ở máy hai đầu, không phải trong router.
+
+## OSI và TCP/IP
+
+Có hai mô hình tầng hay được nhắc:
+
+| OSI (7 tầng) | TCP/IP (4 tầng) | Đơn vị dữ liệu | Địa chỉ | Việc chính | Ví dụ |
+|---|---|---|---|---|---|
+| 7. Application | Application | message | | giao thức của ứng dụng | HTTP, DNS, SMTP, SSH |
+| 6. Presentation | (gộp vào Application) | | | định dạng, mã hoá, nén | TLS (thực tế nằm giữa 4 và 7) |
+| 5. Session | (gộp vào Application) | | | quản lý phiên | (ít khi tách thành lớp riêng) |
+| 4. Transport | Transport | segment (TCP), datagram (UDP) | port | giao tiếp giữa **tiến trình**, độ tin cậy | TCP, UDP, QUIC |
+| 3. Network | Internet | packet | địa chỉ IP | chuyển gói giữa các **mạng**, chọn đường | IP, ICMP, router |
+| 2. Data Link | Link | frame | địa chỉ MAC | chuyển khung giữa các máy **cùng một mạng cục bộ** | Ethernet, Wi-Fi, ARP, switch |
+| 1. Physical | | bit | | tín hiệu trên môi trường truyền | cáp đồng, cáp quang, sóng radio |
+
+Hai điều nên nhớ về mối quan hệ giữa chúng:
+
+- **OSI là mô hình tham chiếu** do ISO soạn năm 1984 để làm khung chung; các giao thức OSI "thật" gần như không ai dùng. **TCP/IP là thứ thực sự chạy**; các tầng của nó mô tả giao thức đã tồn tại. Nhiều sách chia TCP/IP thành 5 tầng (tách Link và Physical), cũng là cách bài này dùng.
+- OSI 5 và 6 không tồn tại như tầng riêng trong thực tế. TLS không nằm gọn ở tầng nào: nó chạy trên TCP và dưới HTTP, nên người ta xếp "ở giữa". Đừng mất thời gian tranh luận TLS thuộc tầng 5, 6 hay 7.
+
+Lý do vẫn phải thuộc số tầng OSI: ngành này dùng chúng làm **tiếng lóng**. "Load balancer L4" cân bằng theo (IP, port) mà không đọc nội dung (xem được TCP, không xem được HTTP). "Load balancer L7" đọc HTTP nên có thể định tuyến theo đường dẫn URL hay header. "Firewall L3" lọc theo IP. "Switch L2" làm việc với MAC; "switch L3" cũng định tuyến được. Biết từng con số tương ứng việc gì là đủ để đọc tài liệu kỹ thuật.
+
+## Encapsulation: mở một gói tin thật
+
+Đoạn dưới mở một kết nối TCP tới `example.com:80`, gửi một request HTTP, và bắt đúng khung chứa request đó ở interface ra ngoài. Đây là lớp bóc tách (`layers`), chạy trên Linux với quyền root:
+
+```python
+"""Bắt khung Ethernet trên một interface và bóc từng lớp."""
+import socket, struct, time, threading
+
+def mac(b): return ':'.join('%02x' % x for x in b)
+
+def layers(f):
+    """Trả về danh sách (tên lớp, số byte header, mô tả)."""
+    out = []
+    dst, src, et = f[0:6], f[6:12], struct.unpack('!H', f[12:14])[0]
+    out.append(('Ethernet', 14, f'dst={mac(dst)} src={mac(src)} type=0x{et:04x}'))
+    p = f[14:]
+    if et == 0x0806:
+        op, = struct.unpack('!H', p[6:8])
+        out.append(('ARP', 28, f"{'request' if op==1 else 'reply'} sender={mac(p[8:14])}/{socket.inet_ntoa(p[14:18])} target={mac(p[18:24])}/{socket.inet_ntoa(p[24:28])}"))
+        return out
+    if et != 0x0800: return out
+    vihl, tos, tot, ident, ff, ttl, proto, ck = struct.unpack('!BBHHHBBH', p[:12])
+    ihl = (vihl & 15) * 4
+    flags, off = ff >> 13, (ff & 0x1FFF) * 8
+    fl = ('DF ' if flags & 2 else '') + ('MF' if flags & 1 else '')
+    out.append(('IPv4', ihl, f"{socket.inet_ntoa(p[12:16])} → {socket.inet_ntoa(p[16:20])} ttl={ttl} proto={proto} total={tot} id={ident} flags={fl.strip() or '-'} offset={off}"))
+    q = p[ihl:tot]
+    if off: out.append(('(mảnh)', 0, f'{len(q)} byte dữ liệu, không có header tầng trên')); return out
+    if proto == 6:
+        sp, dp, seq, ack, o, fl2, win = struct.unpack('!HHIIBBH', q[:16]); hl = (o >> 4) * 4
+        names = ''.join(c for m, c in ((2,'S'),(16,'.'),(8,'P'),(1,'F'),(4,'R')) if fl2 & m)
+        out.append(('TCP', hl, f'{sp} → {dp} [{names}] win={win} len={len(q)-hl}'))
+        if len(q) > hl: out.append(('payload', 0, repr(bytes(q[hl:hl+60]))))
+    elif proto == 17:
+        sp, dp, ln, _ = struct.unpack('!HHHH', q[:8])
+        out.append(('UDP', 8, f'{sp} → {dp} len={ln}'))
+        if len(q) > 8: out.append(('payload', 0, repr(bytes(q[8:8+40]))))
+    elif proto == 1:
+        t, c = q[0], q[1]
+        out.append(('ICMP', 8, f"type={t} code={c} ({ {0:'echo reply',8:'echo request',3:'unreachable',11:'time exceeded'}.get(t,'?') })"))
+    return out
+
+class Sniffer:
+    def __init__(self, iface, want=None):
+        # ETH_P_ALL = 3: nhận mọi khung; AF_PACKET trả khung Ethernet nguyên vẹn
+        self.s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(3)); self.s.bind((iface, 0)); self.s.settimeout(0.2)
+        self.frames, self.run, self.want = [], True, want
+        self.t = threading.Thread(target=self.loop, daemon=True); self.t.start()
+    def loop(self):
+        while self.run:
+            try: f, m = self.s.recvfrom(65535)
+            except socket.timeout: continue
+            if len(f) >= 14 and (self.want is None or self.want(f, m)): self.frames.append((time.perf_counter(), m[2], f))
+    def stop(self): time.sleep(0.3); self.run = False; self.t.join()
+
+def show(f):
+    print(f'khung {len(f)} byte')
+    for name, hl, desc in layers(f):
+        print(f'  {name:<9} {hl:>3} byte  {desc}')
+```
+
+```python
+import socket
+from frames import *
+def want(f, m):          # m[2] == 4 là PACKET_OUTGOING: chỉ lấy khung đi ra, và chỉ khung có "GET"
+    return m[2] == 4 and f[12:14] == b'\x08\x00' and f[23] == 6 and b'GET' in f[54:70]
+sn = Sniffer('eth0', want)
+s = socket.create_connection(('example.com', 80), timeout=5)
+s.sendall(b'GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n')
+s.recv(100); s.close(); sn.stop()
+t, _, f = sn.frames[0]
+show(f)
+print(f.hex(' '))
+```
+
+```text
+khung 122 byte
+  Ethernet   14 byte  dst=00:15:5d:19:ba:9a src=00:15:5d:5a:68:ef type=0x0800
+  IPv4       20 byte  172.26.98.86 → 172.66.147.243 ttl=64 proto=6 total=108 id=636 flags=DF offset=0
+  TCP        32 byte  33458 → 80 [.P] win=504 len=56
+  payload     0 byte  b'GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n'
+```
+
+Một request HTTP dài 56 byte, và khung chứa nó dài **122 byte**: 14 byte Ethernet, 20 byte IPv4, 32 byte TCP (20 cơ bản cộng 12 byte option timestamp), cộng 56 byte dữ liệu. Hình dung như phong bì lồng trong phong bì:
+
+```text
+┌──────────┬──────────┬───────────────┬──────────────────────────────┐
+│ Ethernet │   IPv4   │      TCP      │  HTTP request (56 byte)      │
+│  14 byte │  20 byte │    32 byte    │                              │
+└──────────┴──────────┴───────────────┴──────────────────────────────┘
+  link         network      transport              application
+  MAC          IP           port
+```
+
+Hex của 66 byte đầu tiên, tách theo lớp:
+
+```text
+Ethernet (14):
+  00 15 5d 19 ba 9a      địa chỉ MAC đích: router mặc định (next hop), KHÔNG phải example.com
+  00 15 5d 5a 68 ef      địa chỉ MAC nguồn: card mạng của máy này
+  08 00                  EtherType: payload là IPv4
+
+IPv4 (20):
+  45                     version 4, header dài 5 từ × 4 = 20 byte
+  00                     DSCP/ECN (không dùng)
+  00 6c                  tổng độ dài gói IP = 108 (20 + 32 + 56)
+  02 7c                  Identification = 636 (dùng khi phân mảnh)
+  40 00                  flags = DF (không được phân mảnh), fragment offset = 0
+  40                     TTL = 64
+  06                     protocol = 6 (TCP)
+  e9 69                  checksum của header
+  ac 1a 62 56            IP nguồn  172.26.98.86
+  ac 42 93 f3            IP đích   172.66.147.243
+
+TCP (32):
+  82 b2   00 50          cổng nguồn 33458, cổng đích 80
+  35 7d 19 0a            sequence number
+  d7 ed 77 16            acknowledgment number
+  80 18                  data offset = 8 từ (32 byte); flags = PSH + ACK
+  01 f8                  window = 504 (nhân với hệ số scale đã thương lượng)
+  4f 05   00 00          checksum, urgent pointer
+  01 01 08 0a  74 09 98 9b  04 a1 2d cb      option: NOP, NOP, Timestamp (gửi, và echo)
+```
+
+Điều đáng chú ý nhất là **hai loại địa chỉ khác nhau trong cùng một khung**. IP đích là `172.66.147.243` (example.com, đích cuối cùng, không đổi suốt hành trình). MAC đích là `00:15:5d:19:ba:9a` (router **kế tiếp**, chỉ có nghĩa trên đoạn mạng này). Qua mỗi router, header Ethernet bị bóc và dựng lại với MAC mới, còn header IP chỉ đổi TTL và checksum. Đó là phân công giữa hai tầng: **IP quyết định gói đi tới đâu, Ethernet chỉ chuyển nó được một bước**.
+
+### Chi phí của header
+
+Mọi tầng đều thêm byte, và với dữ liệu nhỏ thì phần thêm đó lấn át phần có ích. Trên đường dây vật lý còn có thêm preamble (8 byte), FCS (4 byte) và khoảng cách giữa các khung (12 byte). Ethernet còn đệm cho đủ tối thiểu 46 byte payload. Bảng tính từ mô hình đó:
+
+```python
+ETH, FCS, PRE, IFG, IP, TCP, UDP = 14, 4, 8, 12, 20, 20, 8
+def wire(payload, l4):
+    body = max(46, IP + l4 + payload)                 # Ethernet đệm cho đủ 46 byte
+    return PRE + ETH + body + FCS + IFG, body
+print(f"{'payload':>8} {'giao thức':<5} {'byte trên dây':>14} {'hiệu suất':>10}")
+for p in (1, 18, 100, 512, 1460):
+    for name, l4 in (('TCP', TCP), ('UDP', UDP)):
+        if name == 'UDP' and p == 1460: p2 = 1472
+        else: p2 = p
+        w, _ = wire(p2, l4); print(f"{p2:>8} {name:<5} {w:>14} {p2/w*100:>9.1f}%")
+```
+
+```text
+ payload giao thức  byte trên dây  hiệu suất
+       1 TCP               84       1.2%
+       1 UDP               84       1.2%
+      18 TCP               96      18.8%
+      18 UDP               84      21.4%
+     100 TCP              178      56.2%
+     100 UDP              166      60.2%
+     512 TCP              590      86.8%
+     512 UDP              578      88.6%
+    1460 TCP             1538      94.9%
+    1472 UDP             1538      95.7%
+```
+
+Gửi 1 byte dữ liệu tốn **84 byte** trên dây, hiệu suất 1,2%. Gửi 1460 byte thì 94,9%. (Con số tính không kể option TCP; có timestamp thì thêm 12 byte.) Đây là lý do thiết kế giao thức hay gom nhiều dữ liệu vào một gói, và là một lý do của thuật toán Nagle (bài [TCP vs UDP](/docs/networking/tcp-vs-udp)): gõ từng phím mà mỗi phím thành một gói thì 98% băng thông là header.
+
+### Tự dựng tầng 3 và 4
+
+Cách chắc chắn nhất để thấy các tầng chỉ là byte có quy ước là tự dựng chúng. Đoạn dưới viết tay header IPv4 và UDP (kể cả hai checksum) rồi gửi qua một raw socket với `IP_HDRINCL`. Một socket UDP **bình thường** ở phía bên kia nhận được dữ liệu mà không biết gói được dựng thủ công:
+
+```python
+import socket, struct
+def csum(b):
+    if len(b) % 2: b += b'\0'
+    s = sum(struct.unpack('!%dH' % (len(b)//2), b))
+    while s >> 16: s = (s & 0xFFFF) + (s >> 16)          # cộng bù một
+    return ~s & 0xFFFF
+payload = b'xin chao tu tang 3'
+src = dst = socket.inet_aton('127.0.0.1')
+udp_len = 8 + len(payload)
+pseudo = src + dst + struct.pack('!BBH', 0, 17, udp_len)   # pseudo-header cho checksum UDP
+udp = struct.pack('!HHHH', 5555, 9200, udp_len, 0) + payload
+udp = udp[:6] + struct.pack('!H', csum(pseudo + udp)) + udp[8:]
+ip = struct.pack('!BBHHHBBH', 0x45, 0, 20 + len(udp), 1, 0x4000, 64, 17, 0) + src + dst
+ip = ip[:10] + struct.pack('!H', csum(ip)) + ip[12:]
+print(len(ip + udp), 'byte =', len(ip), '(IPv4) +', len(udp), '(UDP)')
+rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); rx.bind(('127.0.0.1', 9200)); rx.settimeout(2)
+raw = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)     # IP_HDRINCL ngầm định
+raw.sendto(ip + udp, ('127.0.0.1', 0))
+print('socket UDP bình thường nhận được:', rx.recvfrom(100))
+```
+
+```text
+46 byte = 20 (IPv4) + 26 (UDP)
+socket UDP bình thường nhận được: (b'xin chao tu tang 3', ('127.0.0.1', 5555))
+```
+
+Cổng nguồn 5555 ta tự bịa ra, và phía nhận thấy đúng như vậy. Kernel kiểm tra header checksum và UDP checksum; nếu viết sai một byte, gói bị bỏ **không báo lỗi** (thử sửa `0x4000` thành giá trị lạ hay đổi checksum để thấy). Hệ quả bảo mật rõ ràng: ai có quyền tạo raw socket (root) viết được địa chỉ nguồn tuỳ ý. Đó là cơ sở của **IP spoofing**, và vì sao nhà mạng lọc gói có địa chỉ nguồn sai (BCP 38).
+
+## Tầng link: Ethernet
+
+Hai máy trong **cùng một mạng cục bộ** (cùng switch, cùng Wi-Fi) nói chuyện bằng khung (frame) của tầng link. Ethernet là công nghệ thống trị. Khung gồm:
+
+| Trường | Kích thước | Ý nghĩa |
+|---|---|---|
+| Preamble + SFD | 8 byte | chuỗi bit để bên nhận đồng bộ xung nhịp (card mạng xử lý, phần mềm không thấy) |
+| MAC đích | 6 byte | địa chỉ phần cứng của máy nhận; `ff:ff:ff:ff:ff:ff` là broadcast |
+| MAC nguồn | 6 byte | |
+| EtherType | 2 byte | loại gói bên trong: `0x0800` IPv4, `0x0806` ARP, `0x86DD` IPv6, `0x8100` có thẻ VLAN |
+| Payload | 46 tới 1500 byte | gói của tầng trên (1500 là **MTU**) |
+| FCS | 4 byte | CRC32 phát hiện lỗi bit; khung lỗi bị card mạng bỏ |
+
+**Địa chỉ MAC** (<Term>MAC address</Term>) dài 48 bit, thường viết dạng `00:15:5d:5a:68:ef`. Ba byte đầu (OUI) là mã nhà sản xuất, ba byte sau do nhà sản xuất gán. Nó **chỉ có nghĩa trong một mạng cục bộ**: không có router nào dùng MAC để chuyển gói qua nhiều mạng. Wi-Fi và 4G có định dạng khung khác nhưng cùng vai trò.
+
+### Switch: học và chuyển tiếp
+
+Thời đầu, cả mạng chung một dây (hub): mọi khung tới mọi máy, ai không phải đích thì bỏ. Switch thông minh hơn: nó **học** máy nào ở cổng nào và chỉ chuyển khung tới đúng cổng. Thuật toán đơn giản tới mức viết được trong 15 dòng:
+
+```python
+class Switch:
+    def __init__(self, ports): self.ports, self.table = ports, {}
+    def receive(self, in_port, src, dst):
+        self.table[src] = in_port                                # 1. học: src nằm sau cổng in_port
+        if dst == 'ff:ff' or dst not in self.table:               # 2. broadcast hoặc chưa biết -> flood
+            out = [p for p in range(self.ports) if p != in_port]; how = 'FLOOD'
+        elif self.table[dst] == in_port:                          # 3. đích cùng cổng nguồn -> bỏ
+            out, how = [], 'DROP'
+        else:
+            out, how = [self.table[dst]], 'UNICAST'
+        print(f'  cổng {in_port}: {src} → {dst:<6} {how:<7} ra cổng {out}   bảng={self.table}')
+
+sw = Switch(4)
+sw.receive(0, 'aa', 'ff:ff')
+sw.receive(1, 'bb', 'aa')
+sw.receive(0, 'aa', 'bb')
+sw.receive(2, 'cc', 'aa')
+sw.receive(0, 'aa', 'cc')
+```
+
+```text
+  cổng 0: aa → ff:ff  FLOOD   ra cổng [1, 2, 3]   bảng={'aa': 0}
+  cổng 1: bb → aa     UNICAST ra cổng [0]   bảng={'aa': 0, 'bb': 1}
+  cổng 0: aa → bb     UNICAST ra cổng [1]   bảng={'aa': 0, 'bb': 1}
+  cổng 2: cc → aa     UNICAST ra cổng [0]   bảng={'aa': 0, 'bb': 1, 'cc': 2}
+  cổng 0: aa → cc     UNICAST ra cổng [2]   bảng={'aa': 0, 'bb': 1, 'cc': 2}
+```
+
+Dòng đầu: `aa` phát broadcast, switch học "`aa` ở cổng 0" rồi flood ra mọi cổng khác. Dòng hai: `bb` trả lời `aa`, switch **đã biết** `aa` ở cổng 0 nên chỉ gửi ra cổng 0, đồng thời học `bb` ở cổng 1. Từ dòng ba trở đi mọi khung đều unicast. Không ai cấu hình gì; bảng tự dựng từ địa chỉ **nguồn** của khung đi qua (và có hạn dùng, thường 5 phút, để máy chuyển cổng vẫn được học lại).
+
+Điều cần nhớ: switch làm việc ở tầng 2, nên **chỉ thấy MAC**, và nó không biết gì về IP. Mọi máy sau switch cùng một **broadcast domain**: một khung broadcast tới tất cả, nên mạng phẳng quá lớn thì broadcast ồn ào. Chia nhỏ bằng VLAN (thẻ 802.1Q thêm 4 byte vào khung) hoặc bằng router (tầng 3).
+
+### ARP: từ IP sang MAC
+
+Ứng dụng chỉ biết IP đích. Nhưng muốn gửi khung Ethernet, card mạng cần **MAC** của bước tiếp theo. **<Term>ARP</Term>** (Address Resolution Protocol) giải bài toán đó bằng cách hỏi cả mạng:
+
+```python
+import subprocess, time
+from frames import *
+sn = Sniffer('eth0', lambda f, m: f[12:14] == b'\x08\x06' or (f[12:14] == b'\x08\x00' and f[23] == 1))
+subprocess.run('ip neigh flush dev eth0', shell=True)          # xoá bảng ARP
+print(subprocess.run('ip neigh show dev eth0', shell=True, capture_output=True, text=True).stdout or '(bảng neighbor rỗng)')
+subprocess.run('ping -c1 -W2 172.26.96.1 >/dev/null', shell=True)   # ping default gateway
+sn.stop()
+for t, k, f in sn.frames[:4]:
+    print('đi ra' if k == 4 else 'đi vào', end=' '); show(f)
+print(subprocess.run('ip neigh show dev eth0', shell=True, capture_output=True, text=True).stdout)
+```
+
+```text
+(bảng neighbor rỗng)
+đi ra khung 42 byte
+  Ethernet   14 byte  dst=ff:ff:ff:ff:ff:ff src=00:15:5d:5a:68:ef type=0x0806
+  ARP        28 byte  request sender=00:15:5d:5a:68:ef/172.26.98.86 target=00:00:00:00:00:00/172.26.96.1
+đi vào khung 42 byte
+  Ethernet   14 byte  dst=00:15:5d:5a:68:ef src=00:15:5d:19:ba:9a type=0x0806
+  ARP        28 byte  reply sender=00:15:5d:19:ba:9a/172.26.96.1 target=00:15:5d:5a:68:ef/172.26.98.86
+đi ra khung 98 byte
+  Ethernet   14 byte  dst=00:15:5d:19:ba:9a src=00:15:5d:5a:68:ef type=0x0800
+  IPv4       20 byte  172.26.98.86 → 172.26.96.1 ttl=64 proto=1 total=84 id=55497 flags=DF offset=0
+  ICMP        8 byte  type=8 code=0 (echo request)
+172.26.96.1 lladdr 00:15:5d:19:ba:9a REACHABLE
+```
+
+Trình tự:
+
+1. Bảng ARP (`ip neigh`) trống, nên trước khi ping được, máy phải biết MAC của `172.26.96.1`.
+2. **ARP request**, MAC đích là **broadcast** (`ff:ff...`): "Ai có IP `172.26.96.1`? Hãy báo MAC cho `172.26.98.86`". Trường target MAC để trống vì chính là thứ cần hỏi. Khung 42 byte, không có header IP: ARP nằm ngay trên Ethernet, không đi qua IP.
+3. **ARP reply**, unicast: "`172.26.96.1` ở MAC `00:15:5d:19:ba:9a`".
+4. Chỉ sau đó mới gửi được gói thật (ICMP echo request, khung 98 byte), và bảng ARP có thêm một dòng, trạng thái `REACHABLE`. Mục này hết hạn sau ít chục giây không dùng.
+
+Chú ý điều ARP **không** làm: máy chỉ ARP cho những IP **cùng mạng con** (hoặc cho router khi đích ở xa). Để gửi tới `172.66.147.243` ở đầu kia Internet, máy ARP hỏi MAC của **default gateway**, và đó chính là MAC đích trong khung bắt ở phần trước. Quyết định "đích cùng mạng hay phải qua router" thuộc về bảng định tuyến, bài [IP & Routing](/docs/networking/ip-routing).
+
+ARP không có xác thực: ai trong mạng cũng gửi được "reply" nói bừa. **ARP spoofing** (nói với nạn nhân rằng IP của router nằm ở MAC của kẻ tấn công) cho phép chen vào giữa lưu lượng trong mạng LAN. Đó là một lý do mã hoá đầu cuối (TLS) cần có ngay cả khi "chỉ trong mạng nội bộ". IPv6 thay ARP bằng NDP chạy trên ICMPv6, cùng ý tưởng.
+
+## MTU và phân mảnh
+
+Mỗi công nghệ link có **MTU** (Maximum Transmission Unit): gói IP lớn nhất nó chở được trong một khung. Ethernet là 1500 byte. Máy trong thí nghiệm này (WSL2) có MTU 1280, nên đo trực tiếp được ranh giới:
+
+```text
+MTU eth0 = 1280
+DF, payload 1252: 1260 bytes from 1.1.1.1: icmp_seq=1 ttl=48 time=44.6 ms
+DF, payload 1253: ping: local error: message too long, mtu=1280
+```
+
+`ping -M do -s N` gửi ICMP với cờ **DF** (Don't Fragment) và `N` byte dữ liệu. Tổng gói IP là N cộng 8 (ICMP) cộng 20 (IP): với 1252 là đúng 1280, vừa khít và qua; thêm 1 byte thành 1281 thì kernel từ chối ngay ("message too long"), vì cờ DF cấm chia nhỏ.
+
+### Phân mảnh
+
+Nếu **không** đặt DF, router (hoặc chính máy gửi) được phép **phân mảnh** gói lớn: cắt thành nhiều gói IP nhỏ, mỗi mảnh có header IP riêng, bên **nhận cuối cùng** mới ghép lại. Ping 3000 byte (không DF) và bắt khung ra:
+
+```text
+khung 1290 byte
+  Ethernet   14 byte  dst=00:15:5d:19:ba:9a src=00:15:5d:5a:68:ef type=0x0800
+  IPv4       20 byte  172.26.98.86 → 1.1.1.1 ttl=64 proto=1 total=1276 id=32329 flags=MF offset=0
+  ICMP        8 byte  type=8 code=0 (echo request)
+khung 1290 byte
+  IPv4       20 byte  172.26.98.86 → 1.1.1.1 ttl=64 proto=1 total=1276 id=32329 flags=MF offset=1256
+  (mảnh)      0 byte  1256 byte dữ liệu, không có header tầng trên
+khung 530 byte
+  IPv4       20 byte  172.26.98.86 → 1.1.1.1 ttl=64 proto=1 total=516 id=32329 flags=- offset=2512
+  (mảnh)      0 byte  496 byte dữ liệu, không có header tầng trên
+```
+
+Ba mảnh, **cùng `id=32329`** (để bên nhận biết chúng thuộc cùng một gói gốc):
+
+- Mảnh 1: `offset=0`, cờ **MF** (More Fragments). Có header ICMP vì nó chứa phần đầu của gói gốc.
+- Mảnh 2: `offset=1256`, vẫn MF. Không có header ICMP: nó chỉ là 1256 byte dữ liệu tiếp theo.
+- Mảnh 3: `offset=2512`, không còn MF, nghĩa là mảnh cuối. 496 byte.
+
+Cộng lại: 1256 + 1256 + 496 = **3008 byte**, đúng bằng 3000 dữ liệu cộng 8 byte header ICMP. Trường offset đếm theo **đơn vị 8 byte** (13 bit), nên mỗi mảnh (trừ mảnh cuối) phải có độ dài chia hết cho 8: MTU 1280 trừ 20 byte header IP còn 1260, làm tròn xuống 1256.
+
+Phân mảnh hoạt động nhưng **rất tệ**:
+
+- **Mất một mảnh là mất cả gói gốc**: bên nhận chờ đủ mảnh, không đủ thì bỏ hết sau vài chục giây. Xác suất mất tăng theo số mảnh. TCP gửi lại **cả** segment lớn, và nếu chính nó gây ra phân mảnh thì lần gửi lại cũng bị phân mảnh và mất tương tự.
+- Mảnh sau **không có header tầng trên** (không có port), nên firewall và NAT không lọc được theo port, và nhiều thiết bị bỏ luôn mảnh.
+- Bên nhận phải giữ bộ nhớ chờ ghép, nên phân mảnh là bề mặt tấn công (tấn công mảnh chồng lấp, teardrop, làm đầy bộ nhớ ghép).
+
+### Path MTU Discovery
+
+Đường đi từ máy tới đích gồm nhiều đoạn, mỗi đoạn có MTU riêng; **MTU nhỏ nhất** dọc đường gọi là **path MTU**. Để gửi gói lớn nhất có thể mà không phân mảnh, host dùng **<Term>Path MTU Discovery</Term>** (PMTUD):
+
+1. Gửi gói với cờ **DF**, kích thước bằng MTU của đoạn đầu.
+2. Router nào gặp đoạn kế tiếp có MTU nhỏ hơn sẽ **bỏ gói và gửi ICMP "Fragmentation Needed"** (type 3, code 4) kèm MTU của đoạn đó.
+3. Host hạ kích thước gói xuống, gửi lại.
+
+TCP làm điều này tự động và chọn **MSS** (Maximum Segment Size) bằng MTU trừ 40 byte header: đó là `mss 1460` ở handshake trên Ethernet (1500 trừ 40) và `mss 1240` nếu MTU là 1280. Nhưng cơ chế mong manh: nhiều firewall **chặn mọi ICMP** vì "ICMP nguy hiểm", nên thông báo "Fragmentation Needed" không bao giờ tới nơi và gói lớn **biến mất không dấu vết**. Triệu chứng kinh điển, gọi là **PMTUD black hole**: kết nối TCP bắt tay được (gói nhỏ), gửi dữ liệu nhỏ được, nhưng treo ngay khi truyền gói đầy kích thước (tải file, TLS handshake với chứng chỉ lớn). Cách sửa: không chặn ICMP type 3 code 4, hoặc **MSS clamping** (router sửa option MSS trong SYN xuống giá trị an toàn). Bật `net.ipv4.tcp_mtu_probing` cho kernel tự dò mà không cần ICMP.
+
+Các môi trường có MTU nhỏ hơn 1500 mà người ta hay quên: PPPoE (ADSL) 1492, VPN và tunnel (mất vài chục byte cho header đường hầm: WireGuard thường 1420, OpenVPN 1500 trừ nhiều hơn), mạng overlay của container (VXLAN 1450), và **AWS VPC** (MTU 9001 trong VPC theo kiểu jumbo frame, nhưng 1500 khi ra Internet). Khi dịch vụ hoạt động bình thường trong nhưng chập chờn qua VPN, kiểm tra MTU đầu tiên.
+
+Với UDP không có PMTUD sẵn trong giao thức, ứng dụng giữ payload dưới khoảng 1200 byte, như đã nói ở bài [TCP vs UDP](/docs/networking/tcp-vs-udp).
+
+## Đường đi của một lần `send()`
+
+Mô hình tầng là sơ đồ. Trong máy thật, các tầng nằm ở những nơi khác nhau:
+
+| Tầng | Nằm ở đâu | Ai làm |
+|---|---|---|
+| Application | process của bạn, user space | thư viện HTTP, code của bạn |
+| TLS | thường trong chính process (OpenSSL, BoringSSL, rustls) | thư viện |
+| Transport (TCP, UDP) | **kernel** | stack mạng của OS |
+| Network (IP, routing, ARP, firewall) | **kernel** | stack mạng của OS, netfilter |
+| Link: driver | kernel | driver của card mạng |
+| Link: phần cứng, Physical | **card mạng** (NIC) | phần cứng |
+
+Khi chương trình gọi `send(fd, data, n)`:
+
+1. **System call** chuyển từ user mode sang kernel (xem [Process vs Thread](/docs/os/process-thread)). Kernel chép dữ liệu vào một **send buffer** của socket rồi trả về cho ứng dụng; bấy nhiêu thôi, chưa gì đi ra dây.
+2. **TCP** cắt dữ liệu thành segment theo MSS và cửa sổ cho phép, thêm header TCP (seq, ack, checksum). Mỗi gói là một cấu trúc `sk_buff` có chừa chỗ trống phía trước, để các tầng dưới chèn header vào **mà không phải chép lại dữ liệu**.
+3. **IP** thêm header IPv4, tra bảng định tuyến để biết đi qua interface nào và next hop là ai. Chạy qua các luật firewall (netfilter).
+4. **ARP / neighbor**: có MAC của next hop trong bảng chưa? Chưa thì giữ gói lại, gửi ARP, chờ.
+5. Tầng link thêm header Ethernet. **qdisc** (hàng đợi gói) quyết định thứ tự gửi (`fq_codel` mặc định ở nhiều bản Linux).
+6. **Driver** đặt mô tả gói vào ring buffer, **NIC** đọc dữ liệu bằng <Term>DMA</Term> từ RAM, thêm FCS, và đẩy bit ra dây.
+
+Phía nhận đi ngược lại: NIC ghi gói vào RAM bằng DMA và gây một **interrupt**; kernel dùng NAPI (chuyển sang polling khi lưu lượng cao để khỏi bị interrupt dồn dập), qua IP, rồi TCP kiểm tra seq và đặt dữ liệu vào **receive buffer** của socket, và đánh thức process đang chờ trong `recv()` hay `epoll_wait()`. Cách I/O hoạt động ở mức thiết bị nằm ở bài [I/O & Devices](/docs/os/io-devices).
+
+### Offload: vì sao `tcpdump` thấy gói 64 KB
+
+Ở bài TCP vs UDP có chỗ gặp khung `len=2896` trên đường Ethernet MTU 1500, lớn hơn MTU. Lý do: để giảm tải CPU, kernel **không cắt** thật theo MTU. Nó đưa cho NIC một "siêu gói" lớn (TSO, TCP Segmentation Offload; GSO là bản phần mềm) và **NIC cắt giúp** thành các khung 1500 byte, tính luôn checksum (checksum offload). Phía nhận, GRO gộp nhiều khung liền nhau thành một gói lớn trước khi đưa lên TCP. Vì `tcpdump` bắt ở trong kernel, **trước** khi NIC cắt, nó thấy siêu gói. Muốn thấy khung thật trên dây thì bắt trên một máy khác, hoặc tắt offload bằng `ethtool -K eth0 tso off gso off gro off` để chẩn đoán. Lỗi "bad checksum" khi `tcpdump` thấy gói đi ra thường là do checksum offload: checksum chưa tính vì NIC sẽ tính, và không phải lỗi thật.
+
+## Thiết bị mạng theo tầng
+
+| Thiết bị | Tầng | Nhìn thấy | Quyết định dựa vào | Ghi chú |
+|---|---|---|---|---|
+| Hub | 1 | tín hiệu | không | lặp lại tới mọi cổng; gần như không còn |
+| Switch | 2 | MAC | bảng MAC | chuyển khung trong một mạng cục bộ |
+| Access point Wi-Fi | 1, 2 | MAC | | cầu nối giữa Wi-Fi và Ethernet |
+| Router | 3 | IP | bảng định tuyến | nối **nhiều mạng**, bóc và dựng lại khung ở mỗi bước |
+| NAT, firewall | 3, 4 | IP, port | bảng trạng thái | sửa hoặc lọc theo (IP, port) |
+| Load balancer L4 | 4 | IP, port | (IP, port) | không đọc nội dung ứng dụng |
+| Load balancer L7, reverse proxy | 7 | HTTP | URL, header | kết thúc kết nối TCP và TLS, mở kết nối mới tới backend (Nginx, Envoy, ALB) |
+
+Router chỉ xử lý tới tầng 3: nó không đọc TCP hay HTTP, và vì thế không thể "biết" bạn đang xem video. Còn proxy ở tầng 7 thì đọc hết. Đó là lý do nó đắt hơn và cũng mạnh hơn.
+
+## Quan sát trên máy thật
+
+```bash
+ip -br addr                    # các interface và địa chỉ IP
+ip link show eth0              # MAC, MTU, trạng thái
+ip -s link show eth0           # bộ đếm: gói nhận/gửi, lỗi, rớt
+ip neigh                       # bảng ARP: IP → MAC và trạng thái
+ip route get 8.8.8.8           # kernel sẽ dùng interface và next hop nào
+ethtool -k eth0                # trạng thái offload (TSO, GRO, checksum)
+sudo tcpdump -nn -e -i eth0    # -e in thêm header Ethernet (MAC)
+ping -M do -s 1472 1.1.1.1     # dò MTU của đường đi: tăng/giảm -s tới ranh giới
+```
+
+Wireshark làm cùng việc với giao diện đồ hoạ: bóc từng lớp giống bảng `layers()` ở trên, rất tiện để học. Hai thao tác đáng làm một lần: mở một file `.pcap` bắt một lần truy cập web, và nhìn ba ngăn của gói (Frame, Ethernet, IP, TCP, HTTP) đối chiếu với hex.
+
+Ánh xạ triệu chứng sang tầng nghi ngờ:
+
+| Triệu chứng | Tầng hay gặp | Cách kiểm tra |
+|---|---|---|
+| Không ping được router của mạng nhà | 1, 2 | cáp, Wi-Fi, `ip link` (trạng thái, lỗi), `ip neigh` có `FAILED` |
+| Ping IP được nhưng không ra được ngoài | 3 | default route (`ip route`), NAT, firewall |
+| Ping IP được nhưng tên miền không phân giải | 7 (DNS) | `dig`, xem bài [DNS](/docs/networking/dns) |
+| Kết nối được, truyền nhỏ chạy, treo khi truyền lớn | 3 (MTU) | `ping -M do -s` các kích thước, kiểm tra ICMP type 3 code 4 bị chặn |
+| Chậm, nhiều mất gói trên Wi-Fi | 1, 2 | tín hiệu, nhiễu; `ip -s link` thấy lỗi/rớt |
+| Hai máy trùng IP | 2, 3 | ARP hai MAC cho cùng một IP (`arping -D`), kết nối chập chờn |
+
+Nguyên tắc gỡ lỗi: **đi từ dưới lên**. Nếu tầng dưới chưa chạy thì mọi bằng chứng ở tầng trên đều không đáng tin.
+
+## Lưu ý
+
+- **OSI là khung để nói chuyện, TCP/IP là thứ chạy thật.** Đừng cố ép mọi giao thức vào đúng một tầng OSI (TLS, QUIC, VPN đều không vừa), nhưng hãy nhớ nghĩa của các số (L2, L3, L4, L7) vì cả ngành dùng chúng làm tiếng lóng.
+- **Hai địa chỉ, hai phạm vi.** IP là địa chỉ đầu-cuối (đổi khi qua NAT, nhưng về nguyên tắc không đổi qua router); MAC chỉ có nghĩa trên một đoạn mạng và bị thay ở mỗi router.
+- **Switch không biết IP; router không đọc TCP.** Biết thiết bị làm việc tới tầng nào là biết nó có thể và không thể làm gì.
+- **Header là chi phí thật.** Gói nhỏ có hiệu suất rất thấp; gom dữ liệu thành gói lớn (tới MTU) khi có thể.
+- **Phân mảnh là phương án cuối cùng.** Một mảnh mất kéo theo cả gói mất; cờ DF cộng PMTUD là cách đúng, và đòi hỏi ICMP type 3 code 4 phải đi qua được firewall.
+- **Chặn toàn bộ ICMP gây ra lỗi khó chẩn đoán** (PMTUD black hole). Chỉ lọc những loại ICMP cần lọc.
+- **MTU nhỏ hơn 1500 ở nhiều nơi**: VPN, tunnel, PPPoE, overlay của container. Khi mạng "chập chờn chỉ với gói lớn", nghi MTU trước.
+- **ARP và broadcast không có xác thực.** Tin cậy trong mạng LAN không tồn tại, nên mã hoá đầu cuối vẫn cần ở mạng nội bộ.
+- **`tcpdump` thấy gói trước khi offload cắt và trước khi checksum được tính.** Gói "quá lớn" hay "bad checksum" trong bản bắt trên chính máy gửi thường không phải lỗi thật.
+- **Gỡ lỗi từ dưới lên.** Link, rồi IP, rồi transport, rồi ứng dụng: mỗi tầng chỉ đáng tin khi tầng dưới nó đã đúng.
