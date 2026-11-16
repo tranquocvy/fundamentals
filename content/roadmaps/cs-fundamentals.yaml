@@ -57,6 +57,7 @@ sections:
             url: https://opendatastructures.org/ods-python/6_Binary_Trees.html
       - id: sorting
         title: Sorting
+        article: dsa/sorting
         description: Merge sort, quicksort, giới hạn dưới O(n log n).
         requires: [complexity]
         resources:

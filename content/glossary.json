@@ -420,6 +420,14 @@
       "def": "Server Name Indication: extension trong ClientHello của TLS cho server biết tên miền client muốn vào, để chọn đúng chứng chỉ khi nhiều site chung một IP; ở dạng rõ nên lộ tên site.",
       "subject": "networking"
     },
+    "stable sort": {
+      "def": "Thuật toán sắp xếp giữ nguyên thứ tự ban đầu của các phần tử có khoá bằng nhau.",
+      "subject": "dsa",
+      "aliases": [
+        "ổn định",
+        "stable"
+      ]
+    },
     "stack": {
       "def": "Cấu trúc vào sau ra trước (LIFO): chỉ thêm và lấy ở một đầu.",
       "subject": "dsa"
