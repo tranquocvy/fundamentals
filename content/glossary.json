@@ -203,6 +203,14 @@
         "fd"
       ]
     },
+    "foreign key": {
+      "label": "FK",
+      "def": "Cột của bảng này tham chiếu khoá chính của bảng khác, buộc mọi giá trị phải tồn tại ở bảng được tham chiếu.",
+      "subject": "databases",
+      "aliases": [
+        "khoá ngoại"
+      ]
+    },
     "forward secrecy": {
       "def": "Tính chất mà lộ khoá riêng của server về sau vẫn không giải mã được các phiên đã ghi lại trước đó, vì khoá phiên sinh từ trao đổi khoá tạm thời.",
       "subject": "networking"
@@ -342,6 +350,11 @@
         "napt"
       ]
     },
+    "null": {
+      "label": "NULL",
+      "def": "Giá trị đặc biệt của SQL nghĩa là không biết hoặc không áp dụng; so sánh với NULL cho kết quả UNKNOWN chứ không phải đúng hay sai.",
+      "subject": "databases"
+    },
     "page": {
       "def": "Khối bộ nhớ ảo có kích thước cố định (thường 4 KB), đơn vị OS dùng để ánh xạ và chuyển dữ liệu giữa RAM và đĩa.",
       "subject": "os",
@@ -376,6 +389,14 @@
         "ports"
       ]
     },
+    "primary key": {
+      "label": "PK",
+      "def": "Tập cột xác định duy nhất mỗi dòng của bảng; không được NULL và không được trùng.",
+      "subject": "databases",
+      "aliases": [
+        "khoá chính"
+      ]
+    },
     "priority queue": {
       "def": "Hàng đợi mà mỗi lần lấy ra trả về phần tử có độ ưu tiên cao nhất (hoặc khoá nhỏ nhất), thường cài bằng heap.",
       "subject": "dsa",
@@ -388,6 +409,15 @@
       "subject": "os",
       "aliases": [
         "processes"
+      ]
+    },
+    "query planner": {
+      "def": "Thành phần của cơ sở dữ liệu chọn kế hoạch thực thi có chi phí ước lượng thấp nhất cho một câu truy vấn, dựa trên thống kê của bảng.",
+      "subject": "databases",
+      "aliases": [
+        "planner",
+        "optimizer",
+        "query optimizer"
       ]
     },
     "queue": {
@@ -411,6 +441,13 @@
       "subject": "networking",
       "aliases": [
         "resolver"
+      ]
+    },
+    "relational model": {
+      "def": "Mô hình dữ liệu coi dữ liệu là các quan hệ (bảng) và truy vấn bằng ngôn ngữ khai báo, không phụ thuộc cách lưu bên dưới.",
+      "subject": "databases",
+      "aliases": [
+        "mô hình quan hệ"
       ]
     },
     "response time": {
@@ -534,6 +571,13 @@
     "virtual memory": {
       "def": "Cơ chế OS và phần cứng dịch địa chỉ ảo của process sang địa chỉ vật lý, cho mỗi process một address space riêng.",
       "subject": "os"
+    },
+    "window function": {
+      "def": "Hàm SQL tính trên một cửa sổ các dòng liên quan (rank, tổng chạy, lag) mà vẫn giữ nguyên số dòng, khác với hàm tổng hợp gom nhóm.",
+      "subject": "databases",
+      "aliases": [
+        "hàm cửa sổ"
+      ]
     },
     "zombie process": {
       "def": "Process đã kết thúc nhưng kernel còn giữ mã thoát của nó vì process cha chưa gọi wait().",

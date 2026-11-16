@@ -181,6 +181,7 @@ sections:
     nodes:
       - id: relational-model
         title: Relational Model & SQL
+        article: databases/relational-model
         description: Bảng, khoá, join và ngôn ngữ truy vấn SQL.
         resources:
           - title: CMU 15-445 Database Systems

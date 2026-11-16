@@ -1,0 +1,830 @@
+---
+title: Relational Model & SQL
+description: Quan hệ, khoá và ràng buộc, đại số quan hệ tự cài, SQL từ join tới window function, thứ tự thực thi logic của SELECT, logic ba giá trị của NULL và đường đi của một truy vấn qua planner, chạy trên PostgreSQL thật.
+status: draft
+tags: [databases, sql, relational]
+authors: [tranquocvy]
+references:
+  - title: "CMU 15-445/645 Database Systems — Lectures: Relational Model and Algebra; Modern SQL; Query Planning"
+    url: https://15445.courses.cs.cmu.edu/
+    kind: video
+    note: bài giảng công khai, khung của chặng này
+  - title: "Codd — A Relational Model of Data for Large Shared Data Banks (1970)"
+    kind: paper
+    note: bài báo gốc của mô hình quan hệ
+  - title: "Silberschatz, Korth, Sudarshan — Database System Concepts, Chapters 2-4: Relational Model, Intro to SQL, Intermediate SQL"
+    kind: book
+    note: định nghĩa quan hệ, khoá, đại số quan hệ, SQL cơ bản và trung cấp
+  - title: "PostgreSQL docs — Chapter 7: Queries"
+    url: https://www.postgresql.org/docs/current/queries.html
+    kind: web
+    note: thứ tự xử lý FROM, WHERE, GROUP BY, HAVING, SELECT, ORDER BY
+  - title: "PostgreSQL docs — Window Functions"
+    url: https://www.postgresql.org/docs/current/functions-window.html
+    kind: web
+    note: rank, row_number, lag và khung cửa sổ
+  - title: "PostgreSQL docs — Constraints"
+    url: https://www.postgresql.org/docs/current/ddl-constraints.html
+    kind: web
+    note: CHECK, NOT NULL, UNIQUE, PRIMARY KEY, FOREIGN KEY
+  - title: "PostgreSQL docs — Overview of PostgreSQL Internals"
+    url: https://www.postgresql.org/docs/current/overview.html
+    kind: web
+    note: parser, rewriter, planner, executor
+  - title: "PostgreSQL docs — Using EXPLAIN"
+    url: https://www.postgresql.org/docs/current/using-explain.html
+    kind: web
+    note: đọc kế hoạch thực thi, chi phí ước lượng và thời gian thực
+---
+
+## Ý chính
+
+Một cơ sở dữ liệu là nơi cất dữ liệu sao cho nhiều chương trình đọc và ghi cùng lúc mà vẫn **đúng** và vẫn **nhanh**. Trước năm 1970, dữ liệu gắn chặt với cách lưu (con trỏ giữa các bản ghi), đổi cách lưu là viết lại chương trình. Edgar Codd đề xuất mô hình khác: **<Term>mô hình quan hệ</Term>** chỉ nói *dữ liệu là gì* (các bảng, và quan hệ giữa chúng) chứ không nói *lưu thế nào hay lấy ra bằng đường nào*. Người dùng viết điều mình muốn bằng ngôn ngữ **khai báo** (SQL), còn hệ thống tự chọn cách thực hiện nhanh nhất. Đây là ý tưởng khiến cơ sở dữ liệu quan hệ sống hơn nửa thế kỷ.
+
+Bài này đi từ nền tảng lên: quan hệ, khoá và ràng buộc (cách mô hình bảo vệ dữ liệu đúng); đại số quan hệ (phép tính mà SQL dựa vào, được tự cài bằng Python); SQL qua các khối chính (join, gom nhóm, truy vấn con, window function); thứ tự thực thi **logic** của một câu `SELECT`, thứ giải thích nhiều lỗi khó hiểu; `NULL` và logic ba giá trị; cuối cùng là đường đi của một câu truy vấn qua parser, planner và executor, xem bằng `EXPLAIN ANALYZE`. Mọi SQL chạy trên **PostgreSQL 16** cài trong WSL của máy viết bài, output là output thật; code Python chạy bằng Python 3.13. Đây là bài đầu của chặng cơ sở dữ liệu; các bài sau là [Indexing](/docs/databases/indexing), [Transactions](/docs/databases/transactions) và [Isolation Levels](/docs/databases/isolation-levels).
+
+## Mô hình quan hệ
+
+### Quan hệ, bộ, thuộc tính
+
+Một **quan hệ** (relation) về mặt toán học là một **tập** các **bộ** (tuple), mỗi bộ có các giá trị cho cùng một danh sách **thuộc tính** (attribute, tức cột), mỗi thuộc tính có một **miền** (kiểu). Trong SQL, quan hệ là **bảng** (table), bộ là **dòng** (row), thuộc tính là **cột** (column). Hai khác biệt quan trọng giữa lý thuyết và SQL sẽ thấy ở phần đại số: quan hệ là *tập* (không có dòng trùng, không có thứ tự), còn bảng SQL là *bag* (cho phép dòng trùng, và không có thứ tự nếu không có `ORDER BY`).
+
+### Khoá
+
+- **Khoá ứng viên** (candidate key): tập thuộc tính ít nhất xác định duy nhất một dòng.
+- **<Term>Khoá chính</Term>** (primary key): khoá ứng viên được chọn làm danh tính của dòng; không `NULL`, không trùng.
+- **<Term>Khoá ngoại</Term>** (foreign key): cột (hoặc tập cột) của bảng này tham chiếu khoá chính của bảng kia, đảm bảo "đơn hàng phải thuộc về một khách có thật".
+
+### Ràng buộc: cơ sở dữ liệu tự bảo vệ dữ liệu
+
+Phần mạnh nhất của mô hình là **ràng buộc toàn vẹn** (integrity constraint): bạn khai báo luật một lần ở lược đồ, hệ thống từ chối mọi thao tác phá luật, bất kể chương trình nào gọi. Lược đồ thương mại nhỏ dùng suốt bài (khách, sản phẩm, đơn, chi tiết đơn):
+
+```sql
+-- Lược đồ và dữ liệu mẫu nhỏ, đủ để tính tay.
+DROP TABLE IF EXISTS order_items, orders, products, customers CASCADE;
+
+CREATE TABLE customers (
+    id      integer PRIMARY KEY,
+    name    text    NOT NULL,
+    city    text,                                   -- cho phép NULL: chưa biết thành phố
+    email   text    UNIQUE
+);
+CREATE TABLE products (
+    id      integer PRIMARY KEY,
+    name    text    NOT NULL,
+    price   numeric(12,2) NOT NULL CHECK (price > 0)
+);
+CREATE TABLE orders (
+    id          integer PRIMARY KEY,
+    customer_id integer NOT NULL REFERENCES customers(id),
+    ordered_on  date    NOT NULL
+);
+CREATE TABLE order_items (
+    order_id   integer REFERENCES orders(id),
+    product_id integer REFERENCES products(id),
+    qty        integer NOT NULL CHECK (qty > 0),
+    PRIMARY KEY (order_id, product_id)             -- khoá chính ghép
+);
+
+INSERT INTO customers VALUES
+ (1, 'An',   'Hà Nội',  'an@x.vn'),
+ (2, 'Bình', 'Đà Nẵng', 'binh@x.vn'),
+ (3, 'Chi',  NULL,      'chi@x.vn'),
+ (4, 'Dũng', 'Hà Nội',  NULL);
+INSERT INTO products VALUES
+ (10, 'bàn phím', 500000), (11, 'chuột', 250000), (12, 'màn hình', 3000000), (13, 'tai nghe', 800000);
+INSERT INTO orders VALUES
+ (100, 1, '2026-01-05'), (101, 1, '2026-02-10'), (102, 2, '2026-02-11'), (103, 3, '2026-03-01');
+INSERT INTO order_items VALUES
+ (100, 10, 1), (100, 11, 2),
+ (101, 12, 1),
+ (102, 10, 1), (102, 13, 1),
+ (103, 11, 3);
+```
+
+Chú ý bốn loại ràng buộc: `PRIMARY KEY` (kể cả khoá chính **ghép** hai cột của `order_items`), `UNIQUE`, `NOT NULL`, `CHECK`, và `REFERENCES` (khoá ngoại). Giờ cố tình phá từng luật, xem PostgreSQL phản hồi thế nào:
+
+```sql
+-- Mỗi ràng buộc bị vi phạm sẽ báo lỗi gì.
+\set ON_ERROR_STOP off
+\echo '-- 1. khoá chính trùng'
+INSERT INTO customers VALUES (1, 'Trùng', 'X', 'trung@x.vn');
+\echo '-- 2. UNIQUE trùng email'
+INSERT INTO customers VALUES (9, 'Em', 'X', 'an@x.vn');
+\echo '-- 3. NOT NULL'
+INSERT INTO customers VALUES (9, NULL, 'X', 'e@x.vn');
+\echo '-- 4. CHECK'
+INSERT INTO products VALUES (14, 'sai giá', -5);
+\echo '-- 5. khoá ngoại: khách không tồn tại'
+INSERT INTO orders VALUES (104, 99, '2026-04-01');
+\echo '-- 6. khoá ngoại: xoá khách đang có đơn'
+DELETE FROM customers WHERE id = 1;
+\echo '-- 7. UNIQUE với NULL: nhiều NULL vẫn được (NULL không bằng NULL)'
+INSERT INTO customers VALUES (5, 'Em', 'X', NULL);
+SELECT id, name, email FROM customers WHERE email IS NULL ORDER BY id;
+```
+
+```text
+-- 1. khoá chính trùng
+ERROR:  duplicate key value violates unique constraint "customers_pkey"
+DETAIL:  Key (id)=(1) already exists.
+-- 2. UNIQUE trùng email
+ERROR:  duplicate key value violates unique constraint "customers_email_key"
+DETAIL:  Key (email)=(an@x.vn) already exists.
+-- 3. NOT NULL
+ERROR:  null value in column "name" of relation "customers" violates not-null constraint
+DETAIL:  Failing row contains (9, null, X, e@x.vn).
+-- 4. CHECK
+ERROR:  new row for relation "products" violates check constraint "products_price_check"
+DETAIL:  Failing row contains (14, sai giá, -5.00).
+-- 5. khoá ngoại: khách không tồn tại
+ERROR:  insert or update on table "orders" violates foreign key constraint "orders_customer_id_fkey"
+DETAIL:  Key (customer_id)=(99) is not present in table "customers".
+-- 6. khoá ngoại: xoá khách đang có đơn
+ERROR:  update or delete on table "customers" violates foreign key constraint "orders_customer_id_fkey" on table "orders"
+DETAIL:  Key (id)=(1) is still referenced from table "orders".
+-- 7. UNIQUE với NULL: nhiều NULL vẫn được (NULL không bằng NULL)
+ id | name | email 
+----+------+-------
+  4 | Dũng | 
+  5 | Em   | 
+(2 rows)
+```
+
+Mỗi ràng buộc bị phá cho một lỗi riêng, nêu đúng khoá và dòng vi phạm. Hai điều đáng để ý. Một: lỗi 6 cho thấy khoá ngoại bảo vệ **cả chiều xoá**, không cho xoá khách đang có đơn (hành vi mặc định là từ chối; có thể đổi thành `ON DELETE CASCADE` để xoá theo, hoặc `SET NULL`). Hai: lỗi 7 không xảy ra, vì `UNIQUE` **cho phép nhiều `NULL`**: hai dòng cùng `email` là `NULL` không bị coi là trùng, vì `NULL = NULL` không đúng (xem phần `NULL` bên dưới).
+
+Hệ quả thiết kế: đẩy luật vào lược đồ chứ không chỉ kiểm tra ở tầng ứng dụng. Ứng dụng có bug, có nhiều service cùng ghi, có script sửa tay; ràng buộc ở cơ sở dữ liệu là lớp phòng thủ duy nhất không bị bỏ qua.
+
+## Đại số quan hệ
+
+SQL dựa trên **đại số quan hệ**: một tập toán tử, mỗi toán tử nhận quan hệ và trả về quan hệ (tính **đóng**), nên ghép được thành biểu thức. Các toán tử cơ bản:
+
+| Toán tử | Ký hiệu | Làm gì | SQL tương ứng |
+|---|---|---|---|
+| Chọn (selection) | `σ điều kiện (R)` | giữ các dòng thoả điều kiện | `WHERE` |
+| Chiếu (projection) | `π cột (R)` | giữ một số cột | danh sách cột của `SELECT` |
+| Đổi tên | `ρ (R)` | đổi tên cột hoặc bảng | `AS` |
+| Tích Descartes | `R × S` | mọi cặp dòng của hai bảng | `CROSS JOIN` |
+| Hợp, hiệu | `R ∪ S`, `R − S` | hợp hoặc hiệu hai quan hệ cùng cột | `UNION`, `EXCEPT` |
+| Nối (join) | `R ⋈ S` | tích rồi chọn các cặp thoả điều kiện | `JOIN ... ON` |
+
+Mọi toán tử khác đều dựng được từ các toán tử này; nối chỉ là tích rồi chọn. Dưới đây là bản tự cài: quan hệ là **tập** các tuple, mỗi toán tử là một hàm trả về quan hệ mới.
+
+```python
+# Đại số quan hệ tự cài: một quan hệ là một TẬP các dòng (tuple), mỗi dòng là dict tên cột -> giá trị.
+# Các toán tử nhận quan hệ và trả về quan hệ, nên ghép lại được (tính đóng).
+
+class Relation:
+    def __init__(self, cols, rows):
+        self.cols = list(cols)
+        self.rows = {tuple(r) for r in rows}              # tập: không có dòng trùng, không có thứ tự
+
+    def dicts(self):
+        return [dict(zip(self.cols, r)) for r in self.rows]
+
+    # σ chọn: giữ các dòng thoả điều kiện
+    def select(self, pred):
+        return Relation(self.cols, [tuple(d[c] for c in self.cols) for d in self.dicts() if pred(d)])
+
+    # π chiếu: giữ một số cột, và vì là tập nên dòng trùng nhau gộp lại
+    def project(self, *cols):
+        return Relation(cols, [tuple(d[c] for c in cols) for d in self.dicts()])
+
+    # ρ đổi tên cột
+    def rename(self, mapping):
+        return Relation([mapping.get(c, c) for c in self.cols], self.rows)
+
+    # × tích Descartes
+    def product(self, other):
+        assert not set(self.cols) & set(other.cols), "đổi tên cột trước khi nhân"
+        return Relation(self.cols + other.cols, [a + b for a in self.rows for b in other.rows])
+
+    # ⋈ nối: tích Descartes rồi chọn dòng thoả điều kiện (theta join)
+    def join(self, other, pred):
+        return self.product(other).select(pred)
+
+    # ∪ hợp, − hiệu: yêu cầu cùng cột
+    def union(self, other):
+        assert self.cols == other.cols
+        return Relation(self.cols, self.rows | other.rows)
+
+    def minus(self, other):
+        assert self.cols == other.cols
+        return Relation(self.cols, self.rows - other.rows)
+
+    def show(self, order):
+        rows = sorted(self.rows, key=lambda r: tuple(r[self.cols.index(c)] for c in order))
+        return [dict(zip(self.cols, r)) for r in rows]
+
+customers = Relation(["cid", "name", "city"], [(1, "An", "Hà Nội"), (2, "Bình", "Đà Nẵng"), (3, "Chi", None), (4, "Dũng", "Hà Nội")])
+orders    = Relation(["oid", "ocid"], [(100, 1), (101, 1), (102, 2), (103, 3)])
+
+# Truy vấn 1: tên các khách ở Hà Nội                    π_name ( σ_city='Hà Nội' (customers) )
+q1 = customers.select(lambda d: d["city"] == "Hà Nội").project("name")
+print("q1  π name σ city='Hà Nội' (customers)      ->", q1.show(["name"]))
+
+# Truy vấn 2: tên khách và mã đơn (inner join)         π_{name,oid} ( customers ⋈_{cid=ocid} orders )
+q2 = customers.join(orders, lambda d: d["cid"] == d["ocid"]).project("name", "oid")
+print("q2  π name,oid (customers ⋈ cid=ocid orders) ->", q2.show(["name", "oid"]))
+
+# Truy vấn 3: khách CHƯA có đơn                        π_cid(customers) − π_ocid(orders)   rồi nối lại lấy tên
+no_order_ids = customers.project("cid").minus(orders.project("ocid").rename({"ocid": "cid"}))
+q3 = customers.join(no_order_ids.rename({"cid": "x"}), lambda d: d["cid"] == d["x"]).project("name")
+print("q3  khách chưa có đơn (phép hiệu)            ->", q3.show(["name"]))
+
+# Cùng một truy vấn viết hai cách đại số, kết quả như nhau: đẩy phép chọn xuống trước phép nối
+big = customers.product(orders.rename({"ocid": "ocid", "oid": "oid"}))
+a = big.select(lambda d: d["cid"] == d["ocid"] and d["city"] == "Hà Nội").project("name", "oid")
+b = customers.select(lambda d: d["city"] == "Hà Nội").join(orders, lambda d: d["cid"] == d["ocid"]).project("name", "oid")
+print()
+print("σ sau ×  :", a.show(["name", "oid"]), "| số dòng trung gian của tích:", len(big.rows))
+print("σ trước ⋈:", b.show(["name", "oid"]), "| số dòng trung gian của tích:", len(customers.select(lambda d: d["city"] == "Hà Nội").product(orders).rows))
+print("hai cách cho cùng kết quả:", a.rows == b.rows)
+
+# Tập, không phải bag: π làm mất dòng trùng, còn SQL giữ (trừ khi DISTINCT)
+print()
+cities = customers.project("city")
+print("π city (customers) có", len(cities.rows), "dòng (quan hệ là tập); SELECT city FROM customers có", len(customers.rows), "dòng (SQL là bag)")
+```
+
+```text
+q1  π name σ city='Hà Nội' (customers)      -> [{'name': 'An'}, {'name': 'Dũng'}]
+q2  π name,oid (customers ⋈ cid=ocid orders) -> [{'name': 'An', 'oid': 100}, {'name': 'An', 'oid': 101}, {'name': 'Bình', 'oid': 102}, {'name': 'Chi', 'oid': 103}]
+q3  khách chưa có đơn (phép hiệu)            -> [{'name': 'Dũng'}]
+
+σ sau ×  : [{'name': 'An', 'oid': 100}, {'name': 'An', 'oid': 101}] | số dòng trung gian của tích: 16
+σ trước ⋈: [{'name': 'An', 'oid': 100}, {'name': 'An', 'oid': 101}] | số dòng trung gian của tích: 8
+hai cách cho cùng kết quả: True
+
+π city (customers) có 3 dòng (quan hệ là tập); SELECT city FROM customers có 4 dòng (SQL là bag)
+```
+
+Ba truy vấn đầu là ba biểu thức đại số: `q1` chọn rồi chiếu; `q2` nối rồi chiếu; `q3` dùng **phép hiệu** để tìm khách không có đơn (tập mọi mã khách trừ tập mã khách có đơn, rồi nối lại lấy tên): `Dũng`, đúng như phép anti-join sẽ ra ở phần SQL.
+
+Phần thứ hai cho thấy **vì sao đại số quan trọng với hiệu năng**. Hai biểu thức đại số tương đương (đều cho cùng kết quả) nhưng khác công việc: `σ sau ×` tạo tích 16 dòng rồi lọc, còn `σ trước ⋈` lọc khách Hà Nội trước nên tích chỉ 8 dòng. Với bảng triệu dòng, chênh lệch này là giữa chạy được và không chạy được. Planner của cơ sở dữ liệu làm đúng việc này: **viết lại biểu thức thành dạng tương đương rẻ hơn** (đẩy phép chọn xuống gần dữ liệu, đổi thứ tự join), dựa trên các đẳng thức đại số. Đó là sức mạnh của việc dùng ngôn ngữ khai báo.
+
+Dòng cuối nhắc khác biệt giữa lý thuyết và thực tế: `π city` trong đại số cho **3** dòng (tập: các giá trị `Hà Nội`, `Đà Nẵng`, `NULL` mỗi giá trị một lần), còn `SELECT city FROM customers` trong SQL cho **4** dòng (bag), trừ khi viết `SELECT DISTINCT`. Giữ trùng lặp rẻ hơn nhiều (khử trùng cần sắp xếp hoặc băm), nên SQL không khử trùng khi không được yêu cầu.
+
+## SQL: các khối chính
+
+SQL là ngôn ngữ **khai báo**: bạn mô tả kết quả, không mô tả các bước. Dữ liệu mẫu nhỏ (4 khách, 4 sản phẩm, 4 đơn) để mọi kết quả đều tính tay được. Toàn bộ truy vấn của phần này:
+
+```sql
+\pset null '∅'
+\echo '== JOIN: bốn khách, đơn của họ =='
+\echo '-- INNER JOIN: chỉ khách có đơn'
+SELECT c.name, o.id AS order_id FROM customers c JOIN orders o ON o.customer_id = c.id ORDER BY c.id, o.id;
+\echo '-- LEFT JOIN: giữ mọi khách, không có đơn thì ∅'
+SELECT c.name, o.id AS order_id FROM customers c LEFT JOIN orders o ON o.customer_id = c.id ORDER BY c.id, o.id;
+\echo '-- anti join: khách CHƯA có đơn nào'
+SELECT c.name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY c.id;
+\echo '-- cùng ý, viết bằng LEFT JOIN + IS NULL'
+SELECT c.name FROM customers c LEFT JOIN orders o ON o.customer_id = c.id WHERE o.id IS NULL ORDER BY c.id;
+
+\echo ''
+\echo '== GROUP BY, HAVING =='
+\echo '-- tổng tiền mỗi đơn'
+SELECT o.id AS order_id, sum(p.price * i.qty) AS total
+FROM orders o JOIN order_items i ON i.order_id = o.id JOIN products p ON p.id = i.product_id
+GROUP BY o.id ORDER BY o.id;
+\echo '-- khách có tổng chi tiêu trên 1.000.000, HAVING lọc SAU khi gom nhóm'
+SELECT c.name, sum(p.price * i.qty) AS spent
+FROM customers c JOIN orders o ON o.customer_id = c.id
+  JOIN order_items i ON i.order_id = o.id JOIN products p ON p.id = i.product_id
+GROUP BY c.name HAVING sum(p.price * i.qty) > 1000000 ORDER BY spent DESC;
+
+\echo ''
+\echo '== SUBQUERY và CTE =='
+\echo '-- sản phẩm đắt hơn giá trung bình (subquery vô hướng)'
+SELECT name, price FROM products WHERE price > (SELECT avg(price) FROM products) ORDER BY price;
+\echo '-- đơn có tổng tiền lớn nhất, dùng CTE'
+WITH totals AS (
+  SELECT o.id, sum(p.price * i.qty) AS total
+  FROM orders o JOIN order_items i ON i.order_id = o.id JOIN products p ON p.id = i.product_id GROUP BY o.id)
+SELECT * FROM totals WHERE total = (SELECT max(total) FROM totals);
+
+\echo ''
+\echo '== WINDOW FUNCTION: tính trên "cửa sổ" mà KHÔNG gom nhóm =='
+SELECT o.id AS order_id, o.ordered_on,
+       sum(p.price * i.qty) AS total,
+       sum(sum(p.price * i.qty)) OVER (ORDER BY o.ordered_on, o.id) AS running_total,
+       rank()       OVER (ORDER BY sum(p.price * i.qty) DESC) AS rank_by_total,
+       lag(sum(p.price * i.qty)) OVER (ORDER BY o.ordered_on, o.id) AS prev_total
+FROM orders o JOIN order_items i ON i.order_id = o.id JOIN products p ON p.id = i.product_id
+GROUP BY o.id, o.ordered_on ORDER BY o.ordered_on, o.id;
+\echo '-- top 1 sản phẩm cho mỗi khách (row_number trong từng nhóm)'
+SELECT * FROM (
+  SELECT c.name AS customer, p.name AS product, sum(i.qty) AS qty,
+         row_number() OVER (PARTITION BY c.id ORDER BY sum(i.qty) DESC, p.name) AS rn
+  FROM customers c JOIN orders o ON o.customer_id = c.id
+    JOIN order_items i ON i.order_id = o.id JOIN products p ON p.id = i.product_id
+  GROUP BY c.id, c.name, p.id, p.name) t
+WHERE rn = 1 ORDER BY customer;
+```
+
+```text
+== JOIN: bốn khách, đơn của họ ==
+-- INNER JOIN: chỉ khách có đơn
+ name | order_id 
+------+----------
+ An   |      100
+ An   |      101
+ Bình |      102
+ Chi  |      103
+(4 rows)
+
+-- LEFT JOIN: giữ mọi khách, không có đơn thì ∅
+ name | order_id 
+------+----------
+ An   |      100
+ An   |      101
+ Bình |      102
+ Chi  |      103
+ Dũng |        ∅
+(5 rows)
+
+-- anti join: khách CHƯA có đơn nào
+ name 
+------
+ Dũng
+(1 row)
+
+-- cùng ý, viết bằng LEFT JOIN + IS NULL
+ name 
+------
+ Dũng
+(1 row)
+
+
+== GROUP BY, HAVING ==
+-- tổng tiền mỗi đơn
+ order_id |   total    
+----------+------------
+      100 | 1000000.00
+      101 | 3000000.00
+      102 | 1300000.00
+      103 |  750000.00
+(4 rows)
+
+-- khách có tổng chi tiêu trên 1.000.000, HAVING lọc SAU khi gom nhóm
+ name |   spent    
+------+------------
+ An   | 4000000.00
+ Bình | 1300000.00
+(2 rows)
+
+
+== SUBQUERY và CTE ==
+-- sản phẩm đắt hơn giá trung bình (subquery vô hướng)
+   name   |   price    
+----------+------------
+ màn hình | 3000000.00
+(1 row)
+
+-- đơn có tổng tiền lớn nhất, dùng CTE
+ id  |   total    
+-----+------------
+ 101 | 3000000.00
+(1 row)
+
+
+== WINDOW FUNCTION: tính trên "cửa sổ" mà KHÔNG gom nhóm ==
+ order_id | ordered_on |   total    | running_total | rank_by_total | prev_total 
+----------+------------+------------+---------------+---------------+------------
+      100 | 2026-01-05 | 1000000.00 |    1000000.00 |             3 |          ∅
+      101 | 2026-02-10 | 3000000.00 |    4000000.00 |             1 | 1000000.00
+      102 | 2026-02-11 | 1300000.00 |    5300000.00 |             2 | 3000000.00
+      103 | 2026-03-01 |  750000.00 |    6050000.00 |             4 | 1300000.00
+(4 rows)
+
+-- top 1 sản phẩm cho mỗi khách (row_number trong từng nhóm)
+ customer | product  | qty | rn 
+----------+----------+-----+----
+ An       | chuột    |   2 |  1
+ Bình     | bàn phím |   1 |  1
+ Chi      | chuột    |   3 |  1
+(3 rows)
+```
+
+### Join
+
+`JOIN` ghép dòng của hai bảng theo điều kiện. Các loại:
+
+| Loại | Giữ lại | Dòng không khớp |
+|---|---|---|
+| `INNER JOIN` | chỉ cặp khớp | bị loại |
+| `LEFT JOIN` | mọi dòng bảng trái | bên phải điền `NULL` |
+| `FULL JOIN` | mọi dòng cả hai bảng | bên kia điền `NULL` |
+| `CROSS JOIN` | mọi cặp (tích Descartes) | không có điều kiện |
+| semi join (`EXISTS`) | dòng bảng trái **có** khớp, không nhân đôi | |
+| anti join (`NOT EXISTS`) | dòng bảng trái **không** có khớp | |
+
+Ở output: `INNER JOIN` cho 4 dòng, **mất `Dũng`** vì không có đơn; `LEFT JOIN` cho 5 dòng, `Dũng` ở lại với `order_id` là `∅` (cách psql in `NULL` ở đây). Hai cách viết "khách chưa có đơn" (`NOT EXISTS` và `LEFT JOIN ... WHERE o.id IS NULL`) cho cùng kết quả `Dũng`. Planner thường nhận ra hai dạng này là một anti join và chạy như nhau; ưu tiên `NOT EXISTS` vì nó nói đúng ý định và an toàn với `NULL` (phần sau).
+
+### Gom nhóm
+
+`GROUP BY` gộp các dòng cùng giá trị cột nhóm thành một dòng, và các **hàm tổng hợp** (`sum`, `count`, `avg`, `min`, `max`) tính trên mỗi nhóm. Output tính ra tổng tiền mỗi đơn: đơn 100 là `500000 × 1 + 250000 × 2 = 1.000.000`, đúng. `HAVING` lọc **sau** khi gom nhóm (trên kết quả hàm tổng hợp), còn `WHERE` lọc **trước**.
+
+### Truy vấn con và CTE
+
+Truy vấn con (subquery) là một `SELECT` nằm trong `SELECT` khác: ở ví dụ là `price > (SELECT avg(price) FROM products)`, và chỉ `màn hình` (3.000.000) đắt hơn trung bình 1.137.500. **CTE** (`WITH ... AS`) đặt tên cho một truy vấn con để dùng lại và đọc dễ hơn; ở đây `totals` được dùng hai lần, và kết quả đúng là đơn 101 (3.000.000).
+
+### Window function
+
+Hàm tổng hợp thường làm gọn nhiều dòng thành một dòng. **<Term>Window function</Term>** tính trên một "cửa sổ" các dòng liên quan nhưng **giữ nguyên số dòng**. Cú pháp `hàm() OVER (PARTITION BY ... ORDER BY ...)`. Output có bốn kiểu:
+
+- `sum(...) OVER (ORDER BY ...)`: **tổng chạy** (running total), 1.000.000 rồi 4.000.000, 5.300.000, 6.050.000;
+- `rank() OVER (ORDER BY total DESC)`: **hạng**; đơn 101 hạng 1;
+- `lag(...)`: giá trị của dòng **trước** trong cửa sổ (đơn đầu tiên không có nên `NULL`);
+- `row_number() OVER (PARTITION BY khách ORDER BY ...)`: đánh số trong từng nhóm, rồi lọc `rn = 1` cho ra "sản phẩm mua nhiều nhất của mỗi khách" (mẫu "top N mỗi nhóm" không làm được gọn bằng `GROUP BY`).
+
+## Thứ tự thực thi logic của một câu SELECT
+
+SQL viết `SELECT` trước nhưng **không** thực thi theo thứ tự viết. Thứ tự logic (cách nghĩ đúng về ngữ nghĩa, dù engine có thể làm khác miễn là cho cùng kết quả):
+
+```text
+1. FROM / JOIN      lấy và ghép các bảng nguồn
+2. WHERE            lọc từng dòng
+3. GROUP BY         gom nhóm
+4. HAVING           lọc nhóm
+5. cửa sổ (window)  tính hàm cửa sổ trên kết quả các bước trước
+6. SELECT           tính biểu thức, đặt alias, DISTINCT
+7. ORDER BY         sắp xếp
+8. LIMIT / OFFSET   cắt
+```
+
+Thứ tự này giải thích những lỗi thường làm người mới bối rối. Script dưới thử từng trường hợp:
+
+```sql
+\pset null '∅'
+\echo '== Thứ tự thực thi LOGIC của SELECT: FROM, WHERE, GROUP BY, HAVING, SELECT, ORDER BY, LIMIT =='
+\echo '-- 1. alias của SELECT chưa tồn tại ở WHERE (WHERE chạy trước SELECT)'
+SELECT price * 2 AS gap_doi FROM products WHERE gap_doi > 1000000;
+\echo '-- 2. nhưng ORDER BY chạy sau SELECT nên dùng được alias'
+SELECT name, price * 2 AS gap_doi FROM products ORDER BY gap_doi DESC LIMIT 2;
+\echo '-- 3. hàm tổng hợp không dùng được trong WHERE (chưa gom nhóm), phải dùng HAVING'
+SELECT customer_id FROM orders WHERE count(*) > 1 GROUP BY customer_id;
+SELECT customer_id, count(*) AS so_don FROM orders GROUP BY customer_id HAVING count(*) > 1;
+\echo '-- 4. window function chạy SAU WHERE: dòng bị WHERE loại không nằm trong cửa sổ'
+SELECT name, price, sum(price) OVER () AS tong_toan_bang FROM products WHERE price < 1000000 ORDER BY id;
+\echo '-- 5. cột không có trong GROUP BY thì không được chọn tuỳ ý'
+SELECT customer_id, ordered_on FROM orders GROUP BY customer_id;
+\echo '-- 6. LIMIT áp dụng cuối cùng; không có ORDER BY thì "5 dòng đầu" không có nghĩa'
+SELECT id, name FROM products ORDER BY id LIMIT 2 OFFSET 1;
+```
+
+```text
+== Thứ tự thực thi LOGIC của SELECT: FROM, WHERE, GROUP BY, HAVING, SELECT, ORDER BY, LIMIT ==
+-- 1. alias của SELECT chưa tồn tại ở WHERE (WHERE chạy trước SELECT)
+ERROR:  column "gap_doi" does not exist
+LINE 1: SELECT price * 2 AS gap_doi FROM products WHERE gap_doi > 10...
+                                                        ^
+-- 2. nhưng ORDER BY chạy sau SELECT nên dùng được alias
+   name   |  gap_doi   
+----------+------------
+ màn hình | 6000000.00
+ tai nghe | 1600000.00
+(2 rows)
+
+-- 3. hàm tổng hợp không dùng được trong WHERE (chưa gom nhóm), phải dùng HAVING
+ERROR:  aggregate functions are not allowed in WHERE
+LINE 1: SELECT customer_id FROM orders WHERE count(*) > 1 GROUP BY c...
+                                             ^
+ customer_id | so_don 
+-------------+--------
+           1 |      2
+(1 row)
+
+-- 4. window function chạy SAU WHERE: dòng bị WHERE loại không nằm trong cửa sổ
+   name   |   price   | tong_toan_bang 
+----------+-----------+----------------
+ bàn phím | 500000.00 |     1550000.00
+ chuột    | 250000.00 |     1550000.00
+ tai nghe | 800000.00 |     1550000.00
+(3 rows)
+
+-- 5. cột không có trong GROUP BY thì không được chọn tuỳ ý
+ERROR:  column "orders.ordered_on" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: SELECT customer_id, ordered_on FROM orders GROUP BY customer...
+                            ^
+-- 6. LIMIT áp dụng cuối cùng; không có ORDER BY thì "5 dòng đầu" không có nghĩa
+ id |   name   
+----+----------
+ 11 | chuột
+ 12 | màn hình
+(2 rows)
+```
+
+1. **Alias của `SELECT` không dùng được trong `WHERE`**: `WHERE` chạy ở bước 2, trước khi alias `gap_doi` (bước 6) được tạo, nên lỗi `column "gap_doi" does not exist`.
+2. **Nhưng `ORDER BY` dùng được alias**, vì nó chạy sau `SELECT` (bước 7).
+3. **Hàm tổng hợp không đứng trong `WHERE`** (chưa gom nhóm ở bước 2); phải dùng `HAVING` ở bước 4.
+4. **Window function chạy sau `WHERE`**: tổng `sum(price) OVER ()` là 1.550.000, tức tổng của **ba** sản phẩm còn lại sau khi lọc (`price < 1.000.000`), không phải cả bốn. Muốn tính cửa sổ trên toàn bảng rồi mới lọc phải bọc trong truy vấn con.
+5. **Cột không nằm trong `GROUP BY` và không là hàm tổng hợp** không dùng được trong `SELECT`: một nhóm có nhiều `ordered_on`, và không có lý do chọn cái nào. (MySQL ở chế độ cũ cho qua rồi trả giá trị tuỳ ý; PostgreSQL từ chối.)
+6. **`LIMIT` và `OFFSET` đứng cuối**: lấy dòng thứ 2 và 3 sau khi đã sắp xếp theo `id`. Không có `ORDER BY` thì "N dòng đầu" không xác định được, vì bảng không có thứ tự.
+
+## NULL và logic ba giá trị
+
+<Term>NULL</Term> không phải số 0, không phải chuỗi rỗng: nó nghĩa là **"không biết"** hoặc "không áp dụng". Vì vậy một so sánh với `NULL` không đúng cũng không sai mà là **UNKNOWN**, giá trị thứ ba của logic. Cả SQL được xây trên **logic ba giá trị** (TRUE, FALSE, UNKNOWN):
+
+| `A` | `B` | `A AND B` | `A OR B` |
+|---|---|---|---|
+| TRUE | UNKNOWN | UNKNOWN | TRUE |
+| FALSE | UNKNOWN | FALSE | UNKNOWN |
+| UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN |
+
+Và `NOT UNKNOWN` vẫn là `UNKNOWN`. Quy tắc then chốt: `WHERE` và `HAVING` chỉ giữ dòng cho kết quả **TRUE**; cả FALSE và UNKNOWN đều bị loại.
+
+```sql
+\pset null '∅'
+\echo '== NULL và logic ba giá trị =='
+SELECT NULL = NULL AS "NULL = NULL", NULL IS NULL AS "NULL IS NULL",
+       (TRUE AND NULL) AS "TRUE AND NULL", (FALSE AND NULL) AS "FALSE AND NULL",
+       (TRUE OR NULL) AS "TRUE OR NULL", (FALSE OR NULL) AS "FALSE OR NULL", NOT NULL::boolean AS "NOT NULL";
+
+\echo '-- WHERE chỉ giữ dòng cho kết quả TRUE; NULL bị loại cùng FALSE'
+SELECT name, city FROM customers WHERE city = 'Hà Nội' ORDER BY id;
+SELECT name, city FROM customers WHERE city <> 'Hà Nội' ORDER BY id;
+\echo '   (Chi có city = ∅ không xuất hiện ở cả hai truy vấn)'
+SELECT name, city FROM customers WHERE city IS DISTINCT FROM 'Hà Nội' ORDER BY id;
+
+\echo ''
+\echo '-- COUNT(*) khác COUNT(cột): COUNT bỏ qua NULL'
+SELECT count(*) AS count_star, count(city) AS count_city, count(DISTINCT city) AS distinct_city, count(email) AS count_email FROM customers;
+\echo '-- AVG bỏ qua NULL: không phải chia cho số dòng'
+SELECT avg(x) AS avg_bo_null, sum(x)::numeric / count(*) AS tong_chia_so_dong FROM (VALUES (10), (20), (NULL)) v(x);
+
+\echo ''
+\echo '-- bẫy NOT IN với NULL: danh sách có ∅ thì kết quả luôn không có dòng nào'
+SELECT 'x' AS ket_qua WHERE 3 NOT IN (1, 2);
+SELECT 'x' AS ket_qua WHERE 3 NOT IN (1, 2, NULL);
+\echo '   (dòng thứ hai rỗng: 3 <> NULL là UNKNOWN nên cả biểu thức không bao giờ TRUE)'
+\echo '-- cách đúng: NOT EXISTS'
+SELECT c.name FROM customers c WHERE c.id NOT IN (SELECT o.customer_id FROM orders o WHERE o.customer_id IS NOT NULL) ORDER BY c.id;
+
+\echo ''
+\echo '-- ORDER BY: NULL xếp ở đâu (mặc định PostgreSQL coi NULL là lớn nhất)'
+SELECT name, city FROM customers ORDER BY city ASC, id;
+SELECT name, city FROM customers ORDER BY city ASC NULLS FIRST, id;
+```
+
+```text
+== NULL và logic ba giá trị ==
+ NULL = NULL | NULL IS NULL | TRUE AND NULL | FALSE AND NULL | TRUE OR NULL | FALSE OR NULL | NOT NULL 
+-------------+--------------+---------------+----------------+--------------+---------------+----------
+ ∅           | t            | ∅             | f              | t            | ∅             | ∅
+(1 row)
+
+-- WHERE chỉ giữ dòng cho kết quả TRUE; NULL bị loại cùng FALSE
+ name |  city  
+------+--------
+ An   | Hà Nội
+ Dũng | Hà Nội
+(2 rows)
+
+ name |  city   
+------+---------
+ Bình | Đà Nẵng
+(1 row)
+
+   (Chi có city = ∅ không xuất hiện ở cả hai truy vấn)
+ name |  city   
+------+---------
+ Bình | Đà Nẵng
+ Chi  | ∅
+(2 rows)
+
+
+-- COUNT(*) khác COUNT(cột): COUNT bỏ qua NULL
+ count_star | count_city | distinct_city | count_email 
+------------+------------+---------------+-------------
+          4 |          3 |             2 |           3
+(1 row)
+
+-- AVG bỏ qua NULL: không phải chia cho số dòng
+     avg_bo_null     |  tong_chia_so_dong  
+---------------------+---------------------
+ 15.0000000000000000 | 10.0000000000000000
+(1 row)
+
+
+-- bẫy NOT IN với NULL: danh sách có ∅ thì kết quả luôn không có dòng nào
+ ket_qua 
+---------
+ x
+(1 row)
+
+ ket_qua 
+---------
+(0 rows)
+
+   (dòng thứ hai rỗng: 3 <> NULL là UNKNOWN nên cả biểu thức không bao giờ TRUE)
+-- cách đúng: NOT EXISTS
+ name 
+------
+ Dũng
+(1 row)
+
+
+-- ORDER BY: NULL xếp ở đâu (mặc định PostgreSQL coi NULL là lớn nhất)
+ name |  city   
+------+---------
+ An   | Hà Nội
+ Dũng | Hà Nội
+ Bình | Đà Nẵng
+ Chi  | ∅
+(4 rows)
+
+ name |  city   
+------+---------
+ Chi  | ∅
+ An   | Hà Nội
+ Dũng | Hà Nội
+ Bình | Đà Nẵng
+(4 rows)
+```
+
+Những hệ quả cần thuộc:
+
+- **`NULL = NULL` là `∅` (UNKNOWN), không phải `t`**. Dùng `IS NULL` để kiểm tra. `TRUE AND NULL` là UNKNOWN, nhưng `FALSE AND NULL` là FALSE và `TRUE OR NULL` là TRUE, vì kết quả đã quyết định bất kể giá trị chưa biết.
+- **`city = 'Hà Nội'` và `city <> 'Hà Nội'` không bù nhau**: `Chi` có `city` là `NULL` nên không xuất hiện ở truy vấn nào. Đây là nguồn bug "tổng hai nửa không bằng tổng". Dùng `IS DISTINCT FROM` khi muốn coi `NULL` như một giá trị bình thường, như ở truy vấn thứ ba (có `Chi`).
+- **`count(*)` đếm dòng (4), `count(city)` chỉ đếm giá trị không NULL (3)**, và `avg` cũng bỏ qua `NULL`: trung bình của `10, 20, NULL` là **15**, không phải 10 (tổng chia cho số dòng).
+- **`NOT IN` với danh sách chứa `NULL` luôn không cho dòng nào**: `3 NOT IN (1, 2)` cho `x`, nhưng `3 NOT IN (1, 2, NULL)` rỗng, vì `3 <> NULL` là UNKNOWN nên cả biểu thức không bao giờ TRUE. Đây là bẫy kinh điển; dùng `NOT EXISTS`, hoặc loại `NULL` khỏi truy vấn con như ví dụ cuối.
+- **Sắp xếp**: PostgreSQL coi `NULL` là giá trị **lớn nhất** (nên `ORDER BY city ASC` đặt `NULL` ở cuối); dùng `NULLS FIRST` hoặc `NULLS LAST` để chỉ định. Mỗi hệ quản trị có mặc định riêng, nên đừng dựa vào nó.
+
+## Đường đi của một câu truy vấn
+
+Khi bạn gửi một câu SQL, nó đi qua một chuỗi giai đoạn (PostgreSQL gọi là "Overview of PostgreSQL Internals" trong tài liệu, các hệ khác tương tự):
+
+1. **Parser**: phân tích cú pháp thành cây, kiểm tra tên bảng và cột có tồn tại (các lỗi `column ... does not exist` ở phần trên đến từ đây).
+2. **Rewriter**: viết lại theo luật (mở rộng view, luật bảo mật hàng).
+3. **<Term>Planner</Term> (optimizer)**: từ cây truy vấn, sinh **nhiều kế hoạch tương đương** (thứ tự join, cách join, cách quét bảng) và chọn kế hoạch có **chi phí ước lượng** nhỏ nhất, dựa trên **thống kê** của bảng (số dòng, phân bố giá trị, do `ANALYZE` thu thập).
+4. **Executor**: chạy kế hoạch, mỗi nút của cây kế hoạch đẩy các dòng lên nút cha.
+
+Phần thú vị là kế hoạch. Dùng `EXPLAIN (ANALYZE)` để xem cả kế hoạch lẫn thực tế. Dữ liệu ở đây là 20.000 khách và 200.000 đơn (sinh bằng `generate_series`), có khoá chính và một chỉ mục trên `customer_id` (chỉ mục là chủ đề của bài sau). Cùng một truy vấn "tổng đơn theo thành phố" chạy hai lần: một lần để planner tự chọn, một lần cấm hash join và merge join để ép dùng nested loop.
+
+```sql
+\pset null '∅'
+-- dữ liệu lớn hơn để planner có việc để chọn
+DROP TABLE IF EXISTS big_orders, big_customers;
+CREATE TABLE big_customers AS
+  SELECT g AS id, 'khach' || g AS name, (ARRAY['Hà Nội','Đà Nẵng','Huế','Cần Thơ'])[1 + g % 4] AS city
+  FROM generate_series(1, 20000) g;
+CREATE TABLE big_orders AS
+  SELECT g AS id, 1 + (g * 7919) % 20000 AS customer_id, (g * 37) % 1000 AS amount
+  FROM generate_series(1, 200000) g;
+ALTER TABLE big_customers ADD PRIMARY KEY (id);
+ALTER TABLE big_orders ADD PRIMARY KEY (id);
+CREATE INDEX ON big_orders (customer_id);
+ANALYZE big_customers; ANALYZE big_orders;
+
+\echo '== 1. planner chọn gì mặc định =='
+EXPLAIN (ANALYZE, COSTS ON, TIMING OFF, SUMMARY ON)
+SELECT c.city, count(*), sum(o.amount)
+FROM big_orders o JOIN big_customers c ON c.id = o.customer_id
+GROUP BY c.city;
+
+\echo ''
+\echo '== 2. cùng truy vấn, cấm hash join và merge join: buộc dùng nested loop =='
+SET enable_hashjoin = off; SET enable_mergejoin = off;
+EXPLAIN (ANALYZE, COSTS ON, TIMING OFF, SUMMARY ON)
+SELECT c.city, count(*), sum(o.amount)
+FROM big_orders o JOIN big_customers c ON c.id = o.customer_id
+GROUP BY c.city;
+RESET enable_hashjoin; RESET enable_mergejoin;
+
+\echo ''
+\echo '== 3. một truy vấn chọn lọc: planner đổi chiến lược theo số dòng ước lượng =='
+EXPLAIN (ANALYZE, COSTS ON, TIMING OFF, SUMMARY OFF)
+SELECT o.id, o.amount FROM big_orders o JOIN big_customers c ON c.id = o.customer_id WHERE c.id = 42;
+```
+
+```text
+== 1. planner chọn gì mặc định ==
+                                                               QUERY PLAN                                                               
+----------------------------------------------------------------------------------------------------------------------------------------
+ Finalize GroupAggregate  (cost=5094.38..5094.91 rows=4 width=25) (actual rows=4 loops=1)
+   Group Key: c.city
+   ->  Gather Merge  (cost=5094.38..5094.84 rows=4 width=25) (actual rows=8 loops=1)
+         Workers Planned: 1
+         Workers Launched: 1
+         ->  Sort  (cost=4094.37..4094.38 rows=4 width=25) (actual rows=4 loops=2)
+               Sort Key: c.city
+               Sort Method: quicksort  Memory: 25kB
+               Worker 0:  Sort Method: quicksort  Memory: 25kB
+               ->  Partial HashAggregate  (cost=4094.29..4094.33 rows=4 width=25) (actual rows=4 loops=2)
+                     Group Key: c.city
+                     Batches: 1  Memory Usage: 24kB
+                     Worker 0:  Batches: 1  Memory Usage: 24kB
+                     ->  Hash Join  (cost=642.00..3215.36 rows=117190 width=13) (actual rows=100000 loops=2)
+                           Hash Cond: (o.customer_id = c.id)
+                           ->  Parallel Seq Scan on big_orders o  (cost=0.00..2264.47 rows=117647 width=8) (actual rows=100000 loops=2)
+                           ->  Hash  (cost=392.00..392.00 rows=20000 width=13) (actual rows=20000 loops=2)
+                                 Buckets: 32768  Batches: 1  Memory Usage: 1174kB
+                                 ->  Seq Scan on big_customers c  (cost=0.00..392.00 rows=20000 width=13) (actual rows=20000 loops=2)
+ Planning Time: 0.622 ms
+ Execution Time: 21.904 ms
+(21 rows)
+
+
+== 2. cùng truy vấn, cấm hash join và merge join: buộc dùng nested loop ==
+                                                                        QUERY PLAN                                                                         
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize GroupAggregate  (cost=13308.58..13309.11 rows=4 width=25) (actual rows=4 loops=1)
+   Group Key: c.city
+   ->  Gather Merge  (cost=13308.58..13309.04 rows=4 width=25) (actual rows=8 loops=1)
+         Workers Planned: 1
+         Workers Launched: 1
+         ->  Sort  (cost=12308.57..12308.58 rows=4 width=25) (actual rows=4 loops=2)
+               Sort Key: c.city
+               Sort Method: quicksort  Memory: 25kB
+               Worker 0:  Sort Method: quicksort  Memory: 25kB
+               ->  Partial HashAggregate  (cost=12308.49..12308.53 rows=4 width=25) (actual rows=4 loops=2)
+                     Group Key: c.city
+                     Batches: 1  Memory Usage: 24kB
+                     Worker 0:  Batches: 1  Memory Usage: 24kB
+                     ->  Nested Loop  (cost=0.30..11429.56 rows=117190 width=13) (actual rows=100000 loops=2)
+                           ->  Parallel Seq Scan on big_orders o  (cost=0.00..2264.47 rows=117647 width=8) (actual rows=100000 loops=2)
+                           ->  Memoize  (cost=0.30..0.32 rows=1 width=13) (actual rows=1 loops=200000)
+                                 Cache Key: o.customer_id
+                                 Cache Mode: logical
+                                 Hits: 89040  Misses: 19940  Evictions: 0  Overflows: 0  Memory Usage: 2240kB
+                                 Worker 0:  Hits: 71120  Misses: 19900  Evictions: 0  Overflows: 0  Memory Usage: 2235kB
+                                 ->  Index Scan using big_customers_pkey on big_customers c  (cost=0.29..0.31 rows=1 width=13) (actual rows=1 loops=39840)
+                                       Index Cond: (id = o.customer_id)
+ Planning Time: 0.078 ms
+ Execution Time: 41.777 ms
+(24 rows)
+
+
+== 3. một truy vấn chọn lọc: planner đổi chiến lược theo số dòng ước lượng ==
+                                                         QUERY PLAN                                                          
+-----------------------------------------------------------------------------------------------------------------------------
+ Nested Loop  (cost=4.66..50.03 rows=10 width=8) (actual rows=10 loops=1)
+   ->  Index Only Scan using big_customers_pkey on big_customers c  (cost=0.29..8.30 rows=1 width=4) (actual rows=1 loops=1)
+         Index Cond: (id = 42)
+         Heap Fetches: 1
+   ->  Bitmap Heap Scan on big_orders o  (cost=4.37..41.62 rows=10 width=12) (actual rows=10 loops=1)
+         Recheck Cond: (customer_id = 42)
+         Heap Blocks: exact=10
+         ->  Bitmap Index Scan on big_orders_customer_id_idx  (cost=0.00..4.37 rows=10 width=0) (actual rows=10 loops=1)
+               Index Cond: (customer_id = 42)
+(9 rows)
+```
+
+### Đọc kế hoạch
+
+Cây kế hoạch đọc **từ trong ra ngoài, từ dưới lên**: các nút lá quét bảng, các nút trên xử lý dòng nhận được. Mỗi nút có hai con số: `cost=a..b` (chi phí ước lượng, đơn vị tuỳ ý, `a` là chi phí để ra dòng đầu tiên, `b` là tổng) và `rows` (số dòng ước lượng); nhờ `ANALYZE`, kế hoạch còn `actual rows` (số dòng thật) và `Execution Time`.
+
+**Kế hoạch 1 (planner tự chọn):**
+
+- `Seq Scan on big_customers`: đọc toàn bộ 20.000 khách, xây một **bảng băm** (`Hash`) theo `id`;
+- `Parallel Seq Scan on big_orders`: quét 200.000 đơn bằng 2 tiến trình (`loops=2`, mỗi tiến trình 100.000 dòng);
+- `Hash Join`: với mỗi đơn, tra bảng băm để tìm khách, `O(1)` mỗi lần;
+- `HashAggregate` rồi `Gather Merge` và `GroupAggregate`: gom nhóm theo thành phố ở từng tiến trình rồi gộp lại.
+- Chi phí ước lượng **5.098**, thời gian thật **21,9 ms**.
+
+**Kế hoạch 2 (ép nested loop):**
+
+- Với **mỗi** đơn, tra khách qua chỉ mục khoá chính (`Index Scan using big_customers_pkey`); PostgreSQL thêm nút `Memoize` để nhớ kết quả tra theo `customer_id` (hơn 160.000 lần trúng, 39.860 lần trượt trong tổng 200.000), vì nhiều đơn cùng một khách.
+- Chi phí ước lượng **13.237** (gấp 2,6 lần), thời gian thật **41,8 ms** (gấp 1,9 lần).
+
+Hai điều rút ra. Một: planner chọn **đúng** hướng: hash join rẻ hơn, và chi phí ước lượng xếp hạng hai kế hoạch giống như thời gian thật (không phải lúc nào cũng vậy). Hai: không có chiến lược join "luôn tốt nhất". Hash join cần xây bảng băm từ bảng nhỏ và quét hết bảng lớn; nested loop với chỉ mục tốt khi bảng ngoài nhỏ; merge join tốt khi hai bên đã có thứ tự. Quyết định phụ thuộc kích thước, chỉ mục và thống kê, vì vậy planner mới cần "ước lượng".
+
+**Kế hoạch 3 (truy vấn chọn lọc, `WHERE c.id = 42`):** chỉ một khách, planner đổi hẳn chiến lược: tra khách qua chỉ mục (`Index Only Scan`), rồi lấy đơn của khách đó qua chỉ mục `customer_id` (`Bitmap Index Scan` rồi `Bitmap Heap Scan`), chỉ đọc 10 dòng. Cùng một câu SQL kiểu `JOIN`, nhưng tuỳ độ chọn lọc mà kế hoạch hoàn toàn khác. Đây là ý nghĩa thực của "khai báo": bạn không viết `for`, `if`, hay chọn chỉ mục; hệ thống chọn.
+
+Khi kế hoạch tệ, nguyên nhân thường là **ước lượng sai** (`rows` ước lượng lệch xa `actual rows`), do thống kê cũ (chưa `ANALYZE`) hoặc do planner không biết hai cột tương quan. Bài [Indexing](/docs/databases/indexing) đi sâu vào cách chỉ mục (B+ tree, xem [Tree](/docs/dsa/trees)) thay đổi các kế hoạch này.
+
+## Trong hệ thống thật
+
+- **Chuẩn SQL** có nhiều phiên bản (SQL-92, SQL:1999 với CTE đệ quy, SQL:2003 với window function, SQL:2016 với JSON), nhưng mỗi hệ quản trị cài một **phương ngữ** riêng. PostgreSQL gần chuẩn nhất; MySQL từng có chế độ lỏng cho phép `GROUP BY` thiếu cột; SQLite dùng kiểu **linh hoạt** (kiểu dữ liệu theo từng giá trị, không theo cột) nên cột `integer` vẫn nhận chuỗi.
+- **Bảng không có thứ tự**: kết quả không có `ORDER BY` có thể đổi giữa các lần chạy (do kế hoạch hoặc do dữ liệu bị sắp lại bởi `VACUUM`, xem [Transactions](/docs/databases/transactions)). Mọi chương trình cần thứ tự phải nói rõ.
+- **ORM** (SQLAlchemy, Hibernate, ActiveRecord) sinh SQL thay bạn; vấn đề phổ biến là **N+1**: lấy 100 khách rồi chạy 100 truy vấn riêng lấy đơn của từng người, thay vì một `JOIN`. Cách phát hiện là bật log truy vấn chậm và đếm số truy vấn mỗi request.
+- **View và truy vấn con** là cú pháp tiện lợi; planner thường "làm phẳng" chúng thành một truy vấn lớn, nên không nhất thiết chậm hơn viết thẳng.
+
+## Quan sát và chẩn đoán
+
+- `\d tên_bảng` (psql) in cột, kiểu, khoá, chỉ mục và ràng buộc của bảng.
+- `EXPLAIN` xem kế hoạch dự kiến mà không chạy; `EXPLAIN (ANALYZE, BUFFERS)` chạy thật và cho số dòng thật, thời gian, số khối bộ nhớ đã đọc. **Lưu ý**: `EXPLAIN ANALYZE` thực sự chạy câu lệnh; với `INSERT`, `UPDATE`, `DELETE` hãy bọc trong `BEGIN; ... ROLLBACK;`.
+- So `rows` ước lượng với `actual rows`: lệch hơn khoảng 10 lần là dấu hiệu thống kê sai; chạy `ANALYZE tên_bảng`.
+- Bật `log_min_duration_statement` để ghi các truy vấn chậm; extension `pg_stat_statements` tổng hợp theo từng câu truy vấn.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Truy vấn chậm dần khi bảng lớn lên | kế hoạch quét toàn bảng, thiếu chỉ mục phù hợp | `EXPLAIN ANALYZE`, thêm chỉ mục (bài Indexing) |
+| Kế hoạch đổi bất ngờ sau một đêm | thống kê đổi, hoặc dữ liệu đổi phân bố | `ANALYZE`, xem `rows` ước lượng so với thật |
+| Tổng hai truy vấn bù nhau không bằng tổng | dòng `NULL` rơi ra ngoài cả `=` lẫn `<>` | `IS DISTINCT FROM`, hoặc xử lý `NULL` tường minh |
+| `NOT IN` trả về rỗng | truy vấn con trả về `NULL` | `NOT EXISTS` |
+| Số lượng kết quả nhân lên bất ngờ sau `JOIN` | join theo cột không duy nhất (quan hệ nhiều-nhiều) | kiểm tra khoá của hai bên, dùng `DISTINCT` hoặc gom nhóm có chủ đích |
+| `GROUP BY` báo thiếu cột | cột trong `SELECT` không có trong `GROUP BY` và không là hàm tổng hợp | thêm vào nhóm, hoặc dùng hàm tổng hợp |
+
+## Lưu ý
+
+- Quan hệ là tập (không trùng, không thứ tự), bảng SQL là bag: có dòng trùng, và không có thứ tự nếu thiếu `ORDER BY`. Đừng giả định thứ tự "tự nhiên".
+- Đặt luật vào ràng buộc của lược đồ (`PRIMARY KEY`, `UNIQUE`, `NOT NULL`, `CHECK`, `FOREIGN KEY`); đó là bảo vệ duy nhất áp dụng cho mọi chương trình ghi vào dữ liệu.
+- `UNIQUE` cho phép nhiều `NULL` (trong PostgreSQL); muốn chỉ một `NULL` thì phải dùng thêm chỉ mục có điều kiện.
+- Thứ tự logic: `FROM`, `WHERE`, `GROUP BY`, `HAVING`, window, `SELECT`, `ORDER BY`, `LIMIT`. Đa số lỗi "cột không tồn tại" hay "hàm tổng hợp không hợp lệ" đều giải thích được bằng thứ tự này.
+- `WHERE` chỉ giữ dòng **TRUE**; UNKNOWN bị loại như FALSE. `x = y` và `x <> y` không bao giờ phủ hết dòng khi có `NULL`.
+- `NOT IN` với truy vấn con có thể trả về `NULL` thì dùng `NOT EXISTS`. `COUNT(*)` khác `COUNT(cột)`; `AVG` bỏ qua `NULL`.
+- `LEFT JOIN` rồi đặt điều kiện của bảng bên phải trong `WHERE` sẽ biến nó thành `INNER JOIN` (dòng `NULL` bị loại); điều kiện đó phải nằm ở `ON`.
+- Khai báo không có nghĩa là mặc kệ hiệu năng: kế hoạch phụ thuộc thống kê và chỉ mục. Đọc `EXPLAIN ANALYZE`, đặc biệt so `rows` ước lượng với thật.
+- `EXPLAIN ANALYZE` chạy thật câu lệnh, kể cả `DELETE`; bọc trong transaction và `ROLLBACK`.
