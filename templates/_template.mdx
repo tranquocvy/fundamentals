@@ -1,29 +1,44 @@
 ---
 title: {{title}}
-description: TODO một câu tiếng Việt tóm tắt bài này nói về gì.
+description: TODO một câu tiếng Việt nói bài này bao phủ những gì (cơ chế nào, tự cài gì, đo gì).
 status: draft
 tags: [{{subject}}]
 # authors: [github-username]
 references:
-  - title: "TODO Tên sách — Chương X: Tên chương"
+  - title: "TODO Tên sách hoặc RFC — Chương X: Tên chương"
     kind: book
+    note: TODO đọc phần nào
 ---
+
+{/* Trước khi viết, đọc content/AGENTS.md (chuẩn độ sâu, quy trình, bẫy MDX).
+    Bài đạt chuẩn dài 5.000 tới 12.000 từ gồm cả code. Xoá chú thích này và mọi dòng hướng dẫn bên dưới khi viết xong. */}
 
 ## Ý chính
 
-Hai, ba câu nêu khái niệm cốt lõi. Thuật ngữ đã có trong glossary chỉ cần <Term>process</Term>; thuật ngữ mới thì thêm vào `content/glossary.json` hoặc viết <Term def="Giải nghĩa ngắn.">tên thuật ngữ</Term>.
+Hai, ba đoạn: khái niệm cốt lõi và **bài toán nó giải**. Thuật ngữ đã có trong glossary chỉ cần <Term>process</Term>; thuật ngữ mới thì thêm vào `content/glossary.json` hoặc viết <Term def="Giải nghĩa ngắn.">tên thuật ngữ</Term>. Kết đoạn bằng một câu nói bài đi theo trình tự nào và output lấy từ máy nào.
 
-## Giải thích
+## Vấn đề nhỏ nhất, rồi từng lớp một
 
-Vì sao nó tồn tại, nó hoạt động thế nào.
+Đi từ dưới lên: mỗi cơ chế là lời giải cho một vấn đề cụ thể của cơ chế trước nó. Ví dụ tính tay có số cụ thể, và số khớp với output của code bên dưới.
 
-<Expand title="Ví dụ chi tiết">
+## Tự cài thứ đang nói tới
 
-Phần đào sâu hoặc ví dụ dài.
+Code chạy được, dán **nguyên code và nguyên output** (chạy thật, không bịa). Mô phỏng hoặc đo để so sánh các lựa chọn, kèm bảng so sánh.
+
+<Expand title="Ví dụ chi tiết hoặc chứng minh">
+
+Phần đào sâu hoặc ví dụ dài. Để một dòng trống sau thẻ mở và trước thẻ đóng.
 
 </Expand>
 
+## Trong hệ thống thật
+
+Linux làm thế nào (system call, file trong `/proc`, tham số `sysctl`), và phần mềm quen thuộc chọn gì, vì sao. Liên kết chéo tới bài khác bằng `/docs/<môn>/<slug>`.
+
+## Quan sát và chẩn đoán
+
+Lệnh nào để thấy cơ chế trên máy thật, đọc output ra sao. Bảng "triệu chứng, nguyên nhân hay gặp".
+
 ## Lưu ý
 
-- Hiểu lầm hay gặp.
-- Khi nào dùng / không dùng.
+- 6 tới 12 gạch đầu dòng: hiểu lầm hay gặp, cái bẫy thực tế, khi nào dùng hoặc không.

@@ -17,6 +17,17 @@ Các môn khai báo ở `src/lib/subjects.ts`; môn nào có `ready: true` mới
 
 Trạng thái hiện tại: chặng **Operating Systems** (7 bài) và **Computer Networks** (6 bài) viết theo chuẩn sâu bên dưới. **Data Structures & Algorithms** và **Databases** chưa có môn: node trong roadmap `cs-fundamentals` mới chỉ có link ngoài. Xem `content/roadmaps/cs-fundamentals.yaml` để biết node nào đã có `article`, đó là nguồn sự thật, đừng dựa vào danh sách trong file này.
 
+### Bản đồ từng môn (để biết bài nào nối với bài nào)
+
+Môn không thể có file ghi chú riêng trong `content/docs/<môn>/` (xem cảnh báo trên), nên bản đồ nằm ở đây. Thứ tự dưới đây là thứ tự trong `meta.json` và cũng là thứ tự đọc; danh sách bài thật luôn lấy từ `meta.json` và roadmap, đừng chỉ tin vào bảng này.
+
+| Môn | Thứ tự đọc | Liên kết chéo đã có |
+|---|---|---|
+| `os` | process-thread, cpu-scheduling, synchronization, deadlock, virtual-memory, file-systems, io-devices | process-thread dẫn tới synchronization và virtual-memory; cpu-scheduling, virtual-memory và synchronization dẫn về process-thread; synchronization dẫn tới deadlock; file-systems dẫn tới virtual-memory và io-devices; io-devices dẫn tới cpu-scheduling, file-systems và process-thread |
+| `networking` | network-layers, ip-routing, tcp-vs-udp, dns, http, tls | chuỗi `requires` trong roadmap: network-layers, ip-routing, tcp-vs-udp, rồi dns và http, http dẫn tới tls. Các bài dẫn chéo nhau theo kiểu đã học tới đâu nhắc tới đó (ví dụ tls dẫn về http, dns, tcp-vs-udp, network-layers). Dẫn sang OS: tcp-vs-udp tới os/cpu-scheduling (trung bình mũ cho RTO) và os/io-devices (epoll); network-layers và http tới os/process-thread và os/io-devices |
+
+Bài viết cho môn mới nên chọn thứ tự đọc **theo chuỗi `requires`** của node trong roadmap, và để bài sau dẫn link về bài trước. Môn `dsa` và `databases` chưa tạo: bài `databases/indexing` sẽ cần `dsa/trees` (B-tree), và `databases/transactions` cần `os/synchronization` và `os/file-systems` (journaling).
+
 ## 2. Chuẩn độ sâu của một bài (đã thống nhất với chủ repo)
 
 Chủ repo muốn bài **đủ kiến thức, đủ ví dụ, implement đủ sâu để người làm IT nắm chắc, không sơ sài, không ngại dài**. Các bài ngắn 300–850 từ ban đầu chỉ là bản tạm và đã được viết lại. Bài đạt chuẩn thường dài **5.000 tới 12.000 từ** (tính cả code); độ dài là hệ quả của việc đi tới cơ chế, đừng độn.
