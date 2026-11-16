@@ -1,0 +1,535 @@
+---
+title: Hash Table
+description: Hàm băm, chaining và open addressing (linear probing, Robin Hood) tự cài, đo số lần thăm ô so với công thức theo hệ số tải, hash flooding và SipHash, cách dict của Python tổ chức, và consistent hashing cho hệ thống phân tán.
+status: draft
+tags: [dsa, hash-table]
+authors: [tranquocvy]
+references:
+  - title: "MIT 6.006 (Spring 2020) — Hashing"
+    url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
+    kind: video
+    note: universal hashing, chaining, open addressing
+  - title: "CLRS (ấn bản 4) — Chapter 11: Hash Tables"
+    kind: book
+    note: chaining, open addressing, hàm băm nhân và chia, universal hashing
+  - title: "Open Data Structures — Chapter 5: Hash Tables"
+    url: https://opendatastructures.org/ods-python/5_Hash_Tables.html
+    kind: book
+    note: ChainedHashTable, LinearHashTable và phân tích chi phí
+  - title: "Celis, Larson, Munro — Robin Hood Hashing (1985)"
+    kind: paper
+    note: nguồn gốc của kỹ thuật Robin Hood
+  - title: "Aumasson & Bernstein — SipHash: a fast short-input PRF (2012)"
+    url: https://www.aumasson.jp/siphash/siphash.pdf
+    kind: paper
+    note: hàm băm có khoá, đối phó hash flooding
+  - title: "Karger et al. — Consistent Hashing and Random Trees (1997)"
+    url: https://www.cs.princeton.edu/courses/archive/fall09/cos518/papers/chash.pdf
+    kind: paper
+    note: bài báo gốc của consistent hashing
+  - title: "CPython source — Objects/dictobject.c và Objects/dictnotes.txt"
+    url: https://github.com/python/cpython/blob/main/Objects/dictobject.c
+    kind: web
+    note: compact dict, chuỗi thăm với perturb, ngưỡng resize
+  - title: "Python wiki — TimeComplexity"
+    url: https://wiki.python.org/moin/TimeComplexity
+    kind: web
+    note: chi phí dict và set
+---
+
+## Ý chính
+
+Mảng cho truy cập theo **chỉ số** trong `O(1)`; nhưng thứ ta thường có là một **khoá** (tên người dùng, URL, mã sản phẩm) chứ không phải vị trí 0..n-1. <Term>Hash table</Term> biến khoá thành chỉ số: một **hàm băm** `h` ánh xạ khoá thành số nguyên, rồi lấy phần dư theo kích thước mảng để ra ô cần nhìn. Nếu hàm băm phân tán đều, mỗi ô chỉ có vài khoá, và tra cứu, thêm, xoá đều `O(1)` **kỳ vọng**.
+
+Chữ "kỳ vọng" quan trọng. Hai khoá khác nhau có thể rơi cùng một ô (**va chạm**, không tránh được vì có nhiều khoá hơn ô), và toàn bộ nghệ thuật của bảng băm là xử lý va chạm. Có hai họ cách làm: **chaining** (mỗi ô giữ một danh sách các khoá cùng ô) và **open addressing** (khoá bị va chạm đi tìm ô trống khác ngay trong mảng). Bài này cài cả hai, đo số lần thăm ô thực tế rồi so với công thức lý thuyết, cài thêm Robin Hood để thấy một cải tiến nhỏ đổi hẳn đuôi phân phối; sau đó nói về mặt tối: kẻ tấn công chọn khoá để mọi thứ va chạm (hash flooding) và vì sao Python, Rust, Go chọn hàm băm có khoá bí mật; rồi cách `dict` của Python tổ chức bên trong, và cuối cùng consistent hashing, nơi bảng băm vượt khỏi một máy.
+
+Code là Python 3.13, các con số là kết quả chạy thật. Bài dùng kiến thức về Big-O ở [Big-O & Complexity](/docs/dsa/complexity) và mảng ở [Array & Linked List](/docs/dsa/arrays-linked-lists).
+
+## Hàm băm và bài toán va chạm
+
+Một hàm băm tốt cho bảng cần ba tính chất: **xác định** (cùng khoá cho cùng giá trị trong một lần chạy), **nhanh** (tỉ lệ với độ dài khoá), và **phân tán đều** (khoá "gần nhau" không dồn vào cùng ô). Phần dư `h(key) mod cap` chỉ tốt khi `h` đã trộn kỹ các bit.
+
+Có `m` ô và `n` khoá, **nghịch lý ngày sinh** nói rằng va chạm xảy ra sớm hơn trực giác nhiều: chỉ cần khoảng `√m` khoá là đã có va chạm đầu tiên với xác suất đáng kể. Vậy nên đừng thiết kế như thể "không va chạm", mà thiết kế để va chạm rẻ.
+
+**Hệ số tải** (load factor) `α = n / m` là đại lượng quyết định chi phí của mọi thứ dưới đây. Mỗi cách xử lý va chạm có một công thức riêng cho số ô phải thăm theo `α`.
+
+## Chaining: mỗi ô là một danh sách
+
+Cách trực tiếp nhất: mỗi ô (bucket) giữ danh sách các cặp khoá-giá trị cùng ô. Tra cứu: tính ô, rồi duyệt danh sách của ô đó. Khi `α` vượt ngưỡng, cấp mảng lớn gấp đôi và **băm lại** (rehash) mọi khoá, chi phí `O(n)` nhưng amortized `O(1)` giống dynamic array.
+
+Với hàm băm phân tán đều và `α = n/m`, độ dài kỳ vọng của một danh sách là `α`. Tìm thấy một khoá có sẵn cần duyệt trung bình `1 + α/2` phần tử; tìm khoá không có cần `α`. Nếu giữ `α <= 1` (resize khi đầy), cả hai là `O(1)`.
+
+## Open addressing: va chạm thì tìm ô khác
+
+Không có danh sách, không có nút phụ: tất cả khoá nằm thẳng trong mảng. Khi ô `h(key)` đã có người khác, **thăm** ô kế tiếp theo một quy tắc. Quy tắc đơn giản nhất là **linear probing**: thử `i, i+1, i+2, ...` (quấn vòng). Mảng liền khối, nên duyệt các ô kế tiếp thân thiện với cache (xem [Array & Linked List](/docs/dsa/arrays-linked-lists)); đó là lý do open addressing thường nhanh hơn chaining ở dữ liệu nhỏ.
+
+Hai rắc rối mới:
+
+- **Xoá**: nếu xoá thẳng một khoá, ô trở nên trống và chuỗi thăm của các khoá sau nó bị đứt. Cách xử lý: đánh dấu ô là **bia mộ** (tombstone, `DELETED`), tìm kiếm đi qua bia mộ, còn chèn có thể dùng lại.
+- **Tụ cụm** (primary clustering): các khoá va chạm nối thành một đoạn liền dài, đoạn dài càng dễ hứng thêm khoá mới và càng dài thêm.
+
+## Tự cài hai bảng và đo
+
+Dưới đây là cả hai bảng, mỗi bảng tự đếm số lần so sánh hoặc thăm ô (`probes`). Với chaining, đếm số khoá phải so sánh; với linear probing, đếm số ô phải đọc.
+
+```python
+import random
+
+class ChainingTable:
+    def __init__(self, cap=8):
+        self.buckets = [[] for _ in range(cap)]
+        self.n = 0
+        self.probes = 0                       # tổng số khoá đã so sánh khi tìm
+    def _idx(self, key): return hash(key) % len(self.buckets)
+    def put(self, key, val):
+        b = self.buckets[self._idx(key)]
+        for i, (k, _) in enumerate(b):
+            self.probes += 1
+            if k == key: b[i] = (key, val); return
+        b.append((key, val)); self.n += 1
+        if self.n > 0.75 * len(self.buckets): self._resize(2 * len(self.buckets))
+    def get(self, key):
+        for k, v in self.buckets[self._idx(key)]:
+            self.probes += 1
+            if k == key: return v
+        raise KeyError(key)
+    def _resize(self, cap):
+        old = [kv for b in self.buckets for kv in b]
+        self.buckets = [[] for _ in range(cap)]
+        for k, v in old: self.buckets[self._idx(k)].append((k, v))
+
+EMPTY, DELETED = object(), object()
+
+class LinearProbingTable:
+    def __init__(self, cap=8, max_load=0.5):
+        self.keys = [EMPTY] * cap; self.vals = [None] * cap
+        self.n = 0; self.used = 0             # used = ô có khoá + ô bị đánh dấu xoá
+        self.max_load = max_load
+        self.probes = 0
+    def _find(self, key):
+        """Trả về chỉ số của khoá, hoặc -(ô trống đầu tiên) - 1 nếu không có."""
+        cap = len(self.keys)
+        i = hash(key) % cap
+        first_deleted = -1
+        while True:
+            self.probes += 1
+            k = self.keys[i]
+            if k is EMPTY:
+                return -(first_deleted if first_deleted >= 0 else i) - 1
+            if k is DELETED:
+                if first_deleted < 0: first_deleted = i
+            elif k == key:
+                return i
+            i = (i + 1) % cap
+    def put(self, key, val):
+        if (self.used + 1) > self.max_load * len(self.keys):
+            self._resize(2 * len(self.keys))
+        i = self._find(key)
+        if i >= 0: self.vals[i] = val; return
+        i = -i - 1
+        if self.keys[i] is EMPTY: self.used += 1
+        self.keys[i], self.vals[i] = key, val; self.n += 1
+    def get(self, key):
+        i = self._find(key)
+        if i < 0: raise KeyError(key)
+        return self.vals[i]
+    def delete(self, key):
+        i = self._find(key)
+        if i < 0: raise KeyError(key)
+        self.keys[i] = DELETED; self.vals[i] = None; self.n -= 1   # bia mộ (tombstone)
+    def _resize(self, cap):
+        old = [(k, v) for k, v in zip(self.keys, self.vals) if k is not EMPTY and k is not DELETED]
+        self.keys = [EMPTY] * cap; self.vals = [None] * cap
+        self.n = self.used = 0
+        for k, v in old: self.put(k, v)
+
+if __name__ == "__main__":
+    random.seed(3)
+    # 1) đúng sai: so với dict
+    ref, c, l = {}, ChainingTable(), LinearProbingTable()
+    keys = random.sample(range(10**6), 5000)
+    for k in keys:
+        ref[k] = k * 2; c.put(k, k * 2); l.put(k, k * 2)
+    for k in keys[:1000]: l.delete(k); ref.pop(k)
+    assert all(c.get(k) == v for k, v in ref.items())
+    assert all(l.get(k) == v for k, v in ref.items())
+    print("khớp dict:", len(ref), "khoá | chaining cap =", len(c.buckets), "| probing cap =", len(l.keys),
+          "| tombstone còn lại =", l.used - l.n)
+```
+
+```text
+khớp dict: 4000 khoá | chaining cap = 8192 | probing cap = 16384 | tombstone còn lại = 1000
+```
+
+Hai bảng khớp `dict` sau 5000 lần chèn và 1000 lần xoá. Chú ý `tombstone còn lại = 1000`: bia mộ chiếm chỗ mà không chứa khoá, và chỉ được dọn khi resize. Một bảng bị xoá và chèn liên tục cần resize vì bia mộ đầy chứ không vì khoá nhiều (đó là lý do code đếm `used` thay vì `n`).
+
+### Số ô phải thăm so với công thức
+
+Với hàm băm ngẫu nhiên đều, lý thuyết (Knuth) cho số ô thăm kỳ vọng theo `α`:
+
+| Cách | Tìm thấy | Không tìm thấy |
+|---|---|---|
+| Chaining | `1 + α/2` | `α` |
+| Linear probing | `½ (1 + 1/(1-α))` | `½ (1 + 1/(1-α)²)` |
+
+Hãy kiểm chứng. Đoạn dưới đây là phần tiếp theo của khối `if __name__ == "__main__"` ở trên. Mỗi dòng của nó nạp 100.000 khoá ngẫu nhiên vào bảng cỡ cố định để giữ đúng `α`, rồi tra lại từng khoá (tìm thấy) và tra 100.000 khoá khác (không có):
+
+```python
+    # 2) đo số lần thăm trung bình theo hệ số tải, so với công thức lý thuyết
+    print(f"{'load α':>7} | {'chaining: thực / lý thuyết 1+α/2':>34} | {'probing hit: thực / ½(1+1/(1-α))':>36} | {'probing miss: thực / ½(1+1/(1-α)²)':>38}")
+    N = 100_000
+    for alpha in (0.25, 0.5, 0.7, 0.9):
+        cap = int(N / alpha)
+        # chaining với cap cố định (không resize) để giữ đúng α
+        ch = ChainingTable(cap); ch.n = -10**9           # chặn resize
+        lp = LinearProbingTable(cap, max_load=1.0)
+        ks = random.sample(range(10**9), N)
+        for k in ks: ch.put(k, 1); lp.put(k, 1)
+        ch.probes = 0; lp.probes = 0
+        for k in ks: ch.get(k)
+        hit_c = ch.probes / N
+        for k in ks: lp.get(k)
+        hit_l = lp.probes / N
+        lp.probes = 0
+        miss = random.sample(range(10**9, 2 * 10**9), N)
+        for k in miss:
+            try: lp.get(k)
+            except KeyError: pass
+        miss_l = lp.probes / N
+        print(f"{alpha:>7} | {hit_c:>14.3f} / {1 + alpha/2:>6.3f}            | {hit_l:>16.3f} / {0.5*(1+1/(1-alpha)):>6.3f}           | {miss_l:>17.3f} / {0.5*(1+1/(1-alpha)**2):>7.3f}")
+```
+
+```text
+ load α |   chaining: thực / lý thuyết 1+α/2 |     probing hit: thực / ½(1+1/(1-α)) |     probing miss: thực / ½(1+1/(1-α)²)
+   0.25 |          1.126 /  1.125            |            1.166 /  1.167           |             1.393 /   1.389
+    0.5 |          1.248 /  1.250            |            1.495 /  1.500           |             2.482 /   2.500
+    0.7 |          1.349 /  1.350            |            2.174 /  2.167           |             6.140 /   6.056
+    0.9 |          1.450 /  1.450            |            5.737 /  5.500           |            55.651 /  50.500
+```
+
+Số đo bám sát lý thuyết ở mọi cột. Điều đáng nhớ từ bảng:
+
+- **Chaining thoái hoá nhẹ nhàng**: ở `α = 0,9` vẫn chỉ 1,45 lần so sánh. Nó chịu được `α > 1` (nhiều khoá hơn ô), chỉ chậm dần tuyến tính.
+- **Linear probing thoái hoá dữ dội**: tìm thấy từ 1,5 lần (ở `α = 0,5`) lên 5,7 lần (ở `0,9`); tìm không có từ 2,5 lên **55,7** lần, vì phải đi hết chuỗi cụm mới gặp ô trống. Thời gian tăng với `1/(1-α)²`, nên phải **giữ `α` thấp** (thường dưới 0,5 đến 0,75) và resize sớm.
+
+Đây là lý do phải có ngưỡng resize: mọi bảng băm ngoài đời thực đều định nghĩa `max_load` và tự lớn lên khi vượt. Chọn ngưỡng là chọn điểm trên đường đánh đổi giữa bộ nhớ (bảng thưa tốn RAM) và thời gian.
+
+## Robin Hood: cải tiến nhỏ, đuôi ngắn hẳn
+
+Linear probing thoái hoá vì có người **may**: nằm ngay ô nhà, thăm 1 lần; có người **xui**: đã bị dồn đi xa. Phân phối thăm ô có "đuôi" rất dài. **Robin Hood hashing** đổi quy tắc chèn bằng một ý đơn giản: lưu kèm mỗi khoá **khoảng cách `dist`** từ ô nhà của nó tới ô nó đang ở. Khi chèn, nếu gặp một khoá có `dist` nhỏ hơn khoá đang chèn (tức kẻ đang ở ô này "giàu", ở gần nhà hơn), thì **cướp ô** của nó và đẩy nó đi tiếp. Mỗi khoá cuối cùng tự trải đều "nỗi khổ", giống cướp của người giàu chia người nghèo.
+
+Lợi ích thứ hai: khi tìm, nếu khoảng cách đã thăm `d` vượt `dist` của ô đang đứng thì khoá chắc chắn **không có**, vì nếu có nó đã cướp được ô này rồi. Vậy tìm khoá không tồn tại dừng sớm thay vì chạy tới ô trống.
+
+```python
+import random, statistics
+
+class RobinHoodTable:
+    def __init__(self, cap):
+        self.cap = cap
+        self.keys = [None] * cap
+        self.dist = [0] * cap                  # khoảng cách từ ô "nhà" (hash % cap) tới ô đang ở
+    def put(self, key):
+        i, d = hash(key) % self.cap, 0
+        while True:
+            if self.keys[i] is None:
+                self.keys[i], self.dist[i] = key, d; return
+            if self.dist[i] < d:               # kẻ đang ở ô này "giàu" hơn: cướp chỗ, rồi chèn kẻ bị đẩy ra
+                key, self.keys[i] = self.keys[i], key
+                d, self.dist[i] = self.dist[i], d
+            i = (i + 1) % self.cap; d += 1
+    def get_probes(self, key):
+        i, d = hash(key) % self.cap, 0
+        while self.keys[i] is not None and d <= self.dist[i]:   # nếu d vượt dist[i], khoá không thể ở xa hơn
+            if self.keys[i] == key: return d + 1
+            i = (i + 1) % self.cap; d += 1
+        return d + 1                           # thăm ô cuối để biết là không có
+
+class PlainLP:
+    def __init__(self, cap): self.cap, self.keys = cap, [None] * cap
+    def put(self, key):
+        i = hash(key) % self.cap
+        while self.keys[i] is not None: i = (i + 1) % self.cap
+        self.keys[i] = key
+    def get_probes(self, key):
+        i, d = hash(key) % self.cap, 1
+        while self.keys[i] is not None:
+            if self.keys[i] == key: return d
+            i = (i + 1) % self.cap; d += 1
+        return d
+
+random.seed(11)
+N = 90_000; cap = 100_000                      # α = 0.9
+ks = random.sample(range(10**9), N)
+miss = random.sample(range(10**9, 2 * 10**9), N)
+rh, lp = RobinHoodTable(cap), PlainLP(cap)
+for k in ks: rh.put(k); lp.put(k)
+print(f"α = {N/cap}, {N} khoá")
+print(f"{'':<18} {'tìm thấy: TB':>13} {'lâu nhất':>9} {'độ lệch chuẩn':>14} | {'không có: TB':>13} {'lâu nhất':>9}")
+for name, t in (("linear probing", lp), ("Robin Hood", rh)):
+    hit = [t.get_probes(k) for k in ks]
+    mis = [t.get_probes(k) for k in miss]
+    print(f"{name:<18} {statistics.mean(hit):>13.2f} {max(hit):>9} {statistics.pstdev(hit):>14.2f} | {statistics.mean(mis):>13.2f} {max(mis):>9}")
+```
+
+```text
+α = 0.9, 90000 khoá
+                    tìm thấy: TB  lâu nhất  độ lệch chuẩn |  không có: TB  lâu nhất
+linear probing              5.66       548          17.59 |         51.11       761
+Robin Hood                  5.66        37           4.99 |          6.12        38
+```
+
+Kết quả ở `α = 0,9`:
+
+- **Trung bình khi tìm thấy bằng nhau** (5,66): Robin Hood không bớt tổng công việc, nó **chia lại** công việc.
+- **Trường hợp tồi nhất** rơi từ 548 xuống 37 lần thăm, độ lệch chuẩn từ 17,6 xuống 5,0. Không còn khoá nào bị đẩy đi quá xa.
+- **Tìm khoá không có** là chỗ thắng lớn nhất: từ 51,1 xuống 6,1 lần thăm trung bình, nhờ điều kiện dừng sớm.
+
+Robin Hood được dùng trong nhiều bảng băm hiệu năng cao; thư viện chuẩn của Rust từng dùng nó cho `HashMap` trước khi chuyển sang `hashbrown` (từ Rust 1.36), một cài đặt SwissTable: open addressing có thêm 1 byte metadata cho mỗi ô để so 16 ô cùng lúc bằng lệnh SIMD.
+
+## Mặt tối: hash flooding
+
+Mọi phân tích trên giả định khoá "ngẫu nhiên đối với hàm băm". Nếu khoá do **kẻ tấn công** chọn, giả định đó sụp đổ: chỉ cần biết hàm băm, ta dựng được nhiều khoá cùng giá trị băm, đẩy bảng về trường hợp tồi nhất `O(n)` mỗi thao tác, `O(n^2)` cho cả đợt, một vụ DoS rất rẻ (một request nhỏ làm CPU của server bận hàng giây). Đây là **hash flooding** (còn gọi là hash DoS), công bố rộng rãi năm 2011 và ảnh hưởng PHP, Java, Ruby, Python, ASP.NET.
+
+Hàm băm chuỗi của Java cổ điển là `h = 31*h + ký_tự`, chạy qua từng ký tự. Có thể dựng va chạm bằng tay: `"Aa"` có giá trị `65*31 + 97 = 2112` và `"BB"` có giá trị `66*31 + 66 = 2112`. Hai chuỗi hai ký tự cùng hash, nên mọi cách ghép các khối `"Aa"` và `"BB"` cũng cùng hash: `k` khối cho `2^k` chuỗi dài `2k` ký tự, tất cả cùng một giá trị băm.
+
+```python
+import itertools, random, time
+
+def java_hash(s):
+    h = 0
+    for ch in s:
+        h = (31 * h + ord(ch)) & 0xFFFFFFFF
+    return h
+
+print('java_hash("Aa") =', java_hash("Aa"), '| java_hash("BB") =', java_hash("BB"))
+def colliding(k):
+    pairs = ["Aa", "BB"]
+    return ["".join(p) for p in itertools.product(pairs, repeat=k)]
+
+ks = colliding(4)
+print("16 chuỗi dài 8 ký tự, số giá trị hash khác nhau:", len({java_hash(s) for s in ks}), "(tất cả va chạm)")
+
+class ToyTable:
+    """Bảng chaining dùng java_hash, không resize bucket để dễ thấy độ dài chuỗi."""
+    def __init__(self, cap=1 << 16):
+        self.b = [[] for _ in range(cap)]; self.cmp = 0
+    def put(self, key):
+        bucket = self.b[java_hash(key) % len(self.b)]
+        for k in bucket:
+            self.cmp += 1
+            if k == key: return
+        bucket.append(key)
+
+def trial(name, keys):
+    t = ToyTable(); s = time.perf_counter()
+    for k in keys: t.put(k)
+    dt = time.perf_counter() - s
+    print(f"{name:<22} {len(keys):>6} khoá: {t.cmp:>12} lần so sánh, {dt*1000:9.1f} ms")
+
+random.seed(5)
+for k in (10, 12, 14):
+    bad = colliding(k)                                   # 2^k chuỗi cùng hash
+    good = ["".join(random.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(2 * k)) for _ in range(len(bad))]
+    trial(f"ngẫu nhiên (2^{k})", good)
+    trial(f"va chạm cố ý (2^{k})", bad)
+```
+
+```text
+java_hash("Aa") = 2112 | java_hash("BB") = 2112
+16 chuỗi dài 8 ký tự, hash khác nhau: 1 (tất cả va chạm)
+ngẫu nhiên (2^10)        1024 khoá:            6 lần so sánh,       1.4 ms
+va chạm cố ý (2^10)      1024 khoá:       523776 lần so sánh,      15.4 ms
+ngẫu nhiên (2^12)        4096 khoá:          128 lần so sánh,       6.5 ms
+va chạm cố ý (2^12)      4096 khoá:      8386560 lần so sánh,     243.8 ms
+ngẫu nhiên (2^14)       16384 khoá:         2021 lần so sánh,      32.7 ms
+va chạm cố ý (2^14)     16384 khoá:    134209536 lần so sánh,    5114.6 ms
+```
+
+Số so sánh của dữ liệu va chạm cố ý bằng đúng `n(n-1)/2`: với `n = 1024` là `523776`, `n = 16384` là `134.209.536`. Cùng số khoá, dữ liệu ngẫu nhiên chỉ tốn vài nghìn lần so sánh, còn dữ liệu cố ý tốn 134 triệu: 5,1 giây cho 16.384 khoá (khoảng 450 KB dữ liệu đầu vào). Mỗi lần nhân đôi số khoá thì thời gian nhân khoảng 4, đúng `Θ(n^2)`.
+
+### Cách phòng thủ
+
+- **Hàm băm có khoá bí mật** (keyed hash): mỗi tiến trình khi khởi động bốc ngẫu nhiên một khoá, và hàm băm phụ thuộc khoá đó. Kẻ tấn công không biết khoá nên không dựng được va chạm. **SipHash** (Aumasson và Bernstein, 2012) được thiết kế đúng cho việc này: đủ nhanh cho khoá ngắn mà vẫn là hàm giả ngẫu nhiên có khoá.
+- Python 3.4 trở đi dùng SipHash cho chuỗi và bytes (từ Python 3.11 là biến thể SipHash-1-3), với khoá được lấy ngẫu nhiên mỗi lần khởi động. Quan sát trực tiếp:
+
+```python
+import subprocess, sys, os
+code = "print(hash('hello'), hash('hello') % 8)"
+for run in range(3):
+    env = dict(os.environ); env.pop("PYTHONHASHSEED", None)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env).stdout.strip()
+    print(f"lần chạy {run + 1} (seed ngẫu nhiên):", out)
+for seed in ("0", "0"):
+    env = dict(os.environ, PYTHONHASHSEED=seed)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env).stdout.strip()
+    print(f"PYTHONHASHSEED={seed}:               ", out)
+print("hash(12345) =", hash(12345), "| hash(-1) =", hash(-1), "| hash(-2) =", hash(-2), "(int tự băm thành chính nó, trừ -1)")
+print("hash(1.0) == hash(1) ->", hash(1.0) == hash(1), "| hash(True) ->", hash(True))
+```
+
+```text
+lần chạy 1 (seed ngẫu nhiên): -5552677457043317528 0
+lần chạy 2 (seed ngẫu nhiên): 7602813048085781854 6
+lần chạy 3 (seed ngẫu nhiên): 5986953679376524366 6
+PYTHONHASHSEED=0:                -2096571579003691106 6
+PYTHONHASHSEED=0:                -2096571579003691106 6
+hash(12345) = 12345 | hash(-1) = -2 | hash(-2) = -2 (int tự băm thành chính nó, trừ -1)
+hash(1.0) == hash(1) -> True | hash(True) -> 1
+```
+
+Mỗi lần chạy `hash('hello')` cho một giá trị khác, trừ khi ép `PYTHONHASHSEED`. Hai hệ quả trong đời sống:
+
+- **Không bao giờ lưu `hash()` của Python vào đĩa hay gửi qua mạng** và không dựa vào nó giống nhau giữa các tiến trình (consistent hashing bên dưới dùng SHA-256 vì vậy). Thứ tự duyệt `set` của chuỗi có thể đổi giữa hai lần chạy cùng chương trình.
+- Số nguyên thì **không** bị ngẫu nhiên hoá: `hash(12345) = 12345` (và `hash(-1) = -2` vì `-1` được dành làm mã lỗi trong C). Khoá nguyên vẫn đoán được, nên dict với khoá số nguyên do người dùng điều khiển có thể bị làm giảm hiệu năng bằng khoá chọn khéo. Python giảm nhẹ bằng chuỗi thăm trộn thêm cả các bit cao của hash (xem dưới).
+
+- **Giới hạn độ dài chuỗi va chạm**: Java 8 trở đi biến một bucket quá dài (từ 8 phần tử khi bảng đủ lớn) thành cây cân bằng, nên trường hợp tồi nhất chỉ còn `O(log n)` thay vì `O(n)`.
+- **Nơi nào không cần chịu tấn công** (cấu trúc nội bộ không nhận khoá từ ngoài) có thể dùng hàm băm nhanh hơn không có khoá, như FxHash trong trình biên dịch Rust, và đánh đổi tính an toàn lấy tốc độ. Đó là quyết định có chủ ý, không phải mặc định cho mọi nơi.
+
+## Bên trong `dict` của Python
+
+`dict` là cấu trúc được tối ưu kỹ nhất của Python (nó cũng là nền của thuộc tính object và không gian tên). Từ Python 3.6 nó là **compact dict**: thay vì một mảng thưa chứa trực tiếp `(hash, key, value)`, nó dùng **hai mảng**:
+
+1. một mảng **chỉ số** thưa (`indices`), kích thước luỹ thừa của 2, mỗi ô là số nguyên nhỏ (1, 2, 4 hay 8 byte tuỳ kích thước bảng), `-1` là ô trống, `-2` là bia mộ;
+2. một mảng **entries** dày, xếp theo **thứ tự chèn**, mỗi phần tử là bộ ba `(hash, key, value)` 24 byte.
+
+Tra cứu băm khoá, lấy ô trong mảng chỉ số, dùng nó làm chỉ số vào mảng entries để lấy khoá thật và so sánh. Lợi ích: mảng chỉ số thưa chỉ gồm các số nhỏ nên tốn ít bộ nhớ (thay vì các ô 24 byte phần lớn trống); các entries nằm liền nhau nên duyệt `dict` nhanh; và nó **giữ thứ tự chèn** (được đảm bảo từ Python 3.7) miễn phí.
+
+Chuỗi thăm của CPython không phải linear probing thuần. Nó trộn dần các bit cao của hash vào bước nhảy: bắt đầu với `perturb = hash`, mỗi bước `perturb >>= 5` rồi `i = (5*i + perturb + 1) mod size`. Hai khoá cùng ô nhà nhưng khác bit cao sẽ rẽ sang các hướng khác nhau, giảm tụ cụm mà vẫn duy trì hiệu quả cache đủ tốt cho vài bước đầu.
+
+Bảng đổi kích thước khi đầy khoảng hai phần ba. Nhìn dung lượng tăng:
+
+```python
+import sys
+d = {}
+last = sys.getsizeof(d)
+print("len tại lúc dict đổi kích thước -> sizeof (byte)")
+rows = [(0, last)]
+for i in range(1, 200):
+    d[i] = i
+    s = sys.getsizeof(d)
+    if s != last:
+        rows.append((len(d), s)); last = s
+print(rows)
+n = 100_000
+print(f"dict {sys.getsizeof({i: i for i in range(n)})} | set {sys.getsizeof(set(range(n)))} | list {sys.getsizeof(list(range(n)))} byte (chưa tính object int)")
+d = {}
+for k in ["x", "y", "z"]: d[k] = 1
+del d["y"]; d["w"] = 1
+print("thứ tự chèn được giữ:", list(d))
+```
+
+```text
+len tại lúc dict đổi kích thước -> sizeof (byte)
+[(0, 64), (1, 224), (6, 352), (11, 632), (22, 1168), (43, 2264), (86, 4688), (171, 9304)]
+dict 5242960 | set 4194520 | list 800056 byte (chưa tính object int)
+thứ tự chèn được giữ: ['x', 'z', 'w']
+```
+
+Dict rỗng chỉ 64 byte; phần tử đầu tiên cấp ngay bảng 8 ô (224 byte); các lần đổi kích thước tiếp theo ở số phần tử 6, 11, 22, 43, 86, 171, tức khoảng gấp đôi mỗi lần (mỗi bảng cho dùng chừng hai phần ba số ô). Với 100.000 phần tử, `dict` tốn khoảng 5,2 MB, `set` 4,2 MB, `list` chỉ 0,8 MB: cái giá bộ nhớ của việc tra cứu `O(1)` theo khoá. Dòng cuối cho thấy xoá `'y'` rồi thêm `'w'` thì `'w'` đứng cuối, đúng thứ tự chèn.
+
+Một hệ quả: **khoá phải bất biến theo nghĩa băm**. Python cấm khoá là `list` hay `dict` (không băm được) vì nếu nội dung đổi sau khi chèn, hash đổi và khoá "lạc" khỏi ô cũ. Quy tắc tương đương: hai khoá `==` nhau thì hash phải bằng nhau (ví dụ `hash(1.0) == hash(1) == hash(True)` như output bên trên), nên `d[1]` và `d[1.0]` là cùng một mục.
+
+## Consistent hashing: bảng băm trên nhiều máy
+
+Giả sử cụm cache có `N` server và khoá `k` nằm ở server `h(k) mod N`. Khi thêm hoặc bớt một server, `N` đổi và **gần như mọi khoá đổi chỗ**: cache nguội đồng loạt, database bị dội. Đo thử trên 100.000 khoá khi thêm server thứ 11 vào cụm 10:
+
+**Consistent hashing** (Karger và đồng nghiệp, 1997) đặt cả server lẫn khoá lên cùng một **vòng** `0 .. 2^64 - 1`. Server nằm ở vị trí băm tên của nó; khoá thuộc về server đầu tiên gặp khi đi theo chiều kim đồng hồ từ vị trí của khoá. Thêm một server chỉ cướp phần khoá nằm giữa nó và server đứng trước; bớt một server chỉ chuyển phần khoá của nó sang server kế. Để chia tải đều hơn, mỗi server xuất hiện nhiều lần trên vòng dưới dạng **virtual node**.
+
+```python
+import bisect, hashlib, statistics
+
+def h(s):                                   # băm ổn định giữa các lần chạy (không dùng hash() của Python)
+    return int.from_bytes(hashlib.sha256(s.encode()).digest()[:8], "big")
+
+class Ring:
+    def __init__(self, nodes, vnodes=100):
+        self.vnodes, self.points, self.owner = vnodes, [], {}
+        for n in nodes: self.add(n)
+    def add(self, node):
+        for i in range(self.vnodes):
+            p = h(f"{node}#{i}")
+            bisect.insort(self.points, p); self.owner[p] = node
+    def get(self, key):                      # nút đầu tiên theo chiều kim đồng hồ, từ vị trí của khoá
+        i = bisect.bisect(self.points, h(key)) % len(self.points)
+        return self.owner[self.points[i]]
+
+keys = [f"user:{i}" for i in range(100_000)]
+
+print("1) thêm server thứ 11 vào cụm 10 server: bao nhiêu % khoá phải đổi chỗ")
+mod_before = {k: h(k) % 10 for k in keys}
+mod_after  = {k: h(k) % 11 for k in keys}
+moved_mod = sum(mod_before[k] != mod_after[k] for k in keys)
+print(f"   băm lấy dư  (h mod N):     {moved_mod/len(keys):6.1%}   (lý thuyết ≈ N/(N+1) = {10/11:.1%})")
+nodes = [f"s{i}" for i in range(10)]
+r = Ring(nodes); before = {k: r.get(k) for k in keys}
+r.add("s10"); after = {k: r.get(k) for k in keys}
+moved = sum(before[k] != after[k] for k in keys)
+print(f"   consistent hashing:         {moved/len(keys):6.1%}   (lý thuyết ≈ 1/(N+1) = {1/11:.1%})")
+
+print()
+print("2) độ lệch tải giữa 10 server theo số vnode mỗi server (100.000 khoá, lý tưởng = 10.000 mỗi server)")
+print(f"   {'vnode':>6} {'ít nhất':>9} {'nhiều nhất':>11} {'nhiều/ít':>9} {'độ lệch chuẩn':>14}")
+for v in (1, 10, 100, 1000):
+    r = Ring(nodes, vnodes=v)
+    load = {n: 0 for n in nodes}
+    for k in keys: load[r.get(k)] += 1
+    vals = list(load.values())
+    print(f"   {v:>6} {min(vals):>9} {max(vals):>11} {max(vals)/min(vals):>8.2f}x {statistics.pstdev(vals):>14.0f}")
+```
+
+```text
+1) thêm server thứ 11 vào cụm 10 server: bao nhiêu % khoá phải đổi chỗ
+   băm lấy dư  (h mod N):      90.9%   (lý thuyết ≈ N/(N+1) = 90.9%)
+   consistent hashing:          10.2%   (lý thuyết ≈ 1/(N+1) = 9.1%)
+
+2) độ lệch tải giữa 10 server theo số vnode mỗi server (100.000 khoá, lý tưởng = 10.000 mỗi server)
+    vnode   ít nhất  nhiều nhất  nhiều/ít  độ lệch chuẩn
+        1       972       22362    23.01x           7478
+       10      4452       14296     3.21x           3179
+      100      9193       10993     1.20x            582
+     1000      9386       10561     1.13x            351
+```
+
+Phép chia lấy dư đẩy đi **90,9%** khoá (đúng `N/(N+1)`); consistent hashing chỉ **10,2%**, sát mức tối thiểu `1/(N+1)`: thêm server chỉ lấy phần của mình, không xáo ai khác. Bảng thứ hai cho thấy vì sao cần virtual node: với mỗi server chỉ một điểm trên vòng, server tải nhiều nhất gấp **23 lần** server ít nhất (các khoảng giữa các điểm trên vòng dài ngắn rất khác nhau); với 100 điểm mỗi server thì chênh còn 1,2 lần, với 1000 điểm là 1,13 lần. Đổi lại, vòng có `N × vnode` điểm và tra cứu là tìm nhị phân (`O(log(N × vnode))`).
+
+Consistent hashing hiện diện trong thiết kế của Dynamo và Cassandra, trong các bộ cân bằng tải, và ở phía client của cụm Memcached; các biến thể như rendezvous hashing và Jump Consistent Hash đổi cách làm để cân bằng tải chặt hơn hoặc tốn ít bộ nhớ hơn.
+
+## Trong hệ thống thật
+
+| Hệ thống | Cách làm |
+|---|---|
+| CPython `dict` và `set` | open addressing, compact dict, SipHash cho chuỗi, thứ tự chèn được giữ |
+| Java `HashMap` | chaining; bucket dài từ 8 phần tử (khi bảng đủ lớn) đổi thành cây đỏ-đen; resize khi tải đạt 0,75, hệ số 2 |
+| Rust `HashMap` | `hashbrown` (SwissTable), open addressing với metadata 1 byte mỗi ô và SIMD; mặc định SipHash-1-3 có khoá |
+| Go `map` | từ Go 1.24 dùng SwissTable; trước đó là bucket 8 phần tử |
+| Redis `dict` | chaining; **rehash tăng dần**: giữ hai bảng và chuyển vài bucket mỗi thao tác để không có cú dừng lớn |
+| Linux kernel | hash table với chaining (`hlist`), bucket tĩnh, dùng cho dentry, inode, bảng tiến trình |
+
+Điểm đáng chú ý là **chi phí resize**: resize là `O(n)` và làm một thao tác đột ngột chậm (đúng bản chất amortized). Redis xử lý bằng rehash tăng dần vì nó là server cần độ trễ ổn định; hệ thống thời gian thực cũng thường cấp trước kích thước bảng.
+
+## Quan sát và chẩn đoán
+
+- Python: `sys.getsizeof` cho kích thước bảng, `timeit` để so sánh `in` trên `list` và `set` (xem [Big-O & Complexity](/docs/dsa/complexity): `set` gần như không đổi theo `n` còn `list` tuyến tính).
+- Với khoá tự định nghĩa trong Python, cài `__hash__` và `__eq__` **cùng nhau** và nhất quán: nếu `a == b` thì `hash(a) == hash(b)`; hash chỉ lấy từ trường bất biến. Quên một trong hai nhánh cho hành vi sai rất khó dò (khoá "biến mất" khỏi dict).
+- Đếm phân bố độ dài chuỗi hoặc khoảng cách thăm (như các phép đo trong bài) là cách xem hàm băm có phân tán đều không.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Một request nhỏ làm CPU server kẹt vài giây | hash flooding trên khoá do người dùng chọn | hàm băm có khoá bí mật; giới hạn số khoá nhận vào |
+| `dict` đột nhiên chậm dần dù số khoá không đổi | nhiều lần xoá và chèn tích bia mộ; hash tệ | tạo lại dict; kiểm tra `__hash__` |
+| Khoá chèn vào rồi không tìm thấy | khoá thay đổi sau khi chèn, hoặc `__hash__` không khớp `__eq__` | khoá bất biến, `__hash__` dựa trên các trường bất biến |
+| Thứ tự lặp `set` khác nhau giữa các lần chạy | SipHash ngẫu nhiên hoá chuỗi | đừng dựa vào thứ tự `set`; dùng `dict` hoặc `sorted` |
+| Thêm một node cache làm cả cụm nguội | băm lấy dư theo số node | consistent hashing |
+| Bảng băm tự cài chậm dần khi đầy | `α` cao với open addressing | resize sớm hơn, giữ `α` dưới 0,5 đến 0,75 |
+
+## Lưu ý
+
+- `O(1)` của bảng băm là **kỳ vọng**, với giả định hàm băm tốt và `α` được giữ ổn định. Trường hợp tồi nhất là `O(n)`.
+- Linear probing thoái hoá nhanh khi bảng đầy (tìm không có tốn khoảng `1/(1-α)²`); chaining thoái hoá chậm hơn nhiều. Chọn ngưỡng resize có chủ ý.
+- Xoá trong open addressing cần bia mộ, và bia mộ cũng chiếm chỗ cho tới khi resize.
+- Robin Hood không đổi tốc độ trung bình khi tìm thấy mà thu hẹp đuôi và làm khoá không có dừng sớm; đó là lý do nó được dùng trong các bảng băm hiệu năng cao.
+- Khoá cho bảng băm phải bất biến theo nghĩa băm, và `a == b` phải kéo theo `hash(a) == hash(b)`.
+- Không dùng `hash()` của Python (hay `hashCode` của Java) làm định danh bền vững hay khoá phân mảnh; nó có thể đổi giữa các lần chạy và các phiên bản.
+- Khoá do người dùng điều khiển cần hàm băm có khoá bí mật (SipHash và tương tự), nếu không bạn mở cửa cho hash flooding.
+- Băm lấy dư theo số node làm gần như mọi khoá đổi chỗ mỗi khi cụm đổi kích thước; dùng consistent hashing (kèm virtual node) khi cần co giãn.
+- Bảng băm đổi bộ nhớ lấy tốc độ: `dict` tốn nhiều gấp nhiều lần `list` cùng số phần tử, và không hỗ trợ duyệt theo thứ tự khoá, tìm khoá nhỏ nhất hay tìm theo khoảng (đó là việc của [cây](/docs/dsa/trees)).

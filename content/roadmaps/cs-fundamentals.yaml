@@ -41,6 +41,7 @@ sections:
             url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
       - id: hash-tables
         title: Hash Table
+        article: dsa/hash-tables
         description: Tra cứu trung bình O(1) nhờ hàm băm, và chuyện va chạm.
         requires: [arrays-linked-lists]
         resources:

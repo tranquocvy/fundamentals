@@ -2,6 +2,7 @@
   "title": "Data Structures & Algorithms",
   "pages": [
     "complexity",
-    "arrays-linked-lists"
+    "arrays-linked-lists",
+    "hash-tables"
   ]
 }

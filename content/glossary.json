@@ -185,6 +185,15 @@
         "glue"
       ]
     },
+    "hash table": {
+      "def": "Cấu trúc ánh xạ khoá sang giá trị: hàm băm biến khoá thành chỉ số trong một mảng, nhờ vậy tra cứu, thêm, xoá tốn O(1) kỳ vọng.",
+      "subject": "dsa",
+      "aliases": [
+        "bảng băm",
+        "hash map",
+        "dictionary"
+      ]
+    },
     "head-of-line blocking": {
       "def": "Một gói tin bị chậm hoặc mất làm mọi dữ liệu xếp sau nó phải chờ, dù chúng đã tới nơi.",
       "subject": "networking"
