@@ -184,6 +184,14 @@
         "arraylist"
       ]
     },
+    "dynamic programming": {
+      "def": "Kỹ thuật giải bài toán bằng cách tách thành các bài con chồng lấp, giải mỗi bài con một lần và lưu lại kết quả để dùng lại.",
+      "subject": "dsa",
+      "aliases": [
+        "quy hoạch động",
+        "dp"
+      ]
+    },
     "encapsulation": {
       "def": "Mỗi tầng mạng bọc dữ liệu của tầng trên vào bên trong gói của mình và thêm header riêng; bên nhận bóc ngược từng lớp.",
       "subject": "networking"

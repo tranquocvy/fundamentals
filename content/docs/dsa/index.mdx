@@ -1,7 +1,19 @@
 ---
 title: Data Structures & Algorithms
-description: Độ phức tạp, array, hash table, tree, sorting, graph.
+description: Độ phức tạp, array và linked list, hash table, tree, sorting, graph, dynamic programming.
 tags: [dsa]
 ---
 
-Đang viết.
+Phần này ghi chú cách tổ chức dữ liệu và đo chi phí của thuật toán, nền cho mọi môn phía sau. Mỗi bài tự cài cấu trúc hoặc thuật toán đang nói tới bằng Python, kiểm tra kết quả và đo trên máy thật (đếm thao tác khi có thể, vì số đếm không phụ thuộc máy), để thấy vì sao cấu trúc chạy như vậy chứ không chỉ biết tên. Đọc theo thứ tự dưới đây vì bài sau dùng khái niệm của bài trước.
+
+| Bài | Trả lời câu hỏi |
+|---|---|
+| [Big-O & Complexity](/docs/dsa/complexity) | Đo chi phí thuật toán thế nào khi bỏ hằng số? Phân tích vòng lặp và đệ quy ra sao? Amortized là gì, và vì sao hằng số và cache làm lý thuyết lệch với thực tế? |
+| [Array & Linked List](/docs/dsa/arrays-linked-lists) | Mảng và danh sách liên kết bố trí bộ nhớ khác nhau thế nào? Dynamic array co giãn ra sao? Vì sao mảng thường thắng, và stack, queue, ring buffer dựng trên chúng thế nào? |
+| [Hash Table](/docs/dsa/hash-tables) | Tra cứu `O(1)` nhờ hàm băm hoạt động ra sao? Chaining, linear probing, Robin Hood khác nhau chỗ nào? Hash flooding là gì, và consistent hashing giải quyết điều gì? |
+| [Tree & Binary Search Tree](/docs/dsa/trees) | Vì sao BST có thể thoái hoá, và AVL, red-black giữ cây thấp bằng phép xoay thế nào? Heap, B-tree, B+ tree và trie dùng để làm gì? |
+| [Sorting](/docs/dsa/sorting) | Các thuật toán sắp xếp đánh đổi ra sao? Vì sao `n log n` là giới hạn, và Timsort cùng introsort ghép các thuật toán thế nào? |
+| [Graph](/docs/dsa/graphs) | Biểu diễn đồ thị thế nào? BFS, DFS, sắp xếp topo, Dijkstra, Bellman-Ford, union-find và cây khung nhỏ nhất dùng khi nào? |
+| [Dynamic Programming](/docs/dsa/dynamic-programming) | Nhận ra bài con chồng lấp thế nào? Đổi tiền, knapsack, LCS, edit distance giải ra sao, và khi nào tham lam là đủ? |
+
+Cấu trúc ở bài [Tree](/docs/dsa/trees) (B-tree) là nền của chỉ mục cơ sở dữ liệu, và các khái niệm ở bài [Hash Table](/docs/dsa/hash-tables) quay lại khi nói về bộ nhớ đệm và phân mảnh dữ liệu. Chặng này nằm trong [roadmap CS Fundamentals](/roadmaps/cs-fundamentals).

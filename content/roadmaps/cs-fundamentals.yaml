@@ -73,6 +73,7 @@ sections:
             url: https://jeffe.cs.illinois.edu/teaching/algorithms/
       - id: dynamic-programming
         title: Dynamic Programming
+        article: dsa/dynamic-programming
         description: Chia bài toán thành bài con chồng lấp và ghi nhớ kết quả.
         requires: [sorting]
         optional: true

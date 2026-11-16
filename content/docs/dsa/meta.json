@@ -6,6 +6,7 @@
     "hash-tables",
     "trees",
     "sorting",
-    "graphs"
+    "graphs",
+    "dynamic-programming"
   ]
 }
