@@ -1,0 +1,396 @@
+---
+title: Data Representation
+description: Số nguyên bù hai và tràn số, mở rộng dấu và dịch bit, endianness, mẹo bit, số thực IEEE 754 tách tận từng bit, vì sao 0.1 + 0.2 khác 0.3, khoảng cách giữa các số liền kề, sai số tích luỹ và cách chữa, tất cả chạy thật bằng Python.
+status: draft
+tags: [architecture, data-representation, floating-point]
+authors: [tranquocvy]
+references:
+  - title: "Bryant & O'Hallaron — Computer Systems: A Programmer's Perspective, Chapter 2: Representing and Manipulating Information"
+    kind: book
+    note: số nguyên bù hai, tràn số, số thực IEEE 754, làm tròn
+  - title: "Goldberg — What Every Computer Scientist Should Know About Floating-Point Arithmetic (1991)"
+    url: https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
+    kind: paper
+    note: định dạng, làm tròn, sai số, các quy tắc an toàn khi tính toán số thực
+  - title: "Python docs — Floating Point Arithmetic: Issues and Limitations"
+    url: https://docs.python.org/3/tutorial/floatingpoint.html
+    kind: web
+    note: vì sao 0.1 không biểu diễn chính xác, repr và round
+  - title: "Floating-Point Guide"
+    url: https://floating-point-gui.de/
+    kind: web
+    note: giải thích thân thiện về số thực và các lỗi thường gặp
+  - title: "Bloch — Nearly All Binary Searches and Mergesorts are Broken (2006)"
+    url: https://research.google/blog/extra-extra-read-all-about-it-nearly-all-binary-searches-and-mergesorts-are-broken/
+    kind: web
+    note: lỗi tràn số trong phép tính trung điểm tồn tại hàng chục năm
+  - title: "Kahan — Further remarks on reducing truncation errors (1965)"
+    kind: paper
+    note: thuật toán cộng bù Kahan
+  - title: "IEEE 754-2019 — Standard for Floating-Point Arithmetic"
+    kind: book
+    note: tiêu chuẩn, các định dạng và chế độ làm tròn
+  - title: "Nand to Tetris — Part I, Chapter 2: Boolean Arithmetic"
+    url: https://www.nand2tetris.org/
+    kind: video
+    note: dựng bộ cộng và ALU từ cổng logic, nền để hiểu bù hai
+---
+
+## Ý chính
+
+Bộ nhớ chỉ chứa **bit**. Một dãy 32 bit không "là" số nguyên, số thực hay bốn ký tự: nó trở thành thứ đó khi một **kiểu** quyết định cách đọc. Điều này có hai hệ quả mà mọi lập trình viên sớm muộn gặp. Thứ nhất, kích thước kiểu **hữu hạn**: số nguyên n bit chỉ có `2^n` giá trị nên phép tính **tràn** và quấn vòng thay vì báo lỗi. Thứ hai, số thực chỉ có hữu hạn chữ số nhị phân nên phần lớn số thập phân (như 0,1) **không biểu diễn chính xác được** và mỗi phép tính làm tròn một chút.
+
+Bài này đi từ bit lên: số nguyên bù hai (vì sao máy chọn cách này), tràn số và các lỗi nổi tiếng, mở rộng dấu và dịch bit, thứ tự byte (endianness) và vài mẹo bit; rồi số thực IEEE 754 tách tận từng bit, giá trị **chính xác** của `0.1`, khoảng cách giữa các số liền kề, sai số tích luỹ và cách chữa, và lý do không dùng số thực cho tiền. Mọi con số là output thật của Python 3.13 (số nguyên của Python vốn có độ dài tuỳ ý nên code mô phỏng số nguyên `n` bit bằng phép toán bit). Bài tiếp nối [Strings](/docs/dsa/strings) (ký tự cũng chỉ là số) và là nền cho các giao thức nhị phân ở chặng [Computer Networks](/docs/networking/network-layers); bài sau là [CPU Pipeline & Branch Prediction](/docs/architecture/pipeline-branch-prediction).
+
+## Số nguyên
+
+### Không dấu và bù hai
+
+Số nguyên **không dấu** `n` bit biểu diễn `0` đến `2^n - 1`, mỗi bit nặng gấp đôi bit bên phải. Để biểu diễn số **âm**, cách phổ biến nhất là **bù hai** (two's complement): bit cao nhất có trọng số **âm** `-2^(n-1)`. Với 8 bit, `10110100` là `-128 + 32 + 16 + 4 = -76` (bit dấu có trọng số âm, các bit còn lại cộng bình thường). Cách tính số đối: **đảo mọi bit rồi cộng 1**. Output:
+
+```python
+# Số nguyên: bù hai, tràn số, mở rộng dấu, dịch bit, endianness. Mô phỏng số nguyên n bit bằng phép toán bit của Python.
+import struct, sys, ctypes
+
+def to_bits(x, n): return format(x & ((1 << n) - 1), f"0{n}b")
+def signed(x, n):                       # diễn giải n bit thấp của x như số có dấu bù hai
+    x &= (1 << n) - 1
+    return x - (1 << n) if x >> (n - 1) else x
+
+print("--- bù hai 8 bit: khoảng giá trị và cách phủ định (đảo bit rồi cộng 1) ---")
+print(f"   {'số':>5} {'8 bit':>10}  đảo bit    +1         = -số")
+for v in (1, 5, 100, 127):
+    inv = ~v & 0xFF; neg = (inv + 1) & 0xFF
+    print(f"   {v:>5} {to_bits(v, 8):>10}  {to_bits(inv, 8)}  {to_bits(neg, 8)}  = {signed(neg, 8)}")
+print(f"   khoảng 8 bit có dấu: {signed(0x80, 8)} .. {signed(0x7F, 8)}  (có MỘT số âm nhiều hơn số dương; -128 không có đối)")
+print(f"   -(-128) trong 8 bit = {signed(-(-128), 8)}  (lật dấu của -128 vẫn ra -128)")
+
+print()
+print("--- tràn số: phép cộng quấn vòng (modulo 2^n) ---")
+for n, a, b in ((8, 100, 100), (8, 127, 1), (8, 200, 100), (32, 2**31 - 1, 1), (32, 4_000_000_000, 500_000_000)):
+    s = a + b
+    print(f"   {n:>2} bit: {a} + {b} = {s} thật; không dấu {s & ((1 << n) - 1)}, có dấu {signed(s, n)}")
+print("   (trong C, tràn số có dấu là hành vi không xác định, trình biên dịch được phép giả định nó không bao giờ xảy ra;")
+print("    tràn số không dấu thì quấn vòng theo đúng quy tắc trên)")
+# ví dụ tràn nổi tiếng: trung bình hai chỉ số trong tìm nhị phân
+lo, hi = 2_000_000_000, 2_100_000_000
+print(f"   tìm nhị phân (lo+hi)//2 với lo={lo}, hi={hi}: số thật {(lo + hi) // 2}, nhưng nếu tính bằng int32 được {signed(lo + hi, 32) // 2} (âm: lỗi kinh điển)")
+print(f"   cách an toàn lo + (hi - lo)//2 = {lo + (hi - lo) // 2}")
+
+print()
+print("--- mở rộng dấu và dịch bit ---")
+b8 = 0b10110100
+print(f"   {to_bits(b8, 8)} là {signed(b8, 8)} (8 bit có dấu) và {b8} (không dấu)")
+print(f"   mở rộng dấu lên 16 bit: {to_bits(signed(b8, 8), 16)} = {signed(b8, 8)}    mở rộng KHÔNG dấu: {to_bits(b8, 16)} = {b8}")
+x = -20
+print(f"   {x} >> 2 (dịch số học, giữ bit dấu) = {x >> 2};   (x & 0xFFFFFFFF) >> 2 (dịch logic) = {((x & 0xFFFFFFFF) >> 2)}")
+print(f"   {x} // 4 = {x // 4}, int({x} / 4) = {int(x / 4)}   (chia nguyên làm tròn xuống, khác phép chia cắt về 0 của C)")
+
+print()
+print("--- endianness: cùng một số, hai thứ tự byte ---")
+v = 0x12345678
+print(f"   máy này (sys.byteorder) : {sys.byteorder}-endian")
+print(f"   {v:#010x} little-endian  : {' '.join(f'{b:02x}' for b in struct.pack('<I', v))}")
+print(f"   {v:#010x} big-endian     : {' '.join(f'{b:02x}' for b in struct.pack('>I', v))}   (thứ tự byte của mạng, dùng trong các giao thức ở chặng Networking)")
+raw = bytes([0x78, 0x56, 0x34, 0x12])
+print(f"   đọc bytes {raw.hex(' ')} như little-endian: {int.from_bytes(raw, 'little'):#x}; như big-endian: {int.from_bytes(raw, 'big'):#x}")
+arr = ctypes.c_uint32(v); print(f"   byte đầu tiên trong bộ nhớ của {v:#x} trên máy này: {bytes(arr)[0]:#04x}")
+
+print()
+print("--- mẹo bit hay dùng, kiểm chứng ---")
+for n in (12, 16, 40, 64, 0):
+    print(f"   n = {n:>2} = {to_bits(n, 8)}: luỹ thừa của 2? {n > 0 and n & (n - 1) == 0!s:<5} | bit thấp nhất đang bật: {n & -n:>2} | số bit 1 (popcount): {bin(n).count('1')} | xoá bit thấp nhất: {n & (n - 1)}")
+a, b = 0b1100, 0b1010
+print(f"   a ^ b = {a ^ b:04b}; hoán đổi không biến phụ: a ^= b; b ^= a; a ^= b -> ", end="")
+a ^= b; b ^= a; a ^= b; print(f"a = {a:04b}, b = {b:04b}")
+print(f"   căn lề lên bội của 8: (13 + 7) & ~7 = {(13 + 7) & ~7}; (16 + 7) & ~7 = {(16 + 7) & ~7}")
+```
+
+```text
+--- bù hai 8 bit: khoảng giá trị và cách phủ định (đảo bit rồi cộng 1) ---
+      số      8 bit  đảo bit    +1         = -số
+       1   00000001  11111110  11111111  = -1
+       5   00000101  11111010  11111011  = -5
+     100   01100100  10011011  10011100  = -100
+     127   01111111  10000000  10000001  = -127
+   khoảng 8 bit có dấu: -128 .. 127  (có MỘT số âm nhiều hơn số dương; -128 không có đối)
+   -(-128) trong 8 bit = -128  (lật dấu của -128 vẫn ra -128)
+
+--- tràn số: phép cộng quấn vòng (modulo 2^n) ---
+    8 bit: 100 + 100 = 200 thật; không dấu 200, có dấu -56
+    8 bit: 127 + 1 = 128 thật; không dấu 128, có dấu -128
+    8 bit: 200 + 100 = 300 thật; không dấu 44, có dấu 44
+   32 bit: 2147483647 + 1 = 2147483648 thật; không dấu 2147483648, có dấu -2147483648
+   32 bit: 4000000000 + 500000000 = 4500000000 thật; không dấu 205032704, có dấu 205032704
+   (trong C, tràn số có dấu là hành vi không xác định, trình biên dịch được phép giả định nó không bao giờ xảy ra;
+    tràn số không dấu thì quấn vòng theo đúng quy tắc trên)
+   tìm nhị phân (lo+hi)//2 với lo=2000000000, hi=2100000000: số thật 2050000000, nhưng nếu tính bằng int32 được -97483648 (âm: lỗi kinh điển)
+   cách an toàn lo + (hi - lo)//2 = 2050000000
+
+--- mở rộng dấu và dịch bit ---
+   10110100 là -76 (8 bit có dấu) và 180 (không dấu)
+   mở rộng dấu lên 16 bit: 1111111110110100 = -76    mở rộng KHÔNG dấu: 0000000010110100 = 180
+   -20 >> 2 (dịch số học, giữ bit dấu) = -5;   (x & 0xFFFFFFFF) >> 2 (dịch logic) = 1073741819
+   -20 // 4 = -5, int(-20 / 4) = -5   (chia nguyên làm tròn xuống, khác phép chia cắt về 0 của C)
+
+--- endianness: cùng một số, hai thứ tự byte ---
+   máy này (sys.byteorder) : little-endian
+   0x12345678 little-endian  : 78 56 34 12
+   0x12345678 big-endian     : 12 34 56 78   (thứ tự byte của mạng, dùng trong các giao thức ở chặng Networking)
+   đọc bytes 78 56 34 12 như little-endian: 0x12345678; như big-endian: 0x78563412
+   byte đầu tiên trong bộ nhớ của 0x12345678 trên máy này: 0x78
+
+--- mẹo bit hay dùng, kiểm chứng ---
+   n = 12 = 00001100: luỹ thừa của 2? False | bit thấp nhất đang bật:  4 | số bit 1 (popcount): 2 | xoá bit thấp nhất: 8
+   n = 16 = 00010000: luỹ thừa của 2? True  | bit thấp nhất đang bật: 16 | số bit 1 (popcount): 1 | xoá bit thấp nhất: 0
+   n = 40 = 00101000: luỹ thừa của 2? False | bit thấp nhất đang bật:  8 | số bit 1 (popcount): 2 | xoá bit thấp nhất: 32
+   n = 64 = 01000000: luỹ thừa của 2? True  | bit thấp nhất đang bật: 64 | số bit 1 (popcount): 1 | xoá bit thấp nhất: 0
+   n =  0 = 00000000: luỹ thừa của 2? False | bit thấp nhất đang bật:  0 | số bit 1 (popcount): 0 | xoá bit thấp nhất: 0
+   a ^ b = 0110; hoán đổi không biến phụ: a ^= b; b ^= a; a ^= b -> a = 1010, b = 1100
+   căn lề lên bội của 8: (13 + 7) & ~7 = 16; (16 + 7) & ~7 = 16
+```
+
+Phần đầu cho thấy: `5 = 00000101`, đảo bit được `11111010`, cộng 1 được `11111011`, và đó đúng là `-5`. Vì sao máy chọn bù hai thay vì cách "bit dấu + độ lớn" trực quan hơn? Vì **phép cộng giống hệt nhau cho số có dấu và không dấu**: cùng một mạch cộng (xem Nand to Tetris), chỉ khác cách đọc kết quả. Bù hai cũng chỉ có **một số 0** (cách bit dấu có hai: `+0` và `-0`). Cái giá: khoảng giá trị **không đối xứng**: 8 bit có dấu cho `-128` tới `127`; có **một số âm nhiều hơn số dương** và `-128` không có số đối trong cùng kiểu (output: `-(-128)` trong 8 bit vẫn là `-128`).
+
+### Tràn số
+
+Cộng hai số `n` bit cho kết quả có thể cần `n + 1` bit; bit thừa bị bỏ, nên kết quả là **phần dư theo `2^n`** (quấn vòng, "wrap-around"). Bảng trong output: `100 + 100 = 200` thật, đọc không dấu là 200 nhưng đọc có dấu là `-56`; `127 + 1` ở 8 bit có dấu thành `-128`; ở 32 bit, `2.147.483.647 + 1` thành `-2.147.483.648`. Máy **không báo lỗi**: cờ tràn (overflow flag) có ở phần cứng, nhưng ngôn ngữ thường không kiểm tra.
+
+Hành vi cụ thể khác nhau theo ngôn ngữ:
+
+| Ngôn ngữ | Tràn số nguyên có dấu |
+|---|---|
+| C, C++ | **hành vi không xác định** (undefined behavior): trình biên dịch được phép giả định nó không xảy ra và tối ưu theo đó; không dấu thì quấn vòng theo quy tắc |
+| Java, C# (mặc định) | quấn vòng âm thầm |
+| Rust | báo lỗi (`panic`) ở chế độ debug, quấn vòng ở release; có `checked_add`, `wrapping_add`, `saturating_add` để chọn rõ |
+| Python | **không tràn**: số nguyên có độ dài tuỳ ý |
+| JavaScript | số thực 64 bit, nên mất chính xác trên `2^53`, và các toán tử bit ép về số nguyên 32 bit |
+
+**Lỗi kinh điển**: trung điểm trong tìm nhị phân `(lo + hi) / 2`. Với `lo = 2.000.000.000` và `hi = 2.100.000.000`, tổng `4,1 tỉ` vượt `int32` và thành số âm: kết quả trong output là `-97.483.648`, chỉ số âm. Lỗi này tồn tại hơn chục năm trong thư viện chuẩn của Java và nhiều nơi khác cho tới khi bị phát hiện (Joshua Bloch, 2006). Cách an toàn là `lo + (hi - lo) / 2` (không bao giờ vượt). Các sự cố lớn hơn trong lịch sử cũng thuộc họ này: tên lửa **Ariane 5** (chuyến bay đầu tiên, 1996) nổ sau khoảng 37 giây vì một số thực 64 bit biểu diễn vận tốc ngang bị ép sang số nguyên 16 bit có dấu và tràn, theo báo cáo điều tra.
+
+### Mở rộng dấu, dịch bit, chia
+
+- **Mở rộng dấu** (sign extension): khi đưa số `n` bit lên `m > n` bit, số **có dấu** phải sao chép bit dấu vào các bit mới (`10110100` = `-76` thành `1111111110110100` = `-76`); số **không dấu** thêm bit 0 (`180` thành `0000000010110100` = `180`). Nhầm giữa hai cách là nguồn lỗi hay gặp khi đọc dữ liệu nhị phân và khi ép kiểu trong C (`char` có dấu hay không tuỳ nền tảng).
+- **Dịch bit**: dịch trái `x << k` nhân với `2^k`; dịch phải có hai loại: **số học** (giữ bit dấu, `-20 >> 2 = -5`) cho số có dấu, và **logic** (điền 0, `(-20 & 0xFFFFFFFF) >> 2 = 1.073.741.819`) cho số không dấu. Dịch phải số học làm tròn **xuống**.
+- **Chia**: Python `//` làm tròn xuống (`-20 // 3 = -7`), còn C làm tròn **về 0** (`-20 / 3 = -6`); đây là khác biệt hay làm sai khi chuyển mã giữa các ngôn ngữ, và là lý do `%` của hai ngôn ngữ cũng khác dấu với số âm.
+
+### Endianness
+
+Một số nhiều byte (ví dụ `0x12345678`, 4 byte) có thể xếp trong bộ nhớ theo hai thứ tự: **little-endian** (byte thấp nhất ở địa chỉ thấp nhất: `78 56 34 12`) hay **big-endian** (byte cao nhất trước: `12 34 56 78`). x86 và hầu hết ARM chạy little-endian, còn **thứ tự byte của mạng** (network byte order) là big-endian, nên các giao thức ở chặng Networking (độ dài, cổng, địa chỉ IP trong header) đều được đọc bằng `struct.unpack('>...')`. Trong output: máy này little-endian, byte đầu tiên trong bộ nhớ của `0x12345678` là `0x78`; cùng chuỗi `78 56 34 12` đọc theo little-endian là `0x12345678`, theo big-endian là `0x78563412`. Hai chỗ lộ ra: khi **ghi và đọc file nhị phân** giữa các máy, và khi **gửi qua mạng**; còn trong cùng một chương trình trên cùng một máy bạn gần như không thấy.
+
+### Mẹo bit
+
+Phần cuối của output kiểm chứng các biểu thức quen thuộc, đều dựa trên bù hai:
+
+- `n & (n - 1)` **xoá bit 1 thấp nhất**; `n & (n - 1) == 0` (với `n > 0`) kiểm tra `n` là **luỹ thừa của 2**.
+- `n & -n` **cô lập bit 1 thấp nhất** (`12 = 1100` cho `4`): vì `-n` là đảo bit rồi cộng 1, chỉ bit thấp nhất đang bật và các bit 0 thấp hơn không bị đổi.
+- Đếm số bit 1 (**popcount**) là một lệnh phần cứng (`POPCNT`).
+- Hoán đổi bằng ba XOR không cần biến phụ (`a ^= b; b ^= a; a ^= b`).
+- **Căn lề lên bội của 8**: `(x + 7) & ~7` (`13` thành `16`, `16` vẫn `16`); dùng khi căn bố cục cấu trúc trong bộ nhớ (xem [Memory Hierarchy & Cache](/docs/architecture/memory-hierarchy) về căn theo cache line).
+
+## Số thực IEEE 754
+
+### Cấu trúc
+
+Tiêu chuẩn **IEEE 754** định nghĩa cách lưu số thực dạng **dấu chấm động** (floating point): giống ký hiệu khoa học `±1,xxx × 2^mũ`. Số `double` 64 bit gồm:
+
+```text
+ 1 bit      11 bit          52 bit
+ dấu s      mũ e (lệch 1023)    định trị m
+giá trị = (-1)^s × (1 + m / 2^52) × 2^(e - 1023)        (số chuẩn, e từ 1 tới 2046)
+```
+
+"Lệch 1023" nghĩa là mũ lưu `e = mũ thật + 1023` để mũ luôn là số không dấu. Phần "1 +" ở định trị là bit 1 ẩn (số chuẩn luôn bắt đầu bằng 1 nên không cần lưu), nên 52 bit lưu thực sự cho **53 bit chính xác**. Còn có các giá trị đặc biệt: mũ `e = 0` và định trị khác 0 là **số không chuẩn** (subnormal, gần 0), `e = 0` và định trị 0 là `±0`, `e = 2047` là `inf` (định trị 0) hoặc `NaN` (định trị khác 0). Output đầu của `repr_float.py` tách từng bit:
+
+```python
+# Số thực IEEE 754: tách dấu, mũ, phần định trị; giá trị chính xác của 0.1; khoảng cách giữa hai số liền kề; tích luỹ sai số.
+import struct, math
+from decimal import Decimal, getcontext
+
+def parts64(x):
+    b = struct.unpack(">Q", struct.pack(">d", x))[0]
+    return b >> 63, (b >> 52) & 0x7FF, b & ((1 << 52) - 1), b
+
+def describe(x):
+    s, e, m, b = parts64(x)
+    if e == 0x7FF: kind = "inf" if m == 0 else "NaN"
+    elif e == 0: kind = "không chuẩn (subnormal)" if m else "không"
+    else: kind = "chuẩn"
+    print(f"   {x!r:<24} dấu={s} mũ={e:>4} ({e - 1023:+5d}) định trị={m:013x}  [{format(b, '064b')[:1]} {format(b, '064b')[1:12]} {format(b, '064b')[12:]}]  {kind}")
+
+print("--- cấu trúc 64 bit: 1 bit dấu, 11 bit mũ (lệch 1023), 52 bit định trị; giá trị = (-1)^s x 1.m x 2^(mũ - 1023) ---")
+for x in (1.0, 2.0, 0.5, -0.1, 0.1, 3.14159, 1e308, 5e-324, 0.0, float("inf")):
+    describe(x)
+describe(float("nan"))
+
+getcontext().prec = 60
+print()
+print("--- giá trị CHÍNH XÁC mà máy lưu khi bạn viết 0.1, 0.2, 0.3 (hệ nhị phân không biểu diễn hữu hạn được 1/10) ---")
+for x in (0.1, 0.2, 0.3, 0.5):
+    print(f"   {x}  ->  {Decimal(x)}")
+print(f"   0.1 + 0.2 = {0.1 + 0.2!r};  == 0.3 ? {0.1 + 0.2 == 0.3};  chênh lệch {0.1 + 0.2 - 0.3:.3e};  math.isclose: {math.isclose(0.1 + 0.2, 0.3)}")
+
+print()
+print("--- khoảng cách giữa hai số liền kề (ulp) tăng theo độ lớn: số lớn thì thưa ---")
+print(f"   {'số':>10} {'ulp (khoảng cách tới số kế)':>30}")
+for x in (1.0, 1e3, 1e8, 1e15, 2.0 ** 53, 1e16, 1e300):
+    print(f"   {x:>10.3g} {math.ulp(x):>30.4g}")
+big = 2.0 ** 53
+print(f"   2^53 = {int(big)}; 2^53 + 1 = {int(big + 1)} (không biểu diễn được, làm tròn về chẵn); 2^53 + 2 = {int(big + 2)}")
+print(f"   (JavaScript chỉ có double nên mọi số nguyên lớn hơn 2^53 mất chính xác: Number.MAX_SAFE_INTEGER = {2 ** 53 - 1})")
+print(f"   1e16 + 1 = {1e16 + 1:.1f} (vẫn 1e16: phép cộng 1 bị nuốt); 1e16 + 2 = {1e16 + 2:.1f}")
+
+print()
+print("--- cộng nhiều số: sai số tích luỹ và cách chữa ---")
+n = 10_000_000
+s = 0.0
+for _ in range(n): s += 0.1
+print(f"   cộng 0.1 mười triệu lần: {s!r} (đúng ra 1000000.0, sai {abs(s - 1e6):.3e})")
+print(f"   math.fsum (cộng chính xác): {math.fsum([0.1] * n)!r}")
+def kahan(xs):
+    s = c = 0.0
+    for x in xs:
+        y = x - c; t = s + y; c = (t - s) - y; s = t
+    return s
+print(f"   cộng bù Kahan:               {kahan([0.1] * n)!r}")
+print(f"   (cả hai gần đúng nhất có thể: 0.1 thật ra là 0.1000000000000000055511151231257827..., nên tổng chính xác là {Decimal(0.1) * n})")
+
+print()
+print("--- độ chính xác theo kiểu: float32 và float64 ---")
+for name, fmt in (("float32", ">f"), ("float64", ">d")):
+    v = struct.unpack(fmt, struct.pack(fmt, 0.1))[0]
+    print(f"   {name}: 0.1 lưu thành {Decimal(v)}")
+print(f"   float32 đếm đến: 16777216 + 1 -> {struct.unpack('>f', struct.pack('>f', 16777217.0))[0]:.0f} (float32 chỉ có 24 bit định trị)")
+print()
+print("--- tiền tệ: đừng dùng float ---")
+total = sum([0.10] * 3)
+print(f"   0.10 + 0.10 + 0.10 = {total!r}  ({total == 0.3})")
+cents = sum([10] * 3)
+print(f"   tính bằng đơn vị nhỏ nhất (số nguyên): 10 + 10 + 10 = {cents} xu, chính xác tuyệt đối; hoặc dùng decimal.Decimal: {sum([Decimal('0.10')] * 3)}")
+```
+
+```text
+--- cấu trúc 64 bit: 1 bit dấu, 11 bit mũ (lệch 1023), 52 bit định trị; giá trị = (-1)^s x 1.m x 2^(mũ - 1023) ---
+   1.0                      dấu=0 mũ=1023 (   +0) định trị=0000000000000  [0 01111111111 0000000000000000000000000000000000000000000000000000]  chuẩn
+   2.0                      dấu=0 mũ=1024 (   +1) định trị=0000000000000  [0 10000000000 0000000000000000000000000000000000000000000000000000]  chuẩn
+   0.5                      dấu=0 mũ=1022 (   -1) định trị=0000000000000  [0 01111111110 0000000000000000000000000000000000000000000000000000]  chuẩn
+   -0.1                     dấu=1 mũ=1019 (   -4) định trị=999999999999a  [1 01111111011 1001100110011001100110011001100110011001100110011010]  chuẩn
+   0.1                      dấu=0 mũ=1019 (   -4) định trị=999999999999a  [0 01111111011 1001100110011001100110011001100110011001100110011010]  chuẩn
+   3.14159                  dấu=0 mũ=1024 (   +1) định trị=921f9f01b866e  [0 10000000000 1001001000011111100111110000000110111000011001101110]  chuẩn
+   1e+308                   dấu=0 mũ=2046 (+1023) định trị=1ccf385ebc8a0  [0 11111111110 0001110011001111001110000101111010111100100010100000]  chuẩn
+   5e-324                   dấu=0 mũ=   0 (-1023) định trị=0000000000001  [0 00000000000 0000000000000000000000000000000000000000000000000001]  không chuẩn (subnormal)
+   0.0                      dấu=0 mũ=   0 (-1023) định trị=0000000000000  [0 00000000000 0000000000000000000000000000000000000000000000000000]  không
+   inf                      dấu=0 mũ=2047 (+1024) định trị=0000000000000  [0 11111111111 0000000000000000000000000000000000000000000000000000]  inf
+   nan                      dấu=0 mũ=2047 (+1024) định trị=8000000000000  [0 11111111111 1000000000000000000000000000000000000000000000000000]  NaN
+
+--- giá trị CHÍNH XÁC mà máy lưu khi bạn viết 0.1, 0.2, 0.3 (hệ nhị phân không biểu diễn hữu hạn được 1/10) ---
+   0.1  ->  0.1000000000000000055511151231257827021181583404541015625
+   0.2  ->  0.200000000000000011102230246251565404236316680908203125
+   0.3  ->  0.299999999999999988897769753748434595763683319091796875
+   0.5  ->  0.5
+   0.1 + 0.2 = 0.30000000000000004;  == 0.3 ? False;  chênh lệch 5.551e-17;  math.isclose: True
+
+--- khoảng cách giữa hai số liền kề (ulp) tăng theo độ lớn: số lớn thì thưa ---
+           số    ulp (khoảng cách tới số kế)
+            1                       2.22e-16
+        1e+03                      1.137e-13
+        1e+08                       1.49e-08
+        1e+15                          0.125
+     9.01e+15                              2
+        1e+16                              2
+       1e+300                     1.487e+284
+   2^53 = 9007199254740992; 2^53 + 1 = 9007199254740992 (không biểu diễn được, làm tròn về chẵn); 2^53 + 2 = 9007199254740994
+   (JavaScript chỉ có double nên mọi số nguyên lớn hơn 2^53 mất chính xác: Number.MAX_SAFE_INTEGER = 9007199254740991)
+   1e16 + 1 = 10000000000000000.0 (vẫn 1e16: phép cộng 1 bị nuốt); 1e16 + 2 = 10000000000000002.0
+
+--- cộng nhiều số: sai số tích luỹ và cách chữa ---
+   cộng 0.1 mười triệu lần: 999999.9998389754 (đúng ra 1000000.0, sai 1.610e-04)
+   math.fsum (cộng chính xác): 1000000.0
+   cộng bù Kahan:               1000000.0
+   (cả hai gần đúng nhất có thể: 0.1 thật ra là 0.1000000000000000055511151231257827..., nên tổng chính xác là 1000000.00000000005551115123125782702118158340454101562500000)
+
+--- độ chính xác theo kiểu: float32 và float64 ---
+   float32: 0.1 lưu thành 0.100000001490116119384765625
+   float64: 0.1 lưu thành 0.1000000000000000055511151231257827021181583404541015625
+   float32 đếm đến: 16777216 + 1 -> 16777216 (float32 chỉ có 24 bit định trị)
+
+--- tiền tệ: đừng dùng float ---
+   0.10 + 0.10 + 0.10 = 0.30000000000000004  (False)
+   tính bằng đơn vị nhỏ nhất (số nguyên): 10 + 10 + 10 = 30 xu, chính xác tuyệt đối; hoặc dùng decimal.Decimal: 0.30
+```
+
+Đọc vài dòng đầu: `1.0` có `mũ = 1023` (tức mũ thật `+0`) và định trị 0; `2.0` có `mũ = 1024` (`+1`); `0.5` có `mũ = 1022` (`-1`). Số `0.1` có `mũ = 1019` (mũ thật `-4`, tức `0,1 ≈ 1,6 × 2^-4`) và định trị `999999999999a` (hex), dạng bit `1001 1001 1001 ... 1010`: **chuỗi `1001` lặp lại vô hạn** được cắt ở bit thứ 52 và **làm tròn lên** (chữ `a` cuối thay vì `9`). Đây chính là điều khiến 0,1 không biểu diễn được: trong hệ nhị phân, `1/10` là số thập phân tuần hoàn, giống `1/3 = 0,333...` trong hệ thập phân. `5e-324` là số dương nhỏ nhất (chỉ bit cuối của định trị bật), `1e308` gần lớn nhất, `inf` và `NaN` đúng như quy ước.
+
+### 0.1 thật ra bằng bao nhiêu
+
+Máy lưu cho `0.1` chính xác giá trị **`0,1000000000000000055511151231257827021181583404541015625`**, hơi lớn hơn 0,1 một chút. Tương tự `0.2` lưu thành `0,200000000000000011102230246251565404...` (lớn hơn một chút) và `0.3` lưu thành `0,2999999999999999888977697537...` (**nhỏ hơn** một chút). Cộng `0.1 + 0.2` cho `0,3000000000000000444...` (kết quả làm tròn), còn `0.3` lưu `0,29999999999999998889...`: hai giá trị này **khác nhau 5,55 × 10^-17**, đúng một khoảng giữa hai số liền kề, nên `0.1 + 0.2 == 0.3` là `False` và in ra `0.30000000000000004`. Không phải lỗi của Python hay của chip: mọi ngôn ngữ dùng IEEE 754 (JavaScript, Java, C, Go, Rust) cho cùng kết quả.
+
+Quy tắc: **không so sánh số thực bằng `==`**. Dùng dung sai: `math.isclose(a, b)` trong Python, hoặc `abs(a - b) <= eps * max(abs(a), abs(b))` với `eps` phù hợp (ở `double`, cỡ `1e-9` tới `1e-12` cho tính toán thông thường). Lưu ý các giá trị 0.5, 0.25, 0.75 biểu diễn **chính xác** vì là tổng các luỹ thừa của 2.
+
+### Khoảng cách giữa các số liền kề (ulp)
+
+53 bit chính xác nghĩa là **cùng số lượng giá trị (2^52) cho mỗi luỹ thừa của 2**, nên số lớn thì **thưa**, số nhỏ thì dày. **ulp** (unit in the last place) là khoảng cách từ một số tới số kế tiếp. Từ output:
+
+| Số | ulp (khoảng cách tới số kế) |
+|---|---|
+| 1 | 2,22 × 10^-16 |
+| 1.000 | 1,14 × 10^-13 |
+| 10^8 | 1,49 × 10^-8 |
+| 10^15 | 0,125 |
+| 2^53 ≈ 9,0 × 10^15 | **2** |
+| 10^300 | 1,5 × 10^284 |
+
+Tại `2^53 = 9.007.199.254.740.992`, khoảng cách giữa các số đã là 2: nên **số nguyên lẻ ngay phía trên không biểu diễn được**. `2^53 + 1` làm tròn về `9.007.199.254.740.992` (làm tròn tới số **chẵn** gần nhất, quy tắc mặc định của IEEE), còn `2^53 + 2` biểu diễn được. Hệ quả: `1e16 + 1` vẫn bằng `1e16` (phép cộng 1 bị "nuốt"); **JavaScript**, vốn chỉ có một kiểu số là `double`, không biểu diễn chính xác mọi số nguyên lớn hơn `Number.MAX_SAFE_INTEGER = 2^53 - 1` (ID số nguyên 64 bit từ API thường phải truyền bằng chuỗi vì lý do này). Ở giá trị `10^15`, khoảng cách là `0,125`: không còn đủ độ chính xác cho phần thập phân tới 0,1.
+
+### Sai số tích luỹ
+
+Mỗi phép cộng làm tròn kết quả, và khi cộng nhiều số, **sai số cộng dồn**. Cộng `0.1` mười triệu lần cho **`999999.9998389754`**: sai `1,6 × 10^-4` so với `1.000.000`, hay cỡ `10^-10` tương đối; (vì mỗi lần cộng đều làm tròn, đôi khi nuốt phần lẻ nhỏ khi tổng đã lớn). Hai cách chữa:
+
+- **`math.fsum`**: cộng với độ chính xác tuỳ ý trung gian rồi làm tròn một lần; cho `1000000.0`.
+- **Cộng bù Kahan** (Kahan summation): giữ một biến `c` ghi nhớ **phần lẻ bị làm tròn mất** ở mỗi bước và đưa nó vào bước kế tiếp; cũng cho `1000000.0`. Chi phí: vài phép cộng thêm mỗi phần tử.
+
+(Con số `1000000.0` này cũng là kết quả "gần đúng nhất có thể", vì tổng **chính xác** của mười triệu số `0.1` lưu trong máy là `1000000,0000000000555...`, như dòng cuối ghi.) Với tính toán khoa học, **thứ tự cộng và độ chính xác của kiểu** (`float32` hay `float64`) đều ảnh hưởng: `float32` chỉ có 24 bit chính xác nên `16.777.216 + 1` vẫn là `16.777.216`, và `0.1` lưu thành `0,100000001490116...` (sai số lớn hơn `float64` khoảng chín bậc độ lớn), nên mọi số nguyên trên 16,7 triệu đều không còn biểu diễn hết được. Đó là lý do học máy, tính toán khoa học và đồ hoạ chọn `float16`, `bfloat16`, `float32` hay `float64` rất cẩn thận.
+
+### Tiền tệ: đừng dùng float
+
+`0.10 + 0.10 + 0.10` cho `0.30000000000000004`, không phải `0.30`: đủ để một hoá đơn lệch một xu. Tiền cần **chính xác theo thập phân**, nên có hai cách đúng:
+
+- Lưu **số nguyên của đơn vị nhỏ nhất** (xu, đồng): `10 + 10 + 10 = 30`, chính xác tuyệt đối (nhớ kiểm soát tràn số và làm tròn khi chia).
+- Dùng kiểu **thập phân** (`decimal.Decimal` trong Python, `BigDecimal` trong Java, `NUMERIC` trong SQL như đã dùng ở bài [Relational Model & SQL](/docs/databases/relational-model)): `Decimal('0.10') * 3` cho đúng `0.30`.
+
+## Trong hệ thống thật
+
+- **Python** có số nguyên độ dài tuỳ ý (chậm hơn nhưng không tràn) và `float` là `double`; **JavaScript** chỉ có `double` (và `BigInt` riêng); **SQL** có `INTEGER`, `NUMERIC` (chính xác, thập phân) và `REAL`/`DOUBLE PRECISION` (dấu chấm động): dùng `NUMERIC` cho tiền.
+- **Báo cáo sự cố**: Ariane 5 (1996) tràn khi ép `double` sang số nguyên 16 bit; tên lửa **Patriot** ở Dhahran (1991) tích luỹ sai số vì đồng hồ đếm theo bước `0,1` giây bằng số thập phân cố định 24 bit, mỗi bước sai một chút, sau cỡ 100 giờ hoạt động lệch khoảng `0,34` giây và đánh trượt mục tiêu, theo báo cáo của cơ quan kiểm toán Hoa Kỳ.
+- **Phần cứng**: bộ cộng ALU làm việc trên bù hai và có cờ tràn (xem Nand to Tetris); đơn vị dấu chấm động (FPU) và các lệnh SIMD thực hiện IEEE 754; `float16` và `bfloat16` (cùng tầm mũ với `float32`, ít bit định trị) là định dạng chuẩn của bộ tăng tốc học máy.
+- **Mạng và định dạng file**: header giao thức dùng big-endian (network byte order), file như PNG cũng big-endian, nhiều định dạng nhị phân khác (BMP, ELF trên x86) little-endian; thư viện có `htons`, `htonl`, `struct`, `DataView` để chuyển đổi.
+- **Thư viện số**: `numpy` có các kiểu cố định kích thước (`int8`, `float32`...) và **tràn** như C (không như `int` của Python): `np.int8(127) + np.int8(1)` cho `-128` (với mảng thì hoàn toàn âm thầm, với số vô hướng chỉ in một cảnh báo).
+
+## Quan sát và chẩn đoán
+
+- In biểu diễn thật: Python `bin(x & 0xFF)`, `struct.pack('>d', x).hex()`, `float.hex(x)`, `Decimal(x)` (giá trị chính xác của một `float`), `math.ulp(x)`.
+- Trong C: `printf("%a", x)` in số thực dạng hex đúng từng bit; công cụ `xxd` xem byte của file.
+- Bật cảnh báo và sanitizer: `gcc -fsanitize=undefined` bắt tràn số nguyên có dấu ở thời gian chạy; `-Wconversion` cảnh báo ép kiểu mất dữ liệu.
+- Để tìm lỗi tràn: kiểm tra mọi phép tính trên số đến từ **bên ngoài** (kích thước, chỉ số, số lượng), vì kẻ tấn công chọn được chúng.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| `0.1 + 0.2 != 0.3` | số thập phân không biểu diễn chính xác trong nhị phân | so sánh với dung sai (`math.isclose`); dùng số nguyên hoặc `Decimal` cho tiền |
+| Số nguyên lớn bị sai các chữ số cuối (JavaScript) | vượt `2^53` | `BigInt`, hoặc truyền ID dưới dạng chuỗi |
+| Chỉ số mảng hoặc kích thước thành số âm | tràn số nguyên có dấu | dùng kiểu rộng hơn hoặc không dấu, kiểm tra trước khi cộng nhân |
+| Tổng nhiều số thực lệch | sai số tích luỹ và thứ tự cộng | `math.fsum`, cộng bù Kahan, `float64` thay `float32` |
+| Đọc dữ liệu nhị phân ra số lạ | sai endianness hoặc sai độ rộng, sai dấu | kiểm tra spec định dạng, dùng `struct` với tiền tố `<` hoặc `>` |
+| Mã C hoạt động khác nhau giữa mức tối ưu hoá | hành vi không xác định (tràn số có dấu) | sửa gốc; chạy `-fsanitize=undefined` |
+| `x // y` Python và `x / y` C cho kết quả khác với số âm | làm tròn xuống so với cắt về 0 | nhớ quy tắc của từng ngôn ngữ khi chuyển mã |
+
+## Lưu ý
+
+- Bộ nhớ chỉ có bit; **kiểu** quyết định cách đọc. Cùng một dãy bit có thể là số nguyên, số thực hay ký tự.
+- Số nguyên `n` bit chỉ có `2^n` giá trị và **quấn vòng** khi tràn mà không báo lỗi (trừ Python, Rust ở chế độ debug). Tràn số có dấu trong C là hành vi không xác định.
+- Bù hai cho cùng một mạch cộng cho số có dấu và không dấu, nhưng làm khoảng giá trị không đối xứng; `-128` không có đối ở 8 bit.
+- Tính trung điểm bằng `lo + (hi - lo) / 2`, không phải `(lo + hi) / 2`.
+- Chia và dịch bit của số âm khác nhau giữa các ngôn ngữ (làm tròn xuống so với về 0, dịch số học so với logic); kiểm tra khi chuyển mã.
+- Dữ liệu nhị phân giữa các hệ thống phải thống nhất endianness; mạng dùng big-endian.
+- Số thực không biểu diễn chính xác đa số số thập phân; `0.1` thực ra là `0,1000000000000000055...`. Không so sánh bằng `==`, không dùng cho tiền, và cộng nhiều số cần `fsum` hoặc cộng bù.
+- Số thực lớn thì thưa: trên `2^53`, `double` không biểu diễn hết số nguyên; trên `2^24`, `float32` cũng vậy.
+- Trình biên dịch không tự sắp xếp lại phép cộng số thực (vì không có tính kết hợp), nên thứ tự cộng là một phần của kết quả.

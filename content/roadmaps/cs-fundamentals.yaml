@@ -98,6 +98,7 @@ sections:
     nodes:
       - id: data-representation
         title: Data Representation
+        article: architecture/data-representation
         description: Số nguyên bù hai, số thực IEEE 754, endianness và vì sao số học máy tính hay "sai".
         resources:
           - title: "Nand to Tetris — Boolean arithmetic and the ALU"
