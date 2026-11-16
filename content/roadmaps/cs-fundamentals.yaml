@@ -80,6 +80,15 @@ sections:
         resources:
           - title: "Jeff Erickson — Algorithms (sách miễn phí)"
             url: https://jeffe.cs.illinois.edu/teaching/algorithms/
+      - id: strings
+        title: Strings
+        article: dsa/strings
+        description: Chuỗi trong bộ nhớ với Unicode, tìm chuỗi con, suffix array và regex.
+        requires: [hash-tables]
+        optional: true
+        resources:
+          - title: "Sedgewick & Wayne — Algorithms, Chapter 5: Strings"
+            url: https://algs4.cs.princeton.edu/50strings/
 
   - id: os
     title: Operating Systems
