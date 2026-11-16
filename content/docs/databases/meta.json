@@ -4,6 +4,7 @@
     "relational-model",
     "indexing",
     "transactions",
-    "isolation-levels"
+    "isolation-levels",
+    "normalization"
   ]
 }

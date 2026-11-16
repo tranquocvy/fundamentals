@@ -212,6 +212,7 @@ sections:
             url: https://www.postgresql.org/docs/current/transaction-iso.html
       - id: normalization
         title: Normalization
+        article: databases/normalization
         description: Thiết kế bảng tránh dư thừa và bất thường khi cập nhật.
         requires: [relational-model]
         optional: true

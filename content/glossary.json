@@ -215,6 +215,14 @@
       "def": "Tính chất mà lộ khoá riêng của server về sau vẫn không giải mã được các phiên đã ghi lại trước đó, vì khoá phiên sinh từ trao đổi khoá tạm thời.",
       "subject": "networking"
     },
+    "functional dependency": {
+      "label": "FD",
+      "def": "Ràng buộc X xác định Y: hai dòng có cùng giá trị X thì phải có cùng giá trị Y; nền tảng của các dạng chuẩn.",
+      "subject": "databases",
+      "aliases": [
+        "phụ thuộc hàm"
+      ]
+    },
     "futex": {
       "def": "Fast userspace mutex: system call của Linux cho thread ngủ chờ trên một ô nhớ và đánh thức thread đang chờ ở đó; nền để cài mutex chỉ vào kernel khi có tranh chấp.",
       "subject": "os"
@@ -373,6 +381,13 @@
       "subject": "networking",
       "aliases": [
         "napt"
+      ]
+    },
+    "normalization": {
+      "def": "Quá trình tách bảng theo phụ thuộc hàm để mỗi sự thật chỉ được lưu một lần, tránh dị thường cập nhật, chèn và xoá.",
+      "subject": "databases",
+      "aliases": [
+        "chuẩn hoá"
       ]
     },
     "null": {
