@@ -3,6 +3,7 @@
   "pages": [
     "relational-model",
     "indexing",
-    "transactions"
+    "transactions",
+    "isolation-levels"
   ]
 }

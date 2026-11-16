@@ -204,6 +204,7 @@ sections:
             url: https://www.postgresql.org/docs/current/tutorial-transactions.html
       - id: isolation-levels
         title: Isolation Levels
+        article: databases/isolation-levels
         description: Dirty read, phantom read và các mức cô lập.
         requires: [transactions]
         resources:

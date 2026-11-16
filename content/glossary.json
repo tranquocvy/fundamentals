@@ -282,6 +282,14 @@
       "def": "Inter-Process Communication: các cơ chế do kernel cung cấp để process trao đổi dữ liệu, như pipe, socket, shared memory.",
       "subject": "os"
     },
+    "isolation level": {
+      "def": "Mức đảm bảo về việc các giao dịch chạy đồng thời thấy nhau ra sao, từ READ UNCOMMITTED tới SERIALIZABLE; mức thấp hơn nhanh hơn nhưng cho phép nhiều anomaly hơn.",
+      "subject": "databases",
+      "aliases": [
+        "mức cô lập",
+        "isolation"
+      ]
+    },
     "journal": {
       "def": "Vùng trên đĩa nơi file system ghi trước ý định sẽ sửa gì, để sau khi sập có thể phát lại hoặc bỏ qua trọn vẹn từng cập nhật.",
       "subject": "os",
@@ -314,6 +322,10 @@
     "longest prefix match": {
       "def": "Quy tắc router chọn trong bảng định tuyến dòng khớp địa chỉ đích có prefix dài nhất, tức tuyến cụ thể nhất.",
       "subject": "networking"
+    },
+    "lost update": {
+      "def": "Anomaly trong đó hai giao dịch cùng đọc, cùng tính lại rồi cùng ghi một giá trị, và ghi sau đè mất kết quả của ghi trước.",
+      "subject": "databases"
     },
     "mac address": {
       "label": "MAC address",
@@ -488,6 +500,14 @@
         "semaphores"
       ]
     },
+    "snapshot isolation": {
+      "label": "SI",
+      "def": "Mức cô lập trong đó mỗi giao dịch thấy một ảnh chụp nhất quán lấy lúc bắt đầu; hai giao dịch ghi cùng một dòng thì người đến sau bị huỷ, nhưng vẫn có thể bị write skew.",
+      "subject": "databases",
+      "aliases": [
+        "si"
+      ]
+    },
     "sni": {
       "label": "SNI",
       "def": "Server Name Indication: extension trong ClientHello của TLS cho server biết tên miền client muốn vào, để chọn đúng chứng chỉ khi nhiều site chung một IP; ở dạng rõ nên lộ tên site.",
@@ -598,6 +618,10 @@
       "aliases": [
         "hàm cửa sổ"
       ]
+    },
+    "write skew": {
+      "def": "Anomaly trong đó hai giao dịch đọc cùng một điều kiện rồi ghi hai dòng khác nhau, mỗi bên đúng khi nhìn riêng nhưng cùng vi phạm một bất biến.",
+      "subject": "databases"
     },
     "write-ahead log": {
       "label": "WAL",
