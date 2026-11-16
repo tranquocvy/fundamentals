@@ -90,6 +90,41 @@ sections:
           - title: "Sedgewick & Wayne — Algorithms, Chapter 5: Strings"
             url: https://algs4.cs.princeton.edu/50strings/
 
+  - id: architecture
+    title: Computer Architecture
+    subject: architecture
+    outcome: Giải thích được máy tính biểu diễn số ra sao, CPU chạy lệnh thế nào và vì sao thứ tự truy cập bộ nhớ quyết định tốc độ.
+    description: Từ bit và lệnh máy tới pipeline và cache, những thứ bên dưới mọi chương trình.
+    nodes:
+      - id: data-representation
+        title: Data Representation
+        description: Số nguyên bù hai, số thực IEEE 754, endianness và vì sao số học máy tính hay "sai".
+        resources:
+          - title: "Nand to Tetris — Boolean arithmetic and the ALU"
+            url: https://www.nand2tetris.org/
+      - id: isa-assembly
+        title: ISA & Assembly
+        description: Tập lệnh, thanh ghi, stack frame và cách đọc mã assembly do trình biên dịch sinh ra.
+        requires: [data-representation]
+        resources:
+          - title: "Compiler Explorer — xem assembly của code C"
+            url: https://godbolt.org/
+      - id: pipeline-branch-prediction
+        title: CPU Pipeline & Branch Prediction
+        description: Pipeline, hazard, dự đoán rẽ nhánh và vì sao vòng lặp trên dữ liệu đã sắp xếp nhanh hơn.
+        requires: [isa-assembly]
+        resources:
+          - title: "Agner Fog — Optimizing software in C++ and microarchitecture manuals"
+            url: https://www.agner.org/optimize/
+      - id: memory-hierarchy
+        title: Memory Hierarchy & Cache
+        article: architecture/memory-hierarchy
+        description: Thang độ trễ từ L1 tới RAM, cache line, locality và cách thứ tự truy cập đổi tốc độ hàng chục lần.
+        requires: [isa-assembly]
+        resources:
+          - title: "Drepper — What Every Programmer Should Know About Memory"
+            url: https://people.freebsd.org/~lstewart/articles/cpumemory.pdf
+
   - id: os
     title: Operating Systems
     subject: os

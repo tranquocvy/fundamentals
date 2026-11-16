@@ -21,4 +21,5 @@ export const subjects: Subject[] = [
   { slug: 'oop', num: '05', title: 'OOP & Design Patterns', topics: 'SOLID · patterns · architecture', accent: { dark: '#aad94c', light: '#4a7a00' }, ready: false },
   { slug: 'backend', num: '06', title: 'Backend', topics: 'REST · auth · caching · concurrency', accent: { dark: '#f78fb3', light: '#b0245f' }, ready: false },
   { slug: 'devops', num: '07', title: 'DevOps', topics: 'linux · docker · ci/cd', accent: { dark: '#7ee0c3', light: '#00785a' }, ready: false },
+  { slug: 'architecture', num: '08', title: 'Computer Architecture', topics: 'data representation · pipeline · cache', accent: { dark: '#8fb1ff', light: '#2f5fd0' }, ready: true },
 ];
