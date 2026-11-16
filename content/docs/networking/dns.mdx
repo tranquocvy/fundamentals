@@ -1,75 +1,674 @@
 ---
 title: DNS
-description: Đổi tên miền thành địa chỉ IP, theo một hệ thống phân cấp và cache khắp nơi.
-status: reviewed
+description: Hệ thống tên miền từ bên trong, cây phân cấp và uỷ quyền, cấu trúc message trên dây, tự viết một resolver đi từ root xuống, TTL và cache nhiều tầng, DNSSEC, DoH, và cách chẩn đoán các sự cố DNS hay gặp.
+status: draft
 tags: [networking, dns]
 authors: [tranquocvy]
 references:
   - title: "Kurose & Ross, Computer Networking: A Top-Down Approach — Chapter 2.4: DNS"
     kind: book
+    note: cây phân cấp, recursive và iterative, định dạng message, record
   - title: "RFC 1034 — Domain Names: Concepts and Facilities"
     url: https://www.rfc-editor.org/rfc/rfc1034
     kind: web
+    note: khái niệm zone, uỷ quyền, resolver; đọc mục 3 và 4
   - title: "RFC 1035 — Domain Names: Implementation and Specification"
     url: https://www.rfc-editor.org/rfc/rfc1035
+    kind: web
+    note: bố cục message, nén tên (mục 4.1.4), master file
+  - title: "RFC 2308 — Negative Caching of DNS Queries"
+    url: https://www.rfc-editor.org/rfc/rfc2308
+    kind: web
+  - title: "RFC 6891 — Extension Mechanisms for DNS (EDNS(0))"
+    url: https://www.rfc-editor.org/rfc/rfc6891
+    kind: web
+  - title: "RFC 4033 — DNS Security Introduction and Requirements"
+    url: https://www.rfc-editor.org/rfc/rfc4033
+    kind: web
+    note: tổng quan DNSSEC; chi tiết ở RFC 4034 và 4035
+  - title: "RFC 8484 — DNS Queries over HTTPS (DoH)"
+    url: https://www.rfc-editor.org/rfc/rfc8484
     kind: web
   - title: "Cloudflare Learning — What is DNS?"
     url: https://www.cloudflare.com/learning/dns/what-is-dns/
     kind: web
+  - title: "DNS Flag Day 2020"
+    url: https://www.dnsflagday.net/2020/
+    kind: web
+    note: vì sao cỡ gói EDNS khuyến nghị là 1232 byte
 ---
 
 ## Ý chính
 
-Máy tính kết nối với nhau bằng địa chỉ IP, còn con người nhớ tên miền. <Term>DNS</Term> (Domain Name System) là "danh bạ" phân tán của Internet: hỏi `fundamentals-notes.vercel.app` là gì, nó trả lời bằng một địa chỉ IP.
+Máy tính định tuyến gói tin bằng địa chỉ IP, con người nhớ bằng tên. <Term>DNS</Term> (Domain Name System) là cơ sở dữ liệu phân tán trả lời câu hỏi "tên này tương ứng với những gì", mà cái hay gặp nhất là địa chỉ IP, nhưng còn gồm cả server nhận email, bản ghi xác thực, vị trí dịch vụ...
 
-DNS không phải một server khổng lồ mà là một **cây phân cấp**, mỗi tầng chỉ biết tầng ngay dưới nó:
+Hai ý tưởng thiết kế làm cho DNS chịu được quy mô cả Internet suốt từ năm 1983:
+
+1. **Phân cấp và uỷ quyền.** Không có server nào biết hết. Tên miền là một cây; mỗi nút chỉ biết nút con nằm ở đâu và **giao quyền** cho chúng. Hỏi root thì nó chỉ cho bạn TLD, TLD chỉ cho bạn server của chủ tên miền, và server của chủ tên miền mới là nơi có câu trả lời.
+2. **Cache khắp nơi.** Mỗi câu trả lời đi kèm một <Term>TTL</Term> cho biết được phép nhớ bao lâu. Phần lớn truy vấn được trả lời từ cache và không bao giờ chạm tới các server gốc. Đó là điều làm cho một hệ thống chạy trên giao thức hỏi đáp đơn giản qua UDP vẫn đứng vững.
+
+Bài này đi từ ngoài vào trong: các vai và cây tên miền, rồi byte trên dây (tự dựng một query và đọc response bằng Python), rồi tự viết một resolver đi từ root xuống để thấy uỷ quyền chạy thế nào. Sau đó là các loại record, trả lời phủ định, TTL và cache (nguồn gốc của hầu hết sự cố "đổi DNS mà không thấy đổi"), UDP với TCP, bảo mật (cache poisoning, DNSSEC, DoH), cách DNS được dùng trong hạ tầng thật, và cách chẩn đoán.
+
+Mọi output trong bài lấy từ truy vấn thật tới root server, TLD server, `1.1.1.1`, `8.8.8.8` và Cloudflare DoH, chạy bằng code Python trong bài. Địa chỉ và TTL của bạn sẽ khác tại thời điểm chạy, nhưng cấu trúc giống nhau.
+
+## Ba vai trong một lần tra cứu
+
+| Vai | Làm gì | Ví dụ |
+|---|---|---|
+| **Stub resolver** | thư viện trong OS/ứng dụng; chỉ biết hỏi **một** recursive resolver rồi chờ kết quả | `getaddrinfo()` của glibc, `systemd-resolved`, DNS Client của Windows |
+| **<Term>Recursive resolver</Term>** | nhận câu hỏi, tự đi hỏi các server khác cho tới khi có đáp án hoặc lỗi, rồi **cache** | `1.1.1.1`, `8.8.8.8`, resolver của nhà mạng, `unbound`, CoreDNS trong Kubernetes |
+| **<Term>Authoritative server</Term>** | giữ dữ liệu thật của một **zone** và trả lời có thẩm quyền; không cache hộ ai | server của Cloudflare, Route 53, hay `ns1.vercel-dns-3.com`; root và TLD server cũng là loại này |
+
+Hai kiểu truy vấn nên phân biệt:
+
+- **Recursive**: "hãy tìm giúp tôi, và chỉ trả về đáp án cuối". Stub gửi kiểu này tới recursive resolver, bật bit `RD` (Recursion Desired) trong header.
+- **Iterative**: "nếu bạn biết thì cho tôi đáp án, không thì chỉ cho tôi nên hỏi ai". Recursive resolver gửi kiểu này tới các authoritative server. Server trả lời bằng **referral** (giới thiệu tới server khác) thay vì tự đi hỏi hộ.
+
+Lý do tách như vậy là để việc nặng (đi hỏi nhiều bước, cache) nằm ở một số ít resolver mà không nằm ở root; còn root và TLD chỉ phải trả lời bằng referral đơn giản.
+
+## Không gian tên và uỷ quyền
+
+Tên miền là một chuỗi **label** cách nhau bởi dấu chấm, đọc từ phải sang trái đi từ gốc xuống:
 
 ```text
-.                       root
-└── app.                TLD (top-level domain)
-    └── vercel.app.     authoritative server của vercel.app
-        └── fundamentals-notes.vercel.app.   bản ghi cần tìm
+fundamentals-notes.vercel.app.
+│                  │      │  └ root (dấu chấm cuối, thường bị bỏ khi gõ)
+│                  │      └─── TLD (top-level domain): app
+│                  └────────── tên do Vercel đăng ký: vercel
+└───────────────────────────── tên do Vercel cấp cho project: fundamentals-notes
 ```
 
-## Một lần tra cứu đi qua những đâu
+Dấu chấm cuối cùng là **root** và là một phần của tên đầy đủ (FQDN, fully qualified domain name). Trình duyệt tự thêm vào. Giới hạn của giao thức: mỗi label tối đa **63 byte**, cả tên tối đa **253 ký tự** dạng văn bản (255 byte trên dây). DNS không phân biệt hoa thường.
 
-1. Trình duyệt và OS xem cache của mình trước; có rồi thì dùng luôn.
-2. Chưa có thì hỏi <Term>recursive resolver</Term>, thường của nhà mạng hoặc dịch vụ như `1.1.1.1`, `8.8.8.8`. Resolver nhận làm hết phần việc còn lại.
-3. Resolver hỏi **root server**: "`.app` do ai quản lý?" Root trả về địa chỉ các server của TLD `.app`.
-4. Resolver hỏi **TLD server** `.app`: "`vercel.app` do ai quản lý?" Nhận về các name server của Vercel.
-5. Resolver hỏi **authoritative server** của Vercel và nhận được bản ghi cuối cùng.
-6. Resolver lưu kết quả vào cache theo <Term>TTL</Term> của bản ghi rồi trả lời trình duyệt.
+### Zone khác domain
 
-Bước 3 đến 5 chỉ xảy ra khi cache trống. Phần lớn truy vấn được trả lời ngay từ cache, nên DNS vừa nhanh vừa không bắt root server phải gánh mọi truy vấn.
+Một **zone** là phần của cây do **một** bên quản lý và lưu trong cùng một tập server authoritative. Domain `vercel.app` và mọi subdomain của nó nằm trong một zone nếu không có ai được giao quyền xuống dưới. Khi chủ zone **uỷ quyền** một subdomain cho server khác (ví dụ `docs.example.com` có name server riêng), subdomain đó trở thành zone mới và zone cha chỉ còn lưu hai thứ về nó: bản ghi `NS` chỉ tới server mới, và nếu cần, **glue record**.
 
-## Các loại bản ghi hay gặp
+### Glue record
 
-| Loại | Ý nghĩa | Ví dụ |
+Nếu `example.com` được uỷ quyền cho name server tên `ns1.example.com`, để biết `ns1.example.com` ở IP nào thì phải hỏi `example.com`, mà muốn hỏi `example.com` thì phải biết IP của `ns1.example.com`. Vòng lặp. <Term>Glue record</Term> phá vòng lặp: server của zone cha (ở đây là `.com`) gửi kèm địa chỉ IP của name server trong phần `additional` của referral.
+
+Name server nằm **ngoài** zone cha (như `ns1.vercel-dns-3.com` làm name server của `vercel.app`) thì không có glue, và resolver phải tự đi tra địa chỉ của nó trước. Ví dụ ngay bên dưới sẽ cho thấy điều này xảy ra.
+
+### Root, TLD, và registrar
+
+- **Root**: 13 tên (`a.root-servers.net` tới `m.root-servers.net`) do 12 tổ chức vận hành. Mỗi tên thực ra là cả nghìn máy ở khắp thế giới dùng chung một địa chỉ IP nhờ **anycast**, nên "13" là số tên, không phải số máy. Địa chỉ của root được **viết cứng** (hint file) trong mọi resolver: đó là điểm khởi đầu duy nhất không phải tra cứu.
+- **TLD** (`com`, `org`, `app`, `vn`...): mỗi TLD do một **registry** vận hành (Verisign cho `.com`, VNNIC cho `.vn`). Registry giữ danh sách tên đã đăng ký và name server của chúng.
+- **Registrar** (Namecheap, GoDaddy, Cloudflare Registrar...): nơi bạn trả tiền thuê tên. Nó nói với registry "tên này dùng các name server này". Đây chính là chỗ bạn đặt `NS`; còn nội dung zone (A, MX, TXT...) nằm ở name server bạn chọn, có thể là chính registrar hoặc dịch vụ khác như Route 53, Cloudflare DNS.
+
+Hiểu nhầm hay gặp: "đổi DNS" có thể là hai việc khác nhau. Đổi **bản ghi** trong zone (A, CNAME...) chỉ cần sửa ở name server. Đổi **name server** của tên miền (chuyển nhà cung cấp DNS) là đổi bản ghi `NS` ở registry.
+
+## Message trên dây
+
+DNS dùng **một định dạng message** cho cả hỏi và đáp, theo RFC 1035:
+
+```text
++---------------------+
+|       Header        |   12 byte
++---------------------+
+|      Question       |   câu hỏi (thường 1)
++---------------------+
+|       Answer        |   các RR trả lời
++---------------------+
+|      Authority      |   các RR chỉ server có thẩm quyền (NS) hoặc SOA khi phủ định
++---------------------+
+|     Additional      |   RR bổ sung (glue, OPT)
++---------------------+
+```
+
+Header 12 byte gồm sáu trường 16 bit:
+
+| Trường | Ý nghĩa |
+|---|---|
+| ID | số ngẫu nhiên để ghép đáp với hỏi |
+| Flags | `QR` (0 hỏi, 1 đáp), `Opcode`, `AA` (trả lời có thẩm quyền), `TC` (bị cắt cụt), `RD` (muốn đệ quy), `RA` (server hỗ trợ đệ quy), `AD` (đã xác thực DNSSEC), `RCODE` (mã lỗi: 0 NOERROR, 2 SERVFAIL, 3 NXDOMAIN, 5 REFUSED) |
+| QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT | số phần tử trong bốn mục sau |
+
+Mỗi **resource record (RR)** trong ba mục cuối có dạng: tên, loại (2 byte), class (2 byte, gần như luôn là `IN`), TTL (4 byte), độ dài dữ liệu (2 byte), rồi dữ liệu.
+
+### Tự dựng một query
+
+Mã dưới xây query bằng `struct`, gửi UDP tới `1.1.1.1:53`, và giải mã response, kể cả cơ chế **nén tên** (name compression) mà phần giải thích nằm ngay sau đoạn code:
+
+```python
+"""Dựng và đọc message DNS bằng struct, theo RFC 1035."""
+import random, socket, struct
+
+TYPES = {'A': 1, 'NS': 2, 'CNAME': 5, 'SOA': 6, 'MX': 15, 'TXT': 16, 'AAAA': 28, 'DS': 43, 'RRSIG': 46, 'DNSKEY': 48}
+NAMES = {v: k for k, v in TYPES.items()}
+
+def encode_name(name):
+    out = b''
+    for label in name.rstrip('.').split('.'):
+        if label: out += bytes([len(label)]) + label.encode()   # độ dài rồi nội dung
+    return out + b'\0'                                          # byte 0 = hết tên
+
+def build_query(name, qtype, rd=True, edns=None, do=False):
+    qid = random.randrange(65536)
+    flags = 0x0100 if rd else 0                       # RD = recursion desired
+    arcount = 1 if edns else 0
+    msg = struct.pack('!HHHHHH', qid, flags, 1, 0, 0, arcount)
+    msg += encode_name(name) + struct.pack('!HH', TYPES[qtype], 1)    # QTYPE, QCLASS=IN
+    if edns:                                          # bản ghi OPT: tên rỗng, type 41, "class" = cỡ UDP
+        msg += b'\0' + struct.pack('!HHIH', 41, edns, 0x8000 if do else 0, 0)
+    return qid, msg
+
+def decode_name(msg, off):
+    labels, jumped, end = [], False, off
+    while True:
+        n = msg[off]
+        if n == 0: off += 1; break
+        if n & 0xC0 == 0xC0:                          # con trỏ nén: 14 bit offset
+            ptr = struct.unpack('!H', msg[off:off + 2])[0] & 0x3FFF
+            if not jumped: end = off + 2
+            off, jumped = ptr, True
+            continue
+        labels.append(msg[off + 1:off + 1 + n].decode()); off += 1 + n
+    return '.'.join(labels) + '.', (end if jumped else off)
+
+def rdata_str(msg, t, off, ln):
+    if t == 1: return socket.inet_ntoa(msg[off:off + 4])
+    if t == 28: return socket.inet_ntop(socket.AF_INET6, msg[off:off + 16])
+    if t in (2, 5): return decode_name(msg, off)[0]
+    if t == 15: return f"{struct.unpack('!H', msg[off:off+2])[0]} {decode_name(msg, off + 2)[0]}"
+    if t == 16:
+        out, i = [], off
+        while i < off + ln: out.append(msg[i + 1:i + 1 + msg[i]].decode(errors='replace')); i += 1 + msg[i]
+        return '"' + ''.join(out) + '"'
+    if t == 6:
+        m, o = decode_name(msg, off); r, o = decode_name(msg, o)
+        return f"{m} {r} serial={struct.unpack('!I', msg[o:o+4])[0]} minimum={struct.unpack('!I', msg[o+16:o+20])[0]}"
+    return f"<{ln} byte>"
+
+def parse(msg):
+    qid, fl, qd, an, ns, ar = struct.unpack('!HHHHHH', msg[:12])
+    r = dict(id=qid, qr=fl >> 15, opcode=(fl >> 11) & 15, aa=(fl >> 10) & 1, tc=(fl >> 9) & 1,
+             rd=(fl >> 8) & 1, ra=(fl >> 7) & 1, ad=(fl >> 5) & 1, rcode=fl & 15, sections={})
+    off = 12
+    for _ in range(qd):
+        _, off = decode_name(msg, off); off += 4
+    for sec, cnt in (('answer', an), ('authority', ns), ('additional', ar)):
+        rrs = []
+        for _ in range(cnt):
+            name, off = decode_name(msg, off)
+            t, c, ttl, ln = struct.unpack('!HHIH', msg[off:off + 10]); off += 10
+            rrs.append((name, NAMES.get(t, t), ttl, rdata_str(msg, t, off, ln))); off += ln
+        r['sections'][sec] = rrs
+    return r
+
+def ask_udp(server, name, qtype, **kw):
+    qid, q = build_query(name, qtype, **kw)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+    s.sendto(q, (server, 53)); data, _ = s.recvfrom(65535)
+    return q, data, parse(data)
+
+def ask_tcp(server, name, qtype, **kw):
+    qid, q = build_query(name, qtype, **kw)
+    s = socket.create_connection((server, 53), timeout=3)
+    s.sendall(struct.pack('!H', len(q)) + q)             # TCP: thêm 2 byte độ dài
+    n = struct.unpack('!H', s.recv(2))[0]; data = b''
+    while len(data) < n: data += s.recv(n - len(data))
+    return q, data, parse(data)
+
+def show(r):
+    print(f"id={r['id']:#06x} qr={r['qr']} aa={r['aa']} tc={r['tc']} rd={r['rd']} ra={r['ra']} ad={r['ad']} rcode={r['rcode']}")
+    for sec, rrs in r['sections'].items():
+        for n, t, ttl, d in rrs: print(f"  {sec:<10} {n:<32} {ttl:>6} {t:<6} {d}")
+
+if __name__ == '__main__':
+    q, data, r = ask_udp('1.1.1.1', 'www.example.com', 'A')
+    print(len(q), 'byte query:'); print(q.hex(' '))
+    print(len(data), 'byte response:'); print(data.hex(' '))
+    show(r)
+```
+
+```text
+33 byte query:
+b9 99 01 00 00 01 00 00 00 00 00 00 03 77 77 77 07 65 78 61 6d 70 6c 65 03 63 6f 6d 00 00 01 00 01
+65 byte response:
+b9 99 81 80 00 01 00 02 00 00 00 00 03 77 77 77 07 65 78 61 6d 70 6c 65 03 63 6f 6d 00 00 01 00 01 c0 0c 00 01 00 01 00 00 01 2b 00 04 68 14 17 9a c0 0c 00 01 00 01 00 00 01 2b 00 04 ac 42 93 f3
+id=0xb999 qr=1 aa=0 tc=0 rd=1 ra=1 ad=0 rcode=0
+  answer     www.example.com.                    299 A      104.20.23.154
+  answer     www.example.com.                    299 A      172.66.147.243
+```
+
+Giải mã từng byte của query (33 byte):
+
+```text
+b9 99              ID = 0xb999 (số ngẫu nhiên)
+01 00              flags: chỉ có RD = 1
+00 01              QDCOUNT = 1
+00 00 00 00 00 00  ANCOUNT, NSCOUNT, ARCOUNT = 0
+03 77 77 77        label dài 3: "www"
+07 65 78 61 6d 70 6c 65   label dài 7: "example"
+03 63 6f 6d        label dài 3: "com"
+00                 hết tên
+00 01              QTYPE = 1 (A)
+00 01              QCLASS = 1 (IN)
+```
+
+Response 65 byte bắt đầu giống hệt (cùng ID, phần question được lặp lại), rồi:
+
+```text
+81 80              flags: QR=1, RD=1, RA=1; RCODE=0
+00 01 00 02 ...    QDCOUNT=1, ANCOUNT=2
+c0 0c              tên của RR đầu tiên: con trỏ nén tới offset 12
+00 01  00 01       type A, class IN
+00 00 01 2b        TTL = 0x12b = 299 giây
+00 04              độ dài dữ liệu = 4
+68 14 17 9a        104.20.23.154
+c0 0c ...          RR thứ hai, lại trỏ tới offset 12
+```
+
+**Nén tên**: hai byte `c0 0c` có hai bit đầu là `11`, nghĩa là "14 bit còn lại là offset trong message nơi tên này nằm" (`0x00c` = 12, ngay sau header, chỗ `www.example.com` đã được viết trong phần question). Thay vì lặp 17 byte của tên, mỗi RR chỉ tốn 2 byte. Cách đó giúp cho response có nhiều RR cùng tên vẫn nhỏ, điều quan trọng vì giới hạn 512 byte ban đầu của UDP (xem phần UDP và TCP).
+
+Hai điều nên ghi nhớ về tầng dây:
+
+- Toàn bộ là **nhị phân**, không phải văn bản, và mọi trường nhiều byte theo thứ tự network (big-endian).
+- Message DNS không có chữ ký hay mã hoá. ID 16 bit cộng với cổng nguồn ngẫu nhiên là thứ duy nhất làm bằng chứng "đây đúng là trả lời cho câu hỏi của tôi" (xem phần cache poisoning).
+
+## Tự viết một resolver đi từ root xuống
+
+Giờ có công cụ để hỏi, ta viết phần việc của một recursive resolver: bắt đầu từ root server (địa chỉ viết cứng), hỏi **không bật `RD`**, đọc referral, hỏi tiếp server mới, cho tới khi gặp câu trả lời có thẩm quyền. Thêm một cache theo TTL.
+
+```python
+"""Resolver đệ quy tối giản: đi từ root xuống, có cache theo TTL."""
+import time, random
+from dnsmsg import ask_udp, ask_tcp
+
+ROOTS = ['198.41.0.4', '170.247.170.2', '192.33.4.12']      # a, b, c.root-servers.net
+
+class Resolver:
+    def __init__(self, verbose=True):
+        self.cache, self.queries, self.verbose = {}, 0, verbose
+    def log(self, *a):
+        if self.verbose: print(*a)
+    def get(self, name, qtype):
+        e = self.cache.get((name, qtype))
+        if e and e[0] > time.time(): return e[1]              # còn hạn thì dùng
+    def put(self, name, qtype, ttl, rrs):
+        self.cache[(name, qtype)] = (time.time() + ttl, rrs)
+    def resolve(self, name, qtype='A', depth=0):
+        name = name.rstrip('.').lower() + '.'
+        hit = self.get(name, qtype)
+        if hit is not None:
+            self.log('  [cache]', name, qtype); return hit
+        servers = ROOTS
+        while True:
+            srv = servers[0]
+            self.queries += 1
+            _, _, r = ask_udp(srv, name, qtype, rd=False)            # RD=0: ta tự lặp
+            if r['tc']: _, _, r = ask_tcp(srv, name, qtype, rd=False)
+            s = r['sections']
+            self.log(f"  hỏi {srv:<16} → aa={r['aa']} rcode={r['rcode']} answer={len(s['answer'])} authority={len(s['authority'])} additional={len(s['additional'])}")
+            ans = [x for x in s['answer'] if x[1] == qtype]
+            cname = [x for x in s['answer'] if x[1] == 'CNAME' and x[0] == name]
+            if ans:
+                self.put(name, qtype, min(x[2] for x in ans), ans); return ans
+            if cname and qtype != 'CNAME':
+                self.log(f"  CNAME {name} → {cname[0][3]}")
+                res = self.resolve(cname[0][3], qtype, depth + 1)
+                return cname + res
+            ns = [x for x in s['authority'] if x[1] == 'NS']
+            if r['rcode'] == 3 or not ns:                              # NXDOMAIN hoặc NODATA
+                return []
+            glue = [x[3] for x in s['additional'] if x[1] == 'A']
+            for n in ns[:3]: self.log(f"    NS {n[0]:<14} {n[3]}")
+            if glue: servers = glue
+            else:                                                       # không có glue: phải tự tra tên NS
+                servers = [self.resolve(ns[0][3], 'A', depth + 1)[0][3]]
+
+if __name__ == '__main__':
+    import sys
+    r = Resolver()
+    for name in sys.argv[1:] or ['www.example.com']:
+        t0 = time.perf_counter(); r.queries = 0
+        print(f'== {name}')
+        res = r.resolve(name)
+        print('  →', [x[3] for x in res], f'({r.queries} truy vấn, {(time.perf_counter()-t0)*1000:.0f} ms)')
+```
+
+Chạy với ba tên, trong đó `www.example.com` được hỏi hai lần:
+
+```text
+== www.example.com
+  hỏi 198.41.0.4       → aa=0 rcode=0 answer=0 authority=13 additional=26
+    NS com.           l.gtld-servers.net.
+    NS com.           j.gtld-servers.net.
+    NS com.           h.gtld-servers.net.
+  hỏi 192.41.162.30    → aa=0 rcode=0 answer=0 authority=2 additional=12
+    NS example.com.   hera.ns.cloudflare.com.
+    NS example.com.   elliott.ns.cloudflare.com.
+  hỏi 108.162.192.162  → aa=1 rcode=0 answer=2 authority=0 additional=0
+  → ['104.20.23.154', '172.66.147.243'] (3 truy vấn, 474 ms)
+== www.example.com
+  [cache] www.example.com. A
+  → ['104.20.23.154', '172.66.147.243'] (0 truy vấn, 0 ms)
+```
+
+Đọc từng dòng:
+
+1. **Hỏi root (`198.41.0.4`)**: không có `answer`, có 13 `authority` (13 name server của `com.`) và 26 `additional` (địa chỉ IPv4 và IPv6 của 13 server đó, là **glue**). Cờ `aa=0`: root không tự nhận có thẩm quyền với `www.example.com`; nó chỉ **giới thiệu**.
+2. **Hỏi TLD `com` (`192.41.162.30`, một server của `.com`)**: lại một referral, lần này tới hai name server của Cloudflare giữ zone `example.com`.
+3. **Hỏi authoritative (`108.162.192.162`)**: `aa=1`, có hai bản ghi A. Đây là câu trả lời thật.
+4. **Lần hỏi thứ hai** trả về từ cache sau 0 ms và không có gói nào ra mạng.
+
+Ba truy vấn nối tiếp mất 474 ms, mỗi lần khoảng 150 ms vì root, TLD và authoritative ở những nơi khác nhau trên thế giới. Với resolver thật, chi phí này chỉ trả một lần cho mỗi TTL: các bước tới root và TLD **gần như luôn có sẵn trong cache** (TTL của referral tới `com` là hai ngày), nên một truy vấn mới thường chỉ cần một bước tới authoritative.
+
+### Khi không có glue
+
+Tên của site này, `fundamentals-notes.vercel.app`, minh hoạ trường hợp khó hơn:
+
+```text
+== fundamentals-notes.vercel.app
+  hỏi 198.41.0.4       → aa=0 rcode=0 answer=0 authority=5 additional=10
+    NS app.           ns-tld2.charlestonroadregistry.com.
+    NS app.           ns-tld4.charlestonroadregistry.com.
+    NS app.           ns-tld3.charlestonroadregistry.com.
+  hỏi 216.239.34.105   → aa=0 rcode=0 answer=0 authority=4 additional=0
+    NS vercel.app.    ns1.vercel-dns-3.com.
+    NS vercel.app.    ns3.vercel-dns-3.com.
+    NS vercel.app.    ns2.vercel-dns-3.com.
+  hỏi 198.41.0.4       → aa=0 rcode=0 answer=0 authority=13 additional=26
+    NS com.           l.gtld-servers.net.
+    NS com.           j.gtld-servers.net.
+    NS com.           h.gtld-servers.net.
+  hỏi 192.41.162.30    → aa=0 rcode=0 answer=0 authority=4 additional=8
+    NS vercel-dns-3.com. ns1.vercel-dns-3.com.
+    NS vercel-dns-3.com. ns2.vercel-dns-3.com.
+    NS vercel-dns-3.com. ns3.vercel-dns-3.com.
+  hỏi 205.251.193.92   → aa=1 rcode=0 answer=1 authority=4 additional=7
+  hỏi 205.251.193.92   → aa=1 rcode=0 answer=2 authority=4 additional=8
+  → ['64.29.17.67', '216.198.79.67'] (6 truy vấn, 665 ms)
+```
+
+Điểm đáng chú ý nằm ở dòng thứ hai: TLD `.app` trả về `authority=4, additional=0` tức là **có name server nhưng không có glue**. Name server của `vercel.app` là `ns1.vercel-dns-3.com`, nằm trong `.com`, không thuộc `.app`, nên `.app` không có trách nhiệm (và không được phép) cho biết địa chỉ IP của nó. Resolver phải **tạm dừng** truy vấn gốc và tự giải một câu hỏi phụ: "`ns1.vercel-dns-3.com` ở IP nào?". Đó là ba dòng tiếp theo (đi lại từ root, rồi `.com`, rồi hỏi `205.251.193.92` và nhận `answer=1`, là địa chỉ của chính name server). Có địa chỉ rồi, resolver mới quay lại hỏi nó về `fundamentals-notes.vercel.app` và nhận hai bản ghi A (dòng cuối).
+
+Sáu truy vấn thay vì ba. Với cache bình thường, các bước đó cũng chỉ trả một lần. Nhưng nó cho thấy vì sao **chọn name server nằm trong zone của chính mình** (và có glue) là cách làm nhanh hơn, và vì sao một sự cố ở `.com` vẫn có thể làm hỏng việc tra tên `.app` nếu name server của tên đó nằm trong `.com`: phụ thuộc chéo giữa các zone là có thật.
+
+Resolver này còn thiếu rất nhiều so với `unbound` hay `BIND`: không retry khi một server không trả lời, không thử server khác trong danh sách, không kiểm tra ID và cổng nguồn của response, không có negative cache, không có DNSSEC, không có giới hạn độ sâu (CNAME lặp vô hạn sẽ treo). Nhưng phần lõi, **đi theo referral cho tới khi có đáp án có thẩm quyền**, là toàn bộ ý tưởng.
+
+## Các loại record
+
+Dữ liệu trong zone là các **resource record (RR)**, mỗi loại một kiểu dữ liệu. Chạy bộ truy vấn sau với `1.1.1.1` cho ra các ví dụ thật:
+
+```text
+example.com NS:      example.com.        69123 NS    hera.ns.cloudflare.com.
+                     example.com.        69123 NS    elliott.ns.cloudflare.com.
+example.com MX:      example.com.          300 MX    0 .
+example.com SOA:     example.com.         1800 SOA   elliott.ns.cloudflare.com. dns.cloudflare.com. serial=2420077714 minimum=1800
+github.com MX:       github.com.           299 MX    0 github-com.mail.protection.outlook.com.
+www.github.com CNAME: www.github.com.     3600 CNAME github.com.
+cloudflare.com AAAA: cloudflare.com.       236 AAAA  2606:4700::6810:85e5
+                     cloudflare.com.       236 AAAA  2606:4700::6810:84e5
+_dmarc.github.com TXT: 12 "v=DMARC1; p=quarantine; sp=reject; pct=100; rua=mailto:dmarc@github.com; ..."
+```
+
+| Loại | Dữ liệu | Dùng để |
 |---|---|---|
-| A | Tên → địa chỉ IPv4 | `example.com → 203.0.113.10` |
-| AAAA | Tên → địa chỉ IPv6 | |
-| CNAME | Tên này là bí danh của tên khác | `www.example.com → example.com` |
-| MX | Server nhận email cho tên miền | |
-| NS | Name server quản lý tên miền | |
-| TXT | Văn bản tuỳ ý, hay dùng để **chứng minh quyền sở hữu** tên miền | |
+| `A` | địa chỉ IPv4 | tên → máy |
+| `AAAA` | địa chỉ IPv6 | như trên, cho IPv6 |
+| `CNAME` | một tên khác (canonical name) | bí danh: "tên này chính là tên kia" |
+| `NS` | tên name server | uỷ quyền một zone cho server khác |
+| `MX` | độ ưu tiên và tên server mail | nơi nhận thư; số nhỏ hơn được thử trước |
+| `TXT` | một hoặc nhiều chuỗi văn bản (mỗi chuỗi tối đa 255 byte) | SPF, DKIM, DMARC, xác minh quyền sở hữu tên miền |
+| `SOA` | thông tin về zone: name server chính, email quản trị, serial, các bộ đếm thời gian, TTL phủ định | mỗi zone có đúng một |
+| `PTR` | một tên | **tra ngược**: IP → tên, nằm trong zone đặc biệt `in-addr.arpa` |
+| `SRV` | ưu tiên, trọng số, port, tên đích | tìm dịch vụ cụ thể (SIP, XMPP, Kubernetes headless service) |
+| `CAA` | chính sách | CA nào được phép cấp chứng chỉ TLS cho tên này |
+| `HTTPS` / `SVCB` | tham số kết nối (ALPN, port, IP gợi ý) | báo trình duyệt dùng HTTP/3 ngay mà khỏi thử TCP trước |
+| `DS`, `DNSKEY`, `RRSIG` | dữ liệu khoá và chữ ký | DNSSEC |
 
-<Expand title="Ví dụ thật: vì sao Vercel đòi bản ghi TXT">
+Vài điểm cần chú ý trong output trên:
 
-Khi thêm một domain đã có người khác dùng, Vercel yêu cầu tạo bản ghi `TXT` tại `_vercel.<domain>` với một giá trị ngẫu nhiên. Chỉ ai **sửa được DNS của domain đó** mới tạo được bản ghi này, nên Vercel coi đó là bằng chứng sở hữu.
+- **`MX 0 .`** của `example.com` là một **null MX** (RFC 7505): bản ghi nói rõ rằng tên này **không nhận thư**. Một tên không có MX thì người gửi theo luật cũ sẽ thử gửi tới bản ghi A của nó; null MX cắt cách đó.
+- **TTL của `NS` là 69123**: gần 19 giờ, dài hơn hẳn TTL 300 giây của `MX`. Thông tin uỷ quyền ít đổi nên TTL gốc dài (cỡ một ngày trở lên); con số lẻ này cho biết resolver đã cache bản ghi và nó đang **đếm ngược**.
+- **`www.github.com` là CNAME của `github.com`**: để lấy IP, resolver phải theo tiếp tới `github.com`. Resolver của ta xử lý điều này bằng đoạn `if cname`.
 
-Đó là lý do không thể "verify" một tên `*.vercel.app`: DNS của `vercel.app` do Vercel quản lý, người dùng không thêm được bản ghi vào đó. Muốn có tên `*.vercel.app` thì đặt tên project, để Vercel tự tạo bản ghi.
+### CNAME và các điểm khó
 
-</Expand>
+CNAME gây nhiều sự cố nhất trong các loại record vì nó có luật cứng:
 
-Tự tra thử bằng `dig` (Linux/macOS) hoặc `nslookup` (Windows):
+1. **Một tên có CNAME thì không được có record loại khác** cùng tên đó (ngoài các record DNSSEC). CNAME nghĩa là "mọi thứ về tên này hãy hỏi tên kia".
+2. Vì ở **apex** (đỉnh zone, ví dụ `example.com` trần) luôn phải có `SOA` và `NS`, apex **không được là CNAME**. Muốn trỏ `example.com` tới `myapp.vercel-dns.com` mà không biết IP, các nhà cung cấp dùng bản ghi giả có tên `ALIAS`, `ANAME`, hoặc "CNAME flattening": name server của chủ tên tự đi tra IP của đích và trả về như bản ghi `A` thường. Phần mở rộng này nằm ở name server, không phải trong giao thức.
+3. Mỗi CNAME làm tăng độ dài chuỗi tra cứu; chuỗi quá dài làm chậm và có resolver từ chối.
+
+### TXT trong thực tế
+
+`TXT` là nơi người ta nhét mọi thứ cần "chứng minh bằng DNS", vì **chỉ chủ của tên miền mới sửa được DNS của nó**:
+
+- **Xác minh quyền sở hữu.** Vercel, Google Search Console, GitHub Pages đều bắt bạn thêm một `TXT` có giá trị ngẫu nhiên. Bạn thêm được bản ghi nghĩa là bạn kiểm soát tên. Đó cũng là lý do không thể "xác minh" một tên `*.vercel.app`: DNS của `vercel.app` thuộc về Vercel, người dùng không thêm được bản ghi vào đó.
+- **Email.** SPF (`v=spf1 ...`) liệt kê server nào được gửi thư thay mặt tên miền; DKIM đặt khoá công khai ở `selector._domainkey.example.com`; DMARC (như bản ghi `_dmarc.github.com` ở trên) quy định xử lý thư không qua SPF/DKIM.
+- **Let's Encrypt DNS-01.** Để lấy chứng chỉ wildcard, CA yêu cầu bạn tạo `TXT` tại `_acme-challenge.example.com`; xem bài [TLS & HTTPS](/docs/networking/tls).
+
+Mỗi chuỗi TXT bị giới hạn 255 byte, nhưng một bản ghi có thể có nhiều chuỗi và phía đọc nối chúng lại (đoạn `''.join(out)` trong code). Khoá DKIM 2048-bit dài hơn 255 byte nên luôn chia thành nhiều chuỗi.
+
+## Trả lời phủ định
+
+Khi tên hoặc loại không tồn tại, server phải trả lời **có chủ ý**, không phải im lặng. Có hai trường hợp khác nhau:
+
+- **NXDOMAIN** (`RCODE=3`): tên này **hoàn toàn không tồn tại** ở bất kỳ loại nào.
+- **NODATA** (`RCODE=0`, `answer` rỗng): tên **có tồn tại** nhưng không có record thuộc loại được hỏi.
+
+```text
+NXDOMAIN: zzqq-nope.invalid  A
+id=0x2381 qr=1 aa=0 tc=0 rd=1 ra=1 ad=0 rcode=3
+  authority  .      86400 SOA   a.root-servers.net. nstld.verisign-grs.com. serial=2026111501 minimum=86400
+
+NODATA: github.com  AAAA
+id=0x3e70 qr=1 aa=0 tc=0 rd=1 ra=1 ad=0 rcode=0
+  authority  github.com.   254 SOA   ns-1707.awsdns-21.co.uk. awsdns-hostmaster.amazon.com. serial=1 minimum=86400
+```
+
+Cả hai đều kèm bản ghi **SOA** ở mục `authority`. Đó không phải trang trí: nó là cơ sở của **negative caching** (RFC 2308). Resolver nhớ "tên này không tồn tại" trong khoảng bằng **min(TTL của SOA, trường `minimum` của SOA)**. Nhờ vậy gõ sai một tên rồi thử lại liên tục không bắt authoritative server phải trả lời mỗi lần. Hệ quả ngược lại: **tạo một tên vừa bị hỏi trước khi nó tồn tại thì có thể không thấy ngay**, vì người ta đã cache "NXDOMAIN" cho tên đó. Đó là một nguyên nhân kinh điển của lỗi "vừa thêm bản ghi mà chưa thấy" (xem phần cache).
+
+Hai cái bẫy ở đây. Một là chương trình kiểm tra `rcode == NXDOMAIN` sẽ không bắt được NODATA, vì `github.com AAAA` trả `rcode=0` với `answer` rỗng. Hai là một số zone không trả NXDOMAIN: khi ta hỏi thẳng name server của `github.com` về một tên con ngẫu nhiên (`khong-ton-tai-abc123.github.com`), nó trả `aa=1, rcode=0` kèm SOA, giống như tên đó tồn tại mà không có dữ liệu. Nguyên nhân có thể là bản ghi wildcard `*` hoặc cách phủ định đặc biệt của nhà cung cấp; kết quả là lỗi gõ sai tên con không còn báo NXDOMAIN, rất khó phát hiện khi chẩn đoán. Cùng câu hỏi với `google.com` thì trả `rcode=3` như bình thường.
+
+## TTL và cache
+
+Mọi RR có một TTL tính bằng giây: **thời gian tối đa một bên không-có-thẩm-quyền được phép nhớ bản ghi này**. Hết TTL thì phải hỏi lại. Cache nằm ở nhiều tầng liên tiếp, mỗi tầng giữ bản sao riêng:
+
+```text
+Trình duyệt  ──►  OS stub resolver  ──►  recursive resolver  ──►  authoritative
+ (Chrome ~60s)    (Windows, resolved)     (1.1.1.1, ISP, ...)     (bản gốc, TTL ở đây)
+  cache riêng       cache riêng             cache dùng chung
+```
+
+Cách làm việc của TTL, và vì sao nó gây rắc rối:
+
+- **TTL đếm ngược, không đặt lại.** Resolver lưu bản ghi với TTL gốc; mỗi lần trả lời nó trả `TTL còn lại`. Dòng `69123` của `NS` ở trên là một giá trị đang đếm ngược. Đoạn code `self.cache[(name, qtype)] = (time.time() + ttl, rrs)` ở resolver tự viết là toàn bộ cơ chế.
+- **Các tầng cộng dồn.** Bản ghi có TTL 300 giây có thể đã nằm trong cache của resolver từ giây thứ 299 trước, rồi trình duyệt cache thêm 60 giây nữa. Trong trường hợp xấu một thay đổi cần gần hết TTL cộng thêm các lớp client mới "tới" toàn bộ người dùng.
+- **Resolver lớn không nhất quán.** `1.1.1.1` và `8.8.8.8` là hàng trăm máy anycast, mỗi máy có cache riêng. Hỏi liên tiếp một tên có thể thấy TTL nhảy lên và xuống (khi thử bằng code ở trên có lần được `300, 300, 258`) vì mỗi câu hỏi tới một máy khác nhau. Đừng suy luận về thời điểm hết hạn từ hai lần hỏi.
+- **Không có lệnh "xoá cache toàn cầu".** Bạn xoá được cache của máy mình (`ipconfig /flushdns` trên Windows, `resolvectl flush-caches` với systemd-resolved) và vài resolver công khai có trang xoá cache (Cloudflare, Google), nhưng không với resolver của nhà mạng hay máy người dùng cuối.
+
+Quy trình đúng khi cần chuyển server (đổi IP của site):
+
+1. **Trước** ngày đổi vài ngày (ít nhất bằng TTL cũ), hạ TTL của bản ghi xuống 60 tới 300 giây.
+2. Chờ qua hết TTL cũ để mọi cache đã tải bản TTL ngắn.
+3. Đổi IP.
+4. Khi mọi thứ ổn, nâng TTL lại (ví dụ 3600 trở lên) để giảm tải truy vấn và tăng độ bền khi DNS server có sự cố.
+
+Nhiều người gọi hiện tượng thay đổi chưa thấy là "DNS propagation" (lan truyền). Cách nói đó gây hiểu nhầm: không có gì được **đẩy đi**. Chỉ có các cache cũ **chưa hết hạn**. Điều đó cũng giải thích vì sao khi đổi `NS` ở registry, các resolver khác nhau thấy thay đổi ở các thời điểm khác nhau: mỗi nơi chờ hết TTL (rất dài, thường 24 tới 48 giờ) của bản ghi `NS` cũ mà họ đã cache.
+
+### Cache ở các nơi ít ngờ tới
+
+- **Nginx** (bản open source) phân giải tên upstream **một lần khi khởi động** hoặc khi nạp lại cấu hình, rồi giữ IP đó mãi. Nếu upstream là một load balancer có IP đổi, Nginx vẫn trỏ về IP cũ cho tới khi `reload`. Để Nginx tra lại theo TTL cần dùng chỉ thị `resolver` kết hợp với một biến trong `proxy_pass`.
+- **JVM** từng cache kết quả tra tên **vĩnh viễn** trong một số cấu hình (tham số `networkaddress.cache.ttl`), một nguồn lỗi kinh điển khi chuyển IP của dịch vụ đằng sau.
+- **Connection pool** giữ kết nối TCP đã mở tới IP cũ; đổi DNS không ảnh hưởng cho tới khi kết nối bị đóng.
+
+## UDP, TCP và kích thước message
+
+DNS mặc định dùng <Term>UDP</Term> cổng 53. Truy vấn và trả lời thường nhỏ (một gói mỗi chiều), không cần handshake, và server phục vụ hàng triệu client không phải giữ trạng thái kết nối. Đặc tả gốc giới hạn **response UDP ở 512 byte**, vì 512 là cỡ chắc chắn không bị phân mảnh trên đường truyền thời đó. Khi response lớn hơn, server cắt bớt và đặt bit `TC` (truncated); client **thử lại bằng <Term>TCP</Term>**, trong đó mỗi message đứng sau 2 byte độ dài (như đã thấy trong `ask_tcp`).
+
+Thí nghiệm với `google.com` loại `TXT` (rất nhiều bản ghi):
+
+```text
+UDP, không EDNS (giới hạn 512)      28 byte  tc=1  answer=0
+UDP, EDNS 1232                    1187 byte  tc=0  answer=17
+TCP                               1176 byte  tc=0  answer=17
+```
+
+- Không EDNS: server (`8.8.8.8`) trả đúng **28 byte** (header cộng question), bit `tc=1`, không có đáp án nào. Nó không gửi dữ liệu dở dang mà báo "đây không vừa, hãy hỏi lại bằng TCP".
+- **EDNS(0)** (RFC 6891) là cách mở rộng. Client thêm bản ghi giả loại `OPT` vào mục `additional` để nói "tôi nhận được UDP tới 1232 byte". Server trả được 1187 byte trong một datagram UDP. Phần cộng thêm giữa 1187 và 1176 chính là bản ghi `OPT` 11 byte trong response.
+- **TCP** luôn đủ, và là đường dự phòng (cổng 53 TCP phải mở trên firewall; đóng nó là lỗi cấu hình kinh điển, DNS chạy được cho tới khi gặp response lớn).
+
+Vì sao 1232? Vì **DNS Flag Day 2020**: UDP datagram lớn hơn MTU bị IP phân mảnh, và các mảnh bị firewall chặn hoặc mất rất thường xuyên, làm truy vấn treo. Cả cộng đồng thống nhất mặc định 1232 byte (1280 là MTU tối thiểu của IPv6, trừ 40 byte header IPv6 và 8 byte header UDP) để response không bao giờ phân mảnh. Bài [TCP vs UDP](/docs/networking/tcp-vs-udp) giải thích thêm về MTU và phân mảnh.
+
+### DNS amplification
+
+Vì UDP không xác minh nguồn, kẻ tấn công có thể gửi **truy vấn nhỏ (khoảng 60 byte) với IP nguồn giả là địa chỉ nạn nhân** tới một resolver mở; response lớn (có khi vài KB, như truy vấn `ANY` hoặc DNSSEC) đổ về nạn nhân. Hệ số khuếch đại vài chục lần. Hai đối sách tiêu chuẩn: đừng mở recursive resolver ra toàn Internet (chỉ phục vụ mạng của mình), và giới hạn tốc độ trả lời (response rate limiting). Và đó cũng là một lý do TCP chiếm vị trí quan trọng hơn trong DNS hiện đại.
+
+## Bảo mật
+
+### Cache poisoning
+
+Resolver gửi một truy vấn UDP và chấp nhận **bất kỳ gói nào** có cùng ID, cùng tên được hỏi, tới đúng cổng. Kẻ tấn công chỉ cần gửi trả lời giả tới resolver trước authoritative thật. Nếu nó đoán đúng ID (16 bit, 65.536 khả năng), resolver cache dữ liệu giả cho tới hết TTL, và **mọi người dùng của resolver đó** bị chuyển sang IP của kẻ tấn công.
+
+Năm 2008, Dan Kaminsky chỉ ra rằng có thể thử hàng loạt bằng cách hỏi các tên chưa tồn tại (`aaaa.example.com`, `aaab.example.com`...) để luôn có cơ hội mới và gài thêm cả bản ghi `NS` giả trong phần `authority`. Đối sách phổ biến ngay lập tức là **ngẫu nhiên hoá cổng nguồn UDP** cho mỗi truy vấn: khi đó phải đoán cả ID lẫn cổng, tức khoảng 2 mũ 32 khả năng. Sau đó có thêm:
+
+- **0x20 encoding**: resolver gửi tên với chữ hoa chữ thường ngẫu nhiên (`wWw.ExAmPlE.cOm`); server thật chép nguyên dạng đó vào response, kẻ giả mạo không biết nên phải đoán thêm từng bit.
+- **Chỉ tin dữ liệu trong bailiwick**: bỏ các bản ghi trong response mà server không có thẩm quyền.
+- **DNS cookies** (RFC 7873).
+
+Đó đều là biện pháp làm cho kẻ tấn công **khó đoán**. Muốn kết quả **đảm bảo** cần chữ ký số: DNSSEC.
+
+### DNSSEC
+
+DNSSEC thêm **chữ ký mật mã** vào dữ liệu DNS để resolver kiểm chứng được rằng bản ghi đến từ chủ zone và không bị sửa. Ba loại record mới:
+
+| Record | Nội dung |
+|---|---|
+| `DNSKEY` | khoá công khai của zone |
+| `RRSIG` | chữ ký của một tập record (RRset), tạo bằng khoá riêng của zone |
+| `DS` | **hash** của khoá `DNSKEY` của một zone con, lưu ở **zone cha** |
+
+**Chuỗi tin cậy** (chain of trust) chạy từ root xuống: resolver có sẵn khoá công khai của root (trust anchor). Root ký `DS` của `com`, vì vậy tin được khoá `com` (bằng cách so hash). `com` ký `DS` của `cloudflare.com`, vậy tin được khoá của `cloudflare.com`; khoá đó ký các record `A` của nó. Mỗi bước là một cặp (DS ở cha, DNSKEY ở con) cộng với chữ ký.
+
+Thử thật với `cloudflare.com` (cần bật bit `DO`, "DNSSEC OK", trong bản ghi `OPT`):
+
+```text
+  DO=1: ad = 1  [('A', '104.16.132.229'), ('A', '104.16.133.229'), ('RRSIG', '<98 byte>')]
+  DS  : [('cloudflare.com.', 'DS', '<36 byte>'), ('cloudflare.com.', 'RRSIG', '<87 byte>')]
+```
+
+Response kèm bản ghi `RRSIG` (chữ ký) sau hai bản ghi `A`, và cờ **`ad=1`** (Authenticated Data): recursive resolver `1.1.1.1` báo rằng nó **đã kiểm chứng** cả chuỗi chữ ký. Truy vấn thứ hai lấy bản ghi `DS` của `cloudflare.com` từ phía `com`.
+
+Điều DNSSEC **làm**: chống giả mạo và sửa đổi dữ liệu (kể cả phủ định có chữ ký, bằng `NSEC` hoặc `NSEC3`). Điều nó **không làm**: không mã hoá (ai cũng thấy bạn tra gì), không bảo vệ chặng từ stub tới resolver (stub phải tin cờ `ad`), và không đảm bảo máy chủ ở IP đó là thật (đó là việc của TLS). Cái giá là response lớn hơn, hạ tầng phức tạp hơn (xoay khoá, hết hạn chữ ký có thể làm cả zone "biến mất" với resolver đang kiểm chứng), nên tỷ lệ bật còn thấp ở nhiều TLD.
+
+### Mã hoá đường truyền: DoT, DoH, DoQ
+
+DNS cổ điển gửi **rõ** trên dây: nhà mạng, quản trị Wi-Fi quán cà phê, hay bất kỳ ai trên đường đi đều thấy mọi tên miền bạn tra và có thể sửa kết quả. Ba giao thức mã hoá chặng giữa client và recursive resolver:
+
+| Giao thức | Chạy trên | Cổng | Ghi chú |
+|---|---|---|---|
+| **DoT** (DNS over TLS, RFC 7858) | TLS trên TCP | 853 | cổng riêng nên dễ nhận biết và dễ bị chặn |
+| **<Term>DoH</Term>** (DNS over HTTPS, RFC 8484) | HTTPS | 443 | lẫn vào lưu lượng web; trình duyệt dùng được mà không cần hỗ trợ của OS |
+| **DoQ** (DNS over QUIC, RFC 9250) | QUIC | 853 | còn mới |
+
+DoH gửi **đúng message nhị phân DNS** như ở trên, chỉ là trong body của HTTP với kiểu nội dung `application/dns-message`. Dùng lại chính `build_query` và `parse` đã viết:
+
+```python
+import urllib.request
+from dnsmsg import build_query, parse, show
+
+qid, q = build_query('example.com', 'A')
+req = urllib.request.Request('https://cloudflare-dns.com/dns-query', data=q,
+        headers={'Content-Type': 'application/dns-message', 'Accept': 'application/dns-message'})
+body = urllib.request.urlopen(req, timeout=5).read()
+show(parse(body))
+```
+
+```text
+id=0x0a57 qr=1 aa=0 tc=0 rd=1 ra=1 ad=0 rcode=0
+  answer     example.com.                        260 A      172.66.147.243
+  answer     example.com.                        260 A      104.20.23.154
+```
+
+Cùng định dạng, khác đường truyền. Nên nhớ hai điều: các giao thức này **chỉ chuyển dữ liệu riêng tư sang một bên khác**. DoH tới `1.1.1.1` che việc tra cứu khỏi nhà mạng, nhưng Cloudflare thấy hết. Và truy vấn giữa recursive resolver với authoritative server vẫn rõ (tiến triển hiện nay ở đó còn chậm). Ngoài ra DoH khiến quản trị mạng không còn thấy DNS của máy trong mạng để lọc nội dung hay phát hiện mã độc, nên trong doanh nghiệp thường bị tắt hoặc trỏ về resolver nội bộ.
+
+## DNS trong hạ tầng thật
+
+DNS không chỉ để "tên thành IP". Hạ tầng hiện đại dựa vào nó theo vài cách:
+
+- **Cân bằng tải bằng DNS.** Một tên trả nhiều bản ghi `A` (như `www.example.com` ở trên có hai); client thường thử cái đầu, resolver xoay vòng thứ tự (round robin). Đơn giản nhưng không biết server nào đang sống, nên cần kết hợp với health check ở phía name server (Route 53, Cloudflare) để rút IP hỏng khỏi câu trả lời. TTL ngắn làm việc này có hiệu lực nhanh hơn.
+- **GeoDNS và anycast.** Name server trả IP khác nhau tuỳ vị trí người hỏi (dựa vào địa chỉ resolver, hoặc EDNS Client Subnet) để đưa người dùng tới trung tâm dữ liệu gần nhất. Anycast thì dùng **cùng một IP** ở nhiều nơi và để định tuyến mạng chọn nơi gần nhất; root server và `1.1.1.1` chạy theo cách đó.
+- **CDN.** Bạn đặt `CNAME` từ `www.example.com` tới một tên của CDN; CDN trả IP edge gần người hỏi. Đó cũng là lý do `www.github.com` là CNAME chứ không phải A.
+- **Service discovery.** Trong Kubernetes, CoreDNS cho mỗi Service một tên `ten-service.namespace.svc.cluster.local`; bản ghi `SRV` mang cả port. Consul và các hệ tương tự cũng mở giao diện DNS.
+- **Email và chứng chỉ.** MX quyết định thư đi đâu; TXT cho SPF/DKIM/DMARC; CAA giới hạn CA; TXT `_acme-challenge` cho DNS-01.
+- **Happy Eyeballs.** Client có cả `A` và `AAAA` thường thử cả hai gần như song song (RFC 8305) và lấy kết nối nào xong trước, để không bị kẹt khi IPv6 hỏng.
+
+### Cái bẫy `ndots` trong Kubernetes
+
+`/etc/resolv.conf` trong một Pod thường có:
+
+```text
+search default.svc.cluster.local svc.cluster.local cluster.local
+nameserver 10.96.0.10
+options ndots:5
+```
+
+Quy tắc của glibc: một tên có **ít hơn `ndots` dấu chấm** được coi là "chưa đầy đủ" và thử lần lượt từng **search domain** trước, cuối cùng mới thử nguyên tên. Với `ndots:5`, gọi `api.example.com` (chỉ hai dấu chấm) sẽ gây ra:
+
+```text
+api.example.com.default.svc.cluster.local   → NXDOMAIN
+api.example.com.svc.cluster.local           → NXDOMAIN
+api.example.com.cluster.local               → NXDOMAIN
+api.example.com                             → trả lời thật
+```
+
+Mỗi tên chạy cả A và AAAA nên là khoảng tám truy vấn cho mỗi lần tra, và ba cái đầu thất bại. Với dịch vụ gọi API ngoài rất nhiều, DNS trở thành nút cổ chai. Cách xử lý: viết tên đầy đủ có dấu chấm cuối (`api.example.com.`), hạ `ndots` xuống trong `dnsConfig` của Pod, hoặc dùng cache DNS cục bộ trên mỗi node (NodeLocal DNSCache).
+
+## Quan sát và chẩn đoán
+
+Công cụ chính là `dig` (gói `dnsutils` hoặc `bind-utils`). Điều quan trọng cần hiểu là các cách dùng khác nhau trả lời các câu hỏi khác nhau:
 
 ```bash
-dig fundamentals-notes.vercel.app A +short
-dig _vercel.example.com TXT
+dig example.com                        # hỏi resolver mặc định, in cả header và flags
+dig +short example.com A               # chỉ giá trị
+dig @1.1.1.1 example.com A             # chọn resolver cụ thể để so sánh với resolver của máy
+dig +trace example.com                 # tự đi từ root xuống (giống resolver ở trên) và in từng bước
+dig +norecurse @a.gtld-servers.net example.com NS    # hỏi thẳng server của TLD, xem referral
+dig @ns1.example.com example.com A     # hỏi thẳng authoritative: nguồn sự thật, không qua cache
+dig +tcp example.com TXT               # ép TCP
+dig +dnssec example.com A              # xin kèm RRSIG, xem cờ ad
+dig -x 8.8.8.8                         # tra ngược (PTR)
 ```
+
+Điều phân biệt các lệnh trên với `ping` hay trình duyệt: `dig` **bỏ qua** `/etc/hosts`, `nsswitch.conf` và mọi cache của OS, nó chỉ làm đúng việc gửi một truy vấn DNS. Chương trình thật gọi `getaddrinfo()`, đi qua đủ các tầng. Để xem điều ứng dụng thật sự thấy:
+
+```bash
+getent hosts example.com               # đi qua NSS đúng như getaddrinfo
+resolvectl query example.com           # systemd-resolved: hiện cả nguồn (cache, mạng) và giao thức
+cat /etc/resolv.conf                   # nameserver, search, options ndots
+cat /etc/nsswitch.conf | grep hosts    # thứ tự: files (hosts), dns, mdns...
+sudo tcpdump -nn -i any port 53        # xem truy vấn thật ra khỏi máy
+```
+
+Windows: `nslookup`, `Resolve-DnsName`, `ipconfig /displaydns` (xem cache), `ipconfig /flushdns` (xoá cache).
+
+Ánh xạ triệu chứng sang nguyên nhân:
+
+| Triệu chứng | Nguyên nhân hay gặp và cách kiểm tra |
+|---|---|
+| `dig` đúng nhưng ứng dụng sai | `/etc/hosts` có dòng ghi đè; cache của ứng dụng (JVM, Nginx); `search` domain làm tên thành tên khác; ứng dụng dùng DoH riêng. Dùng `getent hosts` thay `dig` |
+| Đã đổi bản ghi, nhiều người vẫn thấy IP cũ | cache chưa hết TTL (xem TTL còn lại bằng `dig` nhiều lần), hoặc đã cache phủ định. Kiểm tra bằng `dig @ns-của-bạn` rằng bản gốc đã đúng |
+| `NXDOMAIN` | tên sai, chưa tạo bản ghi, hoặc zone chưa được uỷ quyền đúng: so `dig +trace` với `dig @authoritative` |
+| `SERVFAIL` | resolver không lấy được đáp án: authoritative không trả lời, DNSSEC kiểm chứng thất bại (chữ ký hết hạn, DS lệch), uỷ quyền hỏng (lame delegation). `dig +cd` (checking disabled) cho biết có phải do DNSSEC không |
+| `REFUSED` | server không phục vụ bạn: recursive resolver chỉ cho mạng nội bộ, hoặc hỏi `NS` sai chỗ |
+| Chậm 5 hoặc 10 giây ở mỗi lần tra | resolver đầu danh sách trong `resolv.conf` chết, glibc chờ timeout (mặc định 5 giây) rồi mới thử cái sau; hoặc `AAAA` bị bỏ gói |
+| Tra được tên nội bộ trên máy này mà máy kia không | split-horizon DNS: tên chỉ có trong resolver nội bộ; VPN thay đổi resolver |
+| Mail không tới | thiếu `MX`, MX trỏ vào `CNAME` (không được phép), SPF/DKIM/DMARC thiếu hay sai |
+| Chứng chỉ không cấp được bằng DNS-01 | `TXT _acme-challenge` chưa nhìn thấy từ resolver của CA, hoặc có CNAME ở tên đó làm lệch |
 
 ## Lưu ý
 
-- **Đổi DNS không có hiệu lực ngay**: các resolver đang giữ bản cũ tới khi hết TTL. Muốn đổi nhanh thì hạ TTL xuống vài phút **trước** khi đổi.
-- DNS mặc định không mã hoá: nhà mạng thấy được bạn tra tên miền nào. DNS over HTTPS (DoH) và DNS over TLS (DoT) mã hoá phần này.
-- Truy vấn DNS thường đi bằng <Term>UDP</Term> port 53 vì nhỏ và cần nhanh; câu trả lời lớn thì chuyển sang <Term>TCP</Term>.
+- **DNS không có "lan truyền".** Chỉ có cache chưa hết hạn. Muốn đổi nhanh phải hạ TTL **trước** khi đổi, không phải sau.
+- **`dig` không phải là ứng dụng của bạn.** Nó bỏ qua `/etc/hosts`, NSS và cache của OS. Dùng `getent hosts` hoặc kiểm tra trong chính process khi nghi ngờ.
+- **Apex không được là CNAME.** Dùng `A`/`AAAA`, hoặc `ALIAS`/`ANAME`/flattening của nhà cung cấp. Một tên đã có CNAME không được kèm loại record nào khác.
+- **NXDOMAIN và NODATA là hai thứ khác nhau**, và cả hai đều được cache âm theo `SOA`. Tạo một bản ghi mới sau khi đã bị hỏi trước đó có thể không thấy ngay.
+- **Một số zone không bao giờ trả NXDOMAIN** (wildcard hoặc phủ định đặc biệt): tên con gõ sai vẫn ra `rcode=0` với `answer` rỗng, nên đừng chỉ dựa vào NXDOMAIN để phát hiện tên sai.
+- **Mở cổng 53 TCP, không chỉ UDP**, và đừng chặn UDP lớn hơn 512 byte. Response lớn (DNSSEC, nhiều TXT) cần cả hai.
+- **Đừng mở recursive resolver ra Internet.** Nó thành phương tiện khuếch đại tấn công DDoS.
+- **DNSSEC chỉ xác thực dữ liệu, không mã hoá**; **DoH/DoT mã hoá đường truyền, không xác thực dữ liệu**. Hai thứ giải hai bài toán khác nhau, có thể dùng cùng nhau.
+- **Phụ thuộc chéo giữa các zone có thật**: name server của bạn nằm ở TLD hay nhà cung cấp nào cũng là một điểm có thể hỏng. Dùng ít nhất hai name server ở hai nhà cung cấp độc lập nếu tên miền đó quan trọng.
+- **Kubernetes `ndots:5` nhân số truy vấn DNS lên nhiều lần** với tên ngoài; viết tên đầy đủ có dấu chấm cuối hoặc đặt lại `ndots` khi DNS là nút cổ chai.

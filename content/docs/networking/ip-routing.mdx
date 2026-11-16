@@ -1,0 +1,708 @@
+---
+title: IP & Routing
+description: Địa chỉ IPv4, subnet và CIDR tính tay, bảng định tuyến và longest prefix match (tự cài bằng trie), router chuyển một gói thế nào, ICMP, ping và traceroute tự viết, NAT, IPv6, và BGP nối các mạng của Internet với nhau.
+status: draft
+tags: [networking, ip]
+authors: [tranquocvy]
+references:
+  - title: "Kurose & Ross, Computer Networking: A Top-Down Approach — Chapter 4: The Network Layer (Data Plane) và Chapter 5 (Control Plane)"
+    kind: book
+    note: header IPv4, CIDR, longest prefix match, NAT, IPv6, OSPF và BGP
+  - title: "RFC 791 — Internet Protocol"
+    url: https://www.rfc-editor.org/rfc/rfc791
+    kind: web
+    note: đặc tả gốc của IPv4, mục 3 cho header
+  - title: "RFC 4632 — Classless Inter-domain Routing (CIDR)"
+    url: https://www.rfc-editor.org/rfc/rfc4632
+    kind: web
+  - title: "RFC 1918 — Address Allocation for Private Internets"
+    url: https://www.rfc-editor.org/rfc/rfc1918
+    kind: web
+  - title: "RFC 792 — Internet Control Message Protocol"
+    url: https://www.rfc-editor.org/rfc/rfc792
+    kind: web
+  - title: "RFC 4271 — A Border Gateway Protocol 4 (BGP-4)"
+    url: https://www.rfc-editor.org/rfc/rfc4271
+    kind: web
+    note: đọc phần tổng quan và quá trình chọn đường
+  - title: "RFC 8200 — Internet Protocol, Version 6 (IPv6) Specification"
+    url: https://www.rfc-editor.org/rfc/rfc8200
+    kind: web
+  - title: "RFC 3022 — Traditional IP Network Address Translator (Traditional NAT)"
+    url: https://www.rfc-editor.org/rfc/rfc3022
+    kind: web
+  - title: "Stanford CS144 — Introduction to Computer Networking"
+    url: https://cs144.github.io/
+    kind: web
+    note: bài giảng về địa chỉ IP, longest prefix match và định tuyến
+---
+
+## Ý chính
+
+Ethernet (bài [OSI & TCP/IP Model](/docs/networking/network-layers)) chỉ chuyển khung giữa các máy **trong một mạng cục bộ**. Để một gói tin đi từ laptop của bạn tới một server ở bên kia đại dương, nó phải qua hàng chục mạng, mỗi mạng một công nghệ link khác nhau. Tầng **Network**, mà đại diện là **IP** (Internet Protocol), nối chúng lại với hai việc:
+
+1. **Đánh địa chỉ**: cho mỗi giao diện mạng một địa chỉ có cấu trúc, sao cho từ địa chỉ có thể suy ra "mạng nào" và "máy nào trong mạng đó".
+2. **Định tuyến (routing và forwarding)**: ở mỗi router, đọc địa chỉ đích của gói và quyết định **gửi tiếp cho ai** (next hop). Không router nào biết toàn bộ đường đi; mỗi router chỉ quyết định một bước.
+
+Hai khái niệm hay bị lẫn nhưng nên tách rõ:
+
+- **Forwarding (mặt phẳng dữ liệu)**: hành động trên **mỗi gói**: tra bảng, giảm TTL, chuyển ra cổng tương ứng. Việc này phải làm trong vài trăm nano giây, nên chạy bằng phần cứng.
+- **Routing (mặt phẳng điều khiển)**: việc **dựng ra bảng** đó. Chạy chậm hơn nhiều (giây tới phút), nhờ các giao thức như OSPF và BGP.
+
+Bài này đi theo thứ tự: header IPv4 (với checksum cập nhật gia tăng), rồi địa chỉ, subnet và CIDR (tính tay có code đối chiếu), bảng định tuyến và <Term>longest prefix match</Term> (tự cài bằng trie), rồi quá trình một router chuyển gói. Sau đó là cách bảng được dựng (link-state tự cài bằng Dijkstra), ICMP với ping và traceroute tự viết, NAT, IPv6, và BGP nối các nhà mạng. Cuối cùng là công cụ chẩn đoán.
+
+Output lấy từ máy Linux (WSL2) nối Internet thật: ping và traceroute tự viết đi qua mạng nhà, truy vấn BGP lấy từ dịch vụ DNS của Team Cymru. Các hop của nhà mạng đã lược bớt khỏi output vì chúng là hạ tầng của riêng người đo.
+
+## Header IPv4
+
+Header IPv4 có 20 byte cố định (cộng tối đa 40 byte option hiếm dùng). Với byte thật đã bóc ở bài [OSI & TCP/IP Model](/docs/networking/network-layers):
+
+```text
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-------+-------+---------------+-------------------------------+
+|Version|  IHL  |    DSCP/ECN   |         Total Length          |
++-------+-------+---------------+-----+-------------------------+
+|        Identification         |Flags|     Fragment Offset     |
++---------------+---------------+-----+-------------------------+
+|      TTL      |   Protocol    |        Header Checksum        |
++---------------+---------------+-------------------------------+
+|                       Source Address                          |
++---------------------------------------------------------------+
+|                    Destination Address                        |
++---------------------------------------------------------------+
+```
+
+| Trường | Bit | Vai trò |
+|---|---|---|
+| Version | 4 | luôn là 4 |
+| IHL | 4 | độ dài header tính bằng từ 4 byte (tối thiểu 5, tức 20 byte) |
+| DSCP/ECN | 8 | độ ưu tiên (QoS) và báo nghẽn tường minh |
+| Total Length | 16 | tổng độ dài gói (header cộng dữ liệu), tối đa 65535 |
+| Identification, Flags, Fragment Offset | 16 + 3 + 13 | phân mảnh (xem [OSI & TCP/IP Model](/docs/networking/network-layers)) |
+| **TTL** | 8 | số bước tối đa còn lại; **mỗi router trừ 1**, về 0 thì bị bỏ |
+| **Protocol** | 8 | gói bên trong là gì: 1 ICMP, 6 TCP, 17 UDP |
+| Header Checksum | 16 | chỉ bảo vệ **header**, không bảo vệ dữ liệu |
+| Source, Destination | 32 + 32 | địa chỉ nguồn và đích |
+
+Hai trường làm cho mạng chạy ổn định:
+
+- **TTL** (Time To Live) chặn **vòng lặp định tuyến**. Nếu bảng định tuyến của hai router sai và chúng đẩy một gói qua lại, không có TTL thì gói quay vòng mãi và tích tụ cho tới khi đường truyền nghẽn. TTL khởi đầu thường 64 (Linux, macOS) hoặc 128 (Windows); mỗi router trừ 1; về 0 thì router bỏ gói và gửi ICMP "Time Exceeded" về nguồn. Cơ chế này cũng chính là nền của `traceroute`.
+- **Protocol** là "địa chỉ" giữa tầng Network và tầng trên, giống EtherType giữa tầng Link và tầng Network.
+
+### Checksum chỉ bảo vệ header
+
+Mỗi router phải trừ TTL của mọi gói đi qua, nên checksum header **thay đổi ở mỗi bước** và phải cập nhật. Tính lại trên cả 20 byte thì tốn; RFC 1624 chỉ ra cách cập nhật **gia tăng** chỉ bằng vài phép cộng. Đoạn dưới thử cả hai cách với header thật đã bắt ở bài trước:
+
+```python
+import struct
+def csum(b):
+    s = sum(struct.unpack('!%dH' % (len(b)//2), b))
+    while s >> 16: s = (s & 0xFFFF) + (s >> 16)           # cộng bù một: phần tràn cộng ngược vào
+    return ~s & 0xFFFF
+hdr = bytearray.fromhex('4500006c027c40004006' + '0000' + 'ac1a6256ac4293f3')
+hdr[10:12] = struct.pack('!H', csum(bytes(hdr)))
+print('checksum đầy đủ     :', hdr[10:12].hex(), ' kiểm tra lại =', csum(bytes(hdr)))
+# router giảm TTL 64 -> 63: cách 1 tính lại toàn bộ
+h2 = bytearray(hdr); h2[8] -= 1; h2[10:12] = b'\0\0'; h2[10:12] = struct.pack('!H', csum(bytes(h2)))
+# cách 2 (RFC 1624): HC' = ~(~HC + ~m + m')   với m = từ 16 bit chứa TTL
+m  = (hdr[8] << 8) | hdr[9]; m2 = ((hdr[8] - 1) << 8) | hdr[9]
+hc = struct.unpack('!H', hdr[10:12])[0]
+x = (~hc & 0xFFFF) + (~m & 0xFFFF) + m2
+x = (x & 0xFFFF) + (x >> 16); x = (x & 0xFFFF) + (x >> 16)
+print('tính lại toàn bộ    :', h2[10:12].hex())
+print('cập nhật gia tăng   :', struct.pack('!H', ~x & 0xFFFF).hex(), ' (chỉ 3 phép cộng, không đọc lại cả header)')
+```
+
+```text
+checksum đầy đủ     : e969  kiểm tra lại = 0
+tính lại toàn bộ    : ea69
+cập nhật gia tăng   : ea69  (chỉ 3 phép cộng, không đọc lại cả header)
+```
+
+Hai điều cần ghi nhớ. Một: `e969` là đúng giá trị `e9 69` có trong byte thật ở bài trước, tức code này tính đúng checksum của header đó, và "kiểm tra lại" cộng cả checksum vào thì ra 0 (đó cũng là cách bên nhận kiểm: cộng mọi từ 16 bit, kết quả phải toàn bit 1). Hai: trừ TTL đi 1 chỉ làm checksum tăng đúng `0x0100`, và cách gia tăng cho cùng kết quả `ea69` mà không đọc lại 18 byte còn lại. Phần cứng router làm bước này cho mọi gói ở tốc độ đường truyền.
+
+Checksum **không** bảo vệ dữ liệu: IPv6 bỏ hẳn trường này vì tầng link (FCS) và tầng transport (checksum TCP/UDP) đã có.
+
+## Địa chỉ IPv4 và subnet
+
+Địa chỉ IPv4 là số 32 bit, viết thành bốn số thập phân 0 tới 255 (mỗi số là một byte): `192.168.10.37`. Về cấu trúc, địa chỉ chia làm hai phần:
+
+```text
+|<------- phần mạng (network) ------->|<-- phần máy (host) -->|
+ 11000000.10101000.00001010.00 | 100101
+         192.168.10.0 /26          .37
+```
+
+Số bit dành cho phần mạng là **prefix length**, viết sau dấu gạch: `/26` nghĩa là 26 bit đầu là phần mạng, 6 bit cuối là phần máy. Cách viết `192.168.10.37/26` là <Term>CIDR</Term> (Classless Inter-Domain Routing). Cũng có thể biểu diễn bằng **netmask**: 26 bit 1 rồi 6 bit 0, tức `255.255.255.192`.
+
+Từ một địa chỉ và prefix, suy ra mọi thứ bằng phép bit:
+
+- **Địa chỉ mạng** = địa chỉ AND netmask (xoá hết bit máy).
+- **Địa chỉ broadcast** = địa chỉ mạng OR (NOT netmask) (bật hết bit máy).
+- **Số máy dùng được** = 2 mũ (32 − prefix) − 2 (trừ địa chỉ mạng và địa chỉ broadcast).
+
+Code để thấy phép tính, kèm các ví dụ tính tay:
+
+```python
+import ipaddress
+def explain(cidr):
+    ip, plen = cidr.split('/'); plen = int(plen)
+    a = int(ipaddress.IPv4Address(ip))
+    mask = (0xFFFFFFFF << (32 - plen)) & 0xFFFFFFFF
+    net, bc = a & mask, (a & mask) | (~mask & 0xFFFFFFFF)
+    f = lambda x: str(ipaddress.IPv4Address(x))
+    b = lambda x: '.'.join(f'{(x >> s) & 255:08b}' for s in (24, 16, 8, 0))
+    print(f'{cidr}')
+    print(f'  địa chỉ   {b(a)}  {f(a)}')
+    print(f'  netmask   {b(mask)}  {f(mask)}')
+    print(f'  network   {b(net)}  {f(net)}')
+    print(f'  broadcast {b(bc)}  {f(bc)}')
+    print(f'  host dùng được: {f(net+1)} .. {f(bc-1)}  ({2 ** (32 - plen) - 2} máy)')
+explain('192.168.10.37/26')
+explain('10.0.5.200/22')
+```
+
+```text
+192.168.10.37/26
+  địa chỉ   11000000.10101000.00001010.00100101  192.168.10.37
+  netmask   11111111.11111111.11111111.11000000  255.255.255.192
+  network   11000000.10101000.00001010.00000000  192.168.10.0
+  broadcast 11000000.10101000.00001010.00111111  192.168.10.63
+  host dùng được: 192.168.10.1 .. 192.168.10.62  (62 máy)
+10.0.5.200/22
+  địa chỉ   00001010.00000000.00000101.11001000  10.0.5.200
+  netmask   11111111.11111111.11111100.00000000  255.255.252.0
+  network   00001010.00000000.00000100.00000000  10.0.4.0
+  broadcast 00001010.00000000.00000111.11111111  10.0.7.255
+  host dùng được: 10.0.4.1 .. 10.0.7.254  (1022 máy)
+```
+
+Cách tính tay cho ví dụ đầu (`/26`): 26 bit mạng nghĩa là ba byte đầu nguyên vẹn và 2 bit đầu của byte thứ tư. Mỗi mạng `/26` chiếm một **khối 64 địa chỉ** (2 mũ 6), nên các mạng bắt đầu ở 0, 64, 128, 192. `.37` rơi vào khối 0 tới 63: mạng `192.168.10.0`, broadcast `.63`. Ví dụ `/22` thú vị hơn vì phần mạng cắt **giữa** byte thứ ba: khối có kích thước 2 mũ 10 = 1024 địa chỉ, tức bốn "mạng /24" liên tiếp (`10.0.4.0` tới `10.0.7.255`), và `10.0.5.200` nằm trong khối bắt đầu ở `10.0.4.0`.
+
+Hai địa chỉ có thuộc cùng một mạng không? Áp netmask rồi so sánh phần mạng. Đây chính là phép máy tính dùng để quyết định "gửi thẳng hay qua router":
+
+```python
+def same(a, b, plen):
+    m = (0xFFFFFFFF << (32 - plen)) & 0xFFFFFFFF
+    return int(ipaddress.IPv4Address(a)) & m == int(ipaddress.IPv4Address(b)) & m
+print('192.168.10.37 và 192.168.10.100 cùng /26?', same('192.168.10.37', '192.168.10.100', 26))
+print('192.168.10.37 và 192.168.10.60  cùng /26?', same('192.168.10.37', '192.168.10.60', 26))
+```
+
+```text
+192.168.10.37 và 192.168.10.100 cùng /26? False
+192.168.10.37 và 192.168.10.60  cùng /26? True
+```
+
+`.100` thuộc khối 64 tới 127, khác khối của `.37`, nên cùng một dải `192.168.10.x` nhưng **không** cùng mạng `/26`: muốn nói chuyện phải qua router. Đó là cái bẫy kinh điển khi cấu hình netmask sai.
+
+### Chia mạng và gom tuyến
+
+CIDR cho phép chia và gộp theo ý muốn (trước đó là các lớp A, B, C cố định, rất phí địa chỉ):
+
+```python
+net = ipaddress.ip_network('10.20.0.0/24')
+print('chia 10.20.0.0/24 thành 4 mạng /26:', [str(s) for s in net.subnets(new_prefix=26)])
+routes = ['10.20.0.0/24', '10.20.1.0/24', '10.20.2.0/24', '10.20.3.0/24', '10.20.5.0/24']
+print('gom tuyến', routes, '→', [str(n) for n in ipaddress.collapse_addresses(map(ipaddress.ip_network, routes))])
+```
+
+```text
+chia 10.20.0.0/24 thành 4 mạng /26: ['10.20.0.0/26', '10.20.0.64/26', '10.20.0.128/26', '10.20.0.192/26']
+gom tuyến ['10.20.0.0/24', '10.20.1.0/24', '10.20.2.0/24', '10.20.3.0/24', '10.20.5.0/24'] → ['10.20.0.0/22', '10.20.5.0/24']
+```
+
+- **Chia (subnetting)**: mượn bit từ phần máy cho phần mạng. Thêm một bit thì số mạng nhân đôi và số máy mỗi mạng giảm một nửa. Dùng để tách phòng ban, tách môi trường, tách tầng web với database.
+- **Gom (aggregation, summarization)**: bốn mạng `/24` liên tiếp và khớp biên (`10.20.0.0` tới `10.20.3.0`) gộp được thành một `/22`; `10.20.5.0/24` không liền kề nên đứng riêng. Đây là cách **giảm cỡ bảng định tuyến**: một nhà mạng quảng bá một tuyến `/16` thay vì 256 tuyến `/24`. Muốn gom được, địa chỉ phải được cấp có cấu trúc (liền khối, khớp biên), nên quy hoạch địa chỉ là việc nghiêm túc.
+
+Khi thiết kế mạng cloud (VPC), quyết định cỡ mạng là quyết định khó đổi: VPC `/16` có 65.536 địa chỉ và chia thành các subnet `/24` (251 địa chỉ dùng được trên AWS vì nhà cung cấp giữ lại 5 địa chỉ mỗi subnet). Chọn quá nhỏ thì hết địa chỉ khi mở rộng; chọn trùng dải với mạng công ty hay mạng của đối tác thì không nối VPN được, vì hai bên cùng nghĩ "10.0.0.0/16 là của mình".
+
+### Các dải địa chỉ đặc biệt
+
+| Dải | Ý nghĩa |
+|---|---|
+| `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` | **địa chỉ riêng (private, RFC 1918)**: dùng tự do trong mạng nội bộ, không định tuyến trên Internet |
+| `100.64.0.0/10` | **CGNAT (shared address space)**: nhà mạng dùng để chia nhiều khách hàng sau một địa chỉ công cộng |
+| `127.0.0.0/8` | **loopback**: về chính máy này (`127.0.0.1`), không ra dây |
+| `169.254.0.0/16` | **link-local**: tự gán khi không có DHCP; chỉ có nghĩa trên một đoạn mạng |
+| `0.0.0.0` | "không xác định", hoặc "mọi giao diện" khi `bind` |
+| `255.255.255.255` | broadcast tới mạng cục bộ |
+| `224.0.0.0/4` | multicast |
+| `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` | để dùng trong tài liệu và ví dụ |
+
+Kiểm tra bằng thư viện chuẩn, kể cả hai trường hợp dễ nhầm (`172.32.0.1` đã **ra ngoài** dải riêng `172.16.0.0/12`; `100.64.0.1` không phải riêng cũng không phải công cộng):
+
+```text
+10.1.2.3       private=True  loopback=False link_local=False global=False
+172.16.5.5     private=True  loopback=False link_local=False global=False
+172.32.0.1     private=False loopback=False link_local=False global=True
+192.168.1.1    private=True  loopback=False link_local=False global=False
+100.64.0.1     private=False loopback=False link_local=False global=False
+169.254.1.1    private=True  loopback=False link_local=True  global=False
+127.0.0.1      private=True  loopback=True  link_local=False global=False
+8.8.8.8        private=False loopback=False link_local=False global=True
+```
+
+Địa chỉ IPv4 công cộng đã **cạn**: kho `/8` cuối cùng của IANA được cấp hết năm 2011, các registry khu vực lần lượt hết sau đó. Hệ quả là chợ mua bán địa chỉ, NAT khắp nơi (phần dưới), và IPv6.
+
+## Bảng định tuyến
+
+Mỗi máy và router đều có **bảng định tuyến**: danh sách các luật "đích thuộc dải này thì gửi theo cổng này, tới next hop kia". Máy thí nghiệm có bảng chỉ hai dòng:
+
+```text
+$ ip route
+default via 172.26.96.1 dev eth0
+172.26.96.0/20 dev eth0 proto kernel scope link src 172.26.98.86
+
+$ ip route get 172.26.98.90
+172.26.98.90 dev eth0 src 172.26.98.86
+$ ip route get 1.1.1.1
+1.1.1.1 via 172.26.96.1 dev eth0 src 172.26.98.86
+```
+
+- Dòng 2: các địa chỉ trong `172.26.96.0/20` ở **ngay trên** đoạn mạng của `eth0` (`scope link`): gửi **thẳng** tới đích, bằng cách ARP hỏi MAC của chính đích.
+- Dòng 1: **default route** (`0.0.0.0/0`, khớp mọi địa chỉ): mọi thứ còn lại gửi tới router `172.26.96.1` để nó lo tiếp.
+
+Kết quả của `ip route get` nói rõ quyết định: `172.26.98.90` (cùng mạng `/20`) đi thẳng, không có `via`. `1.1.1.1` đi **qua** `172.26.96.1`; và khung Ethernet bắt ở bài trước có MAC đích là MAC của router đó chứ không phải của `example.com`.
+
+### Longest prefix match
+
+Một địa chỉ đích có thể khớp **nhiều** dòng trong bảng cùng lúc: `10.1.2.200` khớp `10.0.0.0/8`, `10.1.0.0/16`, `10.1.2.0/24`, và cả `0.0.0.0/0`. Quy tắc: chọn dòng có **prefix dài nhất** (cụ thể nhất). Lý do: một tuyến cụ thể là ngoại lệ có chủ ý của tuyến tổng quát. `0.0.0.0/0` là "mặc định cho mọi thứ", còn `10.1.2.128/25` nói rõ "riêng dải này đi chỗ khác".
+
+Cấu trúc dữ liệu tự nhiên cho việc này là **trie nhị phân** (một nút ứng với mỗi bit của địa chỉ). Cài đặt đầy đủ, kèm so sánh với cách quét tuyến tính:
+
+```python
+"""Bảng định tuyến: longest prefix match bằng trie nhị phân, so với quét tuyến tính."""
+import ipaddress, random, time
+
+class Node:
+    __slots__ = ('child', 'hop')
+    def __init__(self): self.child, self.hop = [None, None], None
+
+class Trie:
+    def __init__(self): self.root = Node()
+    def insert(self, cidr, hop):
+        net = ipaddress.ip_network(cidr); a = int(net.network_address); n = self.root
+        for i in range(net.prefixlen):                       # đi theo từng bit của phần mạng
+            bit = (a >> (31 - i)) & 1
+            if n.child[bit] is None: n.child[bit] = Node()
+            n = n.child[bit]
+        n.hop = hop                                          # tuyến kết thúc ở độ sâu = prefix length
+    def lookup(self, ip):
+        a = int(ipaddress.ip_address(ip)); n, best = self.root, None
+        if n.hop: best = (n.hop, 0)
+        for i in range(32):
+            n = n.child[(a >> (31 - i)) & 1]
+            if n is None: break
+            if n.hop: best = (n.hop, i + 1)                  # nhớ khớp dài nhất đã gặp
+        return best
+
+routes = {'0.0.0.0/0': 'ISP-uplink', '10.0.0.0/8': 'vpn', '10.1.0.0/16': 'dc-east', '10.1.2.0/24': 'rack-7',
+          '10.1.2.128/25': 'rack-7-gpu', '192.168.0.0/16': 'lan', '192.168.1.0/24': 'wifi'}
+t = Trie()
+for c, h in routes.items(): t.insert(c, h)
+for ip in ('10.1.2.200', '10.1.2.20', '10.1.9.9', '10.200.0.1', '192.168.1.55', '192.168.9.9', '8.8.8.8'):
+    hop, plen = t.lookup(ip); print(f'{ip:<14} → {hop:<11} (khớp /{plen})')
+
+# so sánh với quét tuyến tính trên 20.000 tuyến ngẫu nhiên
+random.seed(1)
+big = {}
+while len(big) < 20000:
+    plen = random.choice([16, 20, 22, 24, 24, 24])
+    a = random.getrandbits(32) & (0xFFFFFFFF << (32 - plen)) & 0xFFFFFFFF
+    big[f'{ipaddress.IPv4Address(a)}/{plen}'] = f'hop{len(big)}'
+big['0.0.0.0/0'] = 'default'
+nets = [(ipaddress.ip_network(c), h) for c, h in big.items()]
+t2 = Trie()
+for c, h in big.items(): t2.insert(c, h)
+probes = [str(ipaddress.IPv4Address(random.getrandbits(32))) for _ in range(300)]
+def linear(ip):
+    a = ipaddress.ip_address(ip); best = None
+    for n, h in nets:
+        if a in n and (best is None or n.prefixlen > best[1]): best = (h, n.prefixlen)
+    return best
+t0 = time.perf_counter(); r1 = [linear(p) for p in probes]; d1 = time.perf_counter() - t0
+t0 = time.perf_counter(); r2 = [t2.lookup(p) for p in probes]; d2 = time.perf_counter() - t0
+print('kết quả giống nhau:', r1 == r2)
+print(f'20.000 tuyến, 300 lookup: tuyến tính {d1*1000:.0f} ms, trie {d2*1000:.1f} ms  (nhanh hơn {d1/d2:.0f} lần)')
+```
+
+```text
+10.1.2.200     → rack-7-gpu  (khớp /25)
+10.1.2.20      → rack-7      (khớp /24)
+10.1.9.9       → dc-east     (khớp /16)
+10.200.0.1     → vpn         (khớp /8)
+192.168.1.55   → wifi        (khớp /24)
+192.168.9.9    → lan         (khớp /16)
+8.8.8.8        → ISP-uplink  (khớp /0)
+kết quả giống nhau: True
+20.000 tuyến, 300 lookup: tuyến tính 765 ms, trie 1.1 ms  (nhanh hơn 689 lần)
+```
+
+Mỗi địa chỉ chọn đúng tuyến cụ thể nhất: `10.1.2.200` có bit thứ 25 là 1 nên khớp `10.1.2.128/25`, còn `10.1.2.20` thì không và rơi về `/24`. Điểm quan trọng nhất là cột cuối: lookup trie **chỉ tốn tối đa 32 bước** (độ dài địa chỉ), không phụ thuộc số tuyến. Với 20.000 tuyến, nó nhanh hơn quét tuyến tính hơn 600 lần; với bảng Internet thật (hơn một triệu tuyến IPv4), quét tuyến tính là không thể.
+
+Hệ thống thật làm tinh vi hơn, dựa trên cùng ý:
+- **Linux** dùng một dạng trie nén (LC-trie), xem được ở `/proc/net/fib_trie`. Kernel còn có một **route cache** từng bị bỏ vì khó mở rộng.
+- **Router phần cứng cao cấp** dùng **TCAM** (ternary content-addressable memory): bộ nhớ so khớp **mọi tuyến song song trong một chu kỳ**, kể cả bit "không quan tâm" cho phần host. Nhanh nhưng đắt và hao điện, nên kích thước bảng FIB là một giới hạn phần cứng thật: bảng BGP toàn cầu lớn lên từng năm khiến các router đời cũ không chứa nổi.
+
+## Một router chuyển một gói như thế nào
+
+Ghép các mảnh lại. Khi một router nhận được khung Ethernet:
+
+1. **Tầng 2**: MAC đích là của mình? Đúng thì bóc header Ethernet.
+2. **Kiểm tra header IP**: version, checksum đúng, độ dài hợp lệ; sai thì bỏ.
+3. **Đích là chính mình?** (một trong các địa chỉ của router) thì đưa lên tầng trên (ví dụ SSH vào router). Không thì tiếp tục để chuyển tiếp.
+4. **Giảm TTL**. Nếu về 0, bỏ gói và gửi ICMP "Time Exceeded" về nguồn. Cập nhật checksum (gia tăng như ở trên).
+5. **Longest prefix match** trên địa chỉ đích trong bảng chuyển tiếp: ra (cổng ra, next hop).
+6. Nếu gói lớn hơn MTU của cổng ra: có DF thì bỏ và gửi ICMP "Fragmentation Needed"; không DF thì phân mảnh.
+7. **ARP** (hoặc tra bảng neighbor) lấy MAC của next hop; dựng **header Ethernet mới** (MAC nguồn là cổng ra, MAC đích là next hop) và gửi đi.
+
+Header IP còn nguyên (trừ TTL và checksum), header Ethernet bị thay hoàn toàn. Địa chỉ IP là "địa chỉ cuối", MAC là "địa chỉ bước tiếp theo", đúng như đã thấy ở bài trước.
+
+Máy Linux bình thường **không làm** việc này vì `net.ipv4.ip_forward = 0` (giá trị thật trên máy thí nghiệm): nhận được gói không dành cho mình thì bỏ. Bật `ip_forward=1` biến nó thành router; đó là điều Docker, Kubernetes node và router nhà bạn (thường chạy Linux) làm.
+
+## Bảng được dựng như thế nào
+
+Bảng chuyển tiếp là **kết quả**. Có ba nguồn dữ liệu:
+
+| Nguồn | Cách làm | Hợp với |
+|---|---|---|
+| Kết nối trực tiếp | tự có khi gán IP cho interface | luôn có |
+| Tĩnh (static) | quản trị viên gõ tay | mạng nhỏ, default route |
+| Động | các router **nói chuyện** với nhau bằng giao thức định tuyến | mạng lớn, cần tự chịu lỗi |
+
+Các giao thức định tuyến động chia làm hai nhóm theo phạm vi:
+
+- **IGP** (Interior Gateway Protocol) chạy **bên trong** một tổ chức: OSPF, IS-IS (link-state), RIP (distance-vector), EIGRP.
+- **EGP** chạy **giữa các tổ chức**: ngày nay chỉ còn **BGP** (phần dưới).
+
+### Link-state: mỗi router có bản đồ
+
+Giao thức link-state (OSPF, IS-IS) làm thế này: mỗi router thông báo cho **mọi** router khác biết nó nối với ai và chi phí bao nhiêu. Sau khi flooding xong, mỗi router có **cùng một bản đồ đồ thị** của mạng, và tự chạy **thuật toán Dijkstra** từ chính nó để tìm đường ngắn nhất tới mọi đích. Bước đầu tiên của mỗi đường là next hop. Cài đặt gọn:
+
+```python
+"""Link-state (kiểu OSPF): mỗi router có bản đồ toàn mạng, chạy Dijkstra để dựng bảng chuyển tiếp."""
+import heapq
+links = {('A','B'): 1, ('A','C'): 4, ('B','C'): 2, ('B','D'): 5, ('C','D'): 1, ('C','E'): 6, ('D','E'): 2}
+graph = {}
+for (u, v), w in links.items():
+    graph.setdefault(u, {})[v] = w; graph.setdefault(v, {})[u] = w
+
+def spf(src):
+    dist, first, pq = {src: 0}, {src: None}, [(0, src, None)]
+    while pq:
+        d, u, hop = heapq.heappop(pq)
+        if d > dist.get(u, 1e9): continue
+        for v, w in graph[u].items():
+            nd = d + w
+            if nd < dist.get(v, 1e9):
+                dist[v] = nd; first[v] = v if u == src else first[u]       # next hop = bước đầu tiên của đường đi
+                heapq.heappush(pq, (nd, v, first[v]))
+    return dist, first
+
+def table(src):
+    dist, first = spf(src)
+    print(f'bảng của router {src}:  đích  next-hop  chi phí')
+    for d in sorted(dist):
+        if d != src: print(f'                        {d:>4}  {first[d]:>8}  {dist[d]:>7}')
+table('A')
+print('— đứt liên kết C-D, mỗi router tính lại')
+del graph['C']['D']; del graph['D']['C']
+table('A')
+```
+
+```text
+bảng của router A:  đích  next-hop  chi phí
+                           B         B        1
+                           C         B        3
+                           D         B        4
+                           E         B        6
+— đứt liên kết C-D, mỗi router tính lại
+bảng của router A:  đích  next-hop  chi phí
+                           B         B        1
+                           C         B        3
+                           D         B        6
+                           E         B        8
+```
+
+Router A không có đường trực tiếp tới C hay D tốt nhất mà đi **qua B**: `A→B→C` chi phí 3 rẻ hơn đường thẳng `A→C` chi phí 4. Sau khi đứt liên kết `C-D`, mỗi router phát hiện (qua gói "hello" bị mất), thông báo thay đổi, và tính lại: chi phí tới D tăng từ 4 lên 6 (đi `A→B→D`). Mạng **tự hồi phục**, đó là điều mà route tĩnh không làm được.
+
+Hai nhóm giao thức khác nhau về ý tưởng. **Distance-vector** (RIP, và BGP ở dạng path-vector) không có bản đồ: mỗi router chỉ biết "đi qua láng giềng X thì tới đích Y tốn bao nhiêu" và truyền bảng đó cho láng giềng (thuật toán Bellman-Ford phân tán). Đơn giản, ít tin nhắn, nhưng hội tụ chậm và dễ có vòng lặp tạm thời sau khi đứt liên kết. Thuật toán đồ thị (Dijkstra, Bellman-Ford) và union-find sẽ được nói kỹ hơn ở phần DSA.
+
+## ICMP, ping và traceroute
+
+IP chỉ chuyển gói, không có cách nào báo "gói của bạn không đi được". **ICMP** (Internet Control Message Protocol) là giao thức đi kèm, **cùng tầng Network** (nằm ngay trong gói IP, `protocol = 1`), để router và host báo lỗi và chẩn đoán:
+
+| Type | Code | Tên | Khi nào |
+|---|---|---|---|
+| 8 | 0 | Echo Request | `ping` hỏi |
+| 0 | 0 | Echo Reply | `ping` đáp |
+| 3 | 0 | Network Unreachable | router không có tuyến tới đích |
+| 3 | 3 | Port Unreachable | máy đích không có ai nghe cổng UDP đó |
+| 3 | 4 | Fragmentation Needed | gói có DF quá lớn cho một đoạn (nền của PMTUD) |
+| 11 | 0 | Time Exceeded | TTL về 0 giữa đường (nền của traceroute) |
+
+### ping tự viết
+
+`ping` chỉ là gửi ICMP Echo Request và chờ Echo Reply. Một bản cài đặt qua raw socket, đủ để thấy mọi chi tiết:
+
+```python
+"""ping tự viết: ICMP echo request qua raw socket, đo RTT, đọc TTL của gói trả lời."""
+import socket, struct, time, os, sys
+def csum(b):
+    if len(b) % 2: b += b'\0'
+    s = sum(struct.unpack('!%dH' % (len(b)//2), b))
+    while s >> 16: s = (s & 0xFFFF) + (s >> 16)
+    return ~s & 0xFFFF
+def ping(host, count=4):
+    dst = socket.gethostbyname(host)
+    s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP); s.settimeout(2)
+    ident = os.getpid() & 0xFFFF
+    print(f'PING {host} ({dst})')
+    for seq in range(1, count + 1):
+        body = struct.pack('!d', time.time()) + b'x' * 48
+        hdr = struct.pack('!BBHHH', 8, 0, 0, ident, seq)                  # type 8 = echo request
+        pkt = hdr[:2] + struct.pack('!H', csum(hdr + body)) + hdr[4:] + body
+        t0 = time.perf_counter(); s.sendto(pkt, (dst, 0))
+        while True:
+            data, addr = s.recvfrom(2048); ms = (time.perf_counter() - t0) * 1000
+            ihl = (data[0] & 15) * 4; ttl = data[8]; t, c, _, i, q = struct.unpack('!BBHHH', data[ihl:ihl + 8])
+            if t == 0 and i == ident and q == seq:
+                print(f'  {len(data)-ihl} byte từ {addr[0]}: seq={seq} ttl={ttl} thời gian={ms:.1f} ms'); break
+        time.sleep(0.3)
+ping('1.1.1.1')
+```
+
+```text
+PING 1.1.1.1 (1.1.1.1)
+  64 byte từ 1.1.1.1: seq=1 ttl=48 thời gian=44.5 ms
+  64 byte từ 1.1.1.1: seq=2 ttl=48 thời gian=45.2 ms
+  64 byte từ 1.1.1.1: seq=3 ttl=48 thời gian=44.4 ms
+  64 byte từ 1.1.1.1: seq=4 ttl=48 thời gian=45.8 ms
+```
+
+Hai con số đọc được ngay. **RTT khoảng 45 ms**, ổn định. Và **`ttl=48` của gói trả lời**: nếu server khởi đầu ở 64 thì gói đã đi qua `64 - 48 = 16` router trên đường về (con số khởi đầu phỏng đoán từ tập giá trị phổ biến 64, 128, 255). Dùng `ident` và `seq` để ghép đúng reply với request (nhiều process cùng ping). Chương trình dùng `SOCK_RAW` nên cần quyền root; `ping` hệ thống dùng một cơ chế "ICMP socket" không cần root hoặc có `setuid`.
+
+### traceroute: lợi dụng TTL
+
+`traceroute` hỏi "đường đi qua những router nào?" bằng một mẹo gọn: gửi gói với **TTL = 1**, router đầu tiên trừ về 0, bỏ gói và gửi ICMP Time Exceeded **từ địa chỉ của nó**. Gửi tiếp với TTL = 2, lộ ra router thứ hai. Tăng dần cho tới khi gói tới đích:
+
+```python
+"""traceroute tối giản: gửi UDP với TTL tăng dần, đọc ICMP Time Exceeded."""
+import socket, struct, time
+def trace(host, maxhops=16, port=33434):
+    dst = socket.gethostbyname(host); print(f'traceroute tới {host} ({dst})')
+    icmp = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP); icmp.settimeout(1.5)
+    for ttl in range(1, maxhops + 1):
+        tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); tx.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
+        t0 = time.perf_counter(); tx.sendto(b'', (dst, port + ttl))      # cổng đích hiếm gặp
+        try:
+            data, addr = icmp.recvfrom(512); ms = (time.perf_counter() - t0) * 1000
+            ihl = (data[0] & 15) * 4; t, c = data[ihl], data[ihl + 1]
+            print(f'{ttl:>3}  {addr[0]:<16} {ms:6.1f} ms  icmp type={t} code={c}')
+            if t == 3: break                   # port unreachable: đã tới đích
+        except socket.timeout: print(f'{ttl:>3}  *')
+```
+
+Ba hop đầu của một lần chạy thật (các hop sau thuộc hạ tầng nhà mạng của người đo nên đã lược):
+
+```text
+  1  172.26.96.1         0.3 ms  icmp type=11 code=0
+  2  192.168.1.1         2.1 ms  icmp type=11 code=0
+  3  100.123.3.92        2.9 ms  icmp type=11 code=0
+  ...
+```
+
+Hop 1 là gateway của máy ảo WSL (cổng ảo của Windows). Hop 2 là router Wi-Fi của mạng nhà (`192.168.1.1`, địa chỉ riêng). Hop 3 là **`100.123.3.92`: thuộc dải `100.64.0.0/10`**, tức nhà mạng này dùng **CGNAT**. Kết nối của người đo **không có địa chỉ IP công cộng riêng**, mà chia chung với nhiều khách hàng sau một NAT của nhà mạng (phần NAT bên dưới). Đây là bằng chứng nhìn thấy được chỉ từ ba dòng `traceroute`.
+
+Khi tới đích, gói UDP gửi tới cổng lạ nên đích trả **Port Unreachable (type 3)**; đó là điều kiện dừng ở dòng `if t == 3`. Hai điểm hay hiểu sai khi đọc output `traceroute`:
+
+- **Dấu `*`** không có nghĩa là hỏng: nhiều router (và firewall) **không trả ICMP Time Exceeded** hoặc giới hạn tốc độ trả, nên hop đó "im lặng" nhưng vẫn chuyển gói bình thường. Dấu `*` liên tiếp ở cuối thường là firewall chặn ICMP ở gần đích. Đây là lý do nên đọc kết quả có hop sau vẫn trả lời: nếu `*` rồi lại có hop thì hop đó chỉ không trả lời.
+- **Đường về có thể khác đường đi.** `traceroute` chỉ cho thấy đường **đi**; mỗi hop tự chọn đường về để gửi ICMP, và định tuyến Internet thường bất đối xứng (do chính sách BGP). RTT lớn ở một hop chưa chắc do hop đó chậm.
+
+## NAT
+
+Địa chỉ IPv4 công cộng không đủ cho mọi thiết bị, nên hầu hết mạng dùng **địa chỉ riêng** bên trong và <Term>NAT</Term> (Network Address Translation) ở biên. Dạng phổ biến nhất là **NAPT** (còn gọi PAT, hay masquerade): router đổi **địa chỉ nguồn và cổng nguồn** của gói đi ra sang IP công cộng của mình và một cổng chưa dùng, và ghi vào bảng để làm ngược lại khi gói trả lời quay về. Bản cài đặt tối giản:
+
+```python
+"""NAPT tối giản: nhiều máy riêng dùng chung một IP công cộng bằng cách đổi cổng nguồn."""
+import itertools
+class Nat:
+    def __init__(self, public_ip, first_port=40000):
+        self.ip, self.ports = public_ip, itertools.count(first_port)
+        self.out, self.back = {}, {}                      # (ip,port,proto,dst) -> port ; port -> (ip,port)
+    def outbound(self, src, sport, proto, dst, dport):
+        key = (src, sport, proto, dst, dport)
+        if key not in self.out:
+            p = next(self.ports); self.out[key] = p; self.back[(p, proto, dst, dport)] = (src, sport)
+        p = self.out[key]
+        print(f'  ra : {src}:{sport} → {dst}:{dport}   ==>  {self.ip}:{p} → {dst}:{dport}')
+    def inbound(self, dst, dport, proto, pub_port):
+        e = self.back.get((pub_port, proto, dst, dport))
+        if e: print(f'  vào: {dst}:{dport} → {self.ip}:{pub_port}   ==>  {dst}:{dport} → {e[0]}:{e[1]}')
+        else: print(f'  vào: {dst}:{dport} → {self.ip}:{pub_port}   ==>  BỎ (không có mục nào trong bảng)')
+n = Nat('203.0.113.7')
+n.outbound('192.168.1.10', 51000, 'tcp', '93.184.216.34', 443)
+n.outbound('192.168.1.11', 51000, 'tcp', '93.184.216.34', 443)     # trùng cổng nguồn với máy .10
+n.outbound('192.168.1.10', 51001, 'udp', '8.8.8.8', 53)
+n.inbound('93.184.216.34', 443, 'tcp', 40001)
+n.inbound('93.184.216.34', 443, 'tcp', 40000)
+n.inbound('198.51.100.9', 22, 'tcp', 40000)                         # thử kết nối từ ngoài vào, không có mục
+```
+
+```text
+  ra : 192.168.1.10:51000 → 93.184.216.34:443   ==>  203.0.113.7:40000 → 93.184.216.34:443
+  ra : 192.168.1.11:51000 → 93.184.216.34:443   ==>  203.0.113.7:40001 → 93.184.216.34:443
+  ra : 192.168.1.10:51001 → 8.8.8.8:53   ==>  203.0.113.7:40002 → 8.8.8.8:53
+  vào: 93.184.216.34:443 → 203.0.113.7:40001   ==>  93.184.216.34:443 → 192.168.1.11:51000
+  vào: 93.184.216.34:443 → 203.0.113.7:40000   ==>  93.184.216.34:443 → 192.168.1.10:51000
+  vào: 198.51.100.9:22 → 203.0.113.7:40000   ==>  BỎ (không có mục nào trong bảng)
+```
+
+Hai máy `192.168.1.10` và `.11` **cùng dùng cổng nguồn 51000** tới cùng server, nhưng NAT gán cho chúng hai cổng công cộng khác nhau (40000 và 40001), nên server thấy hai "kết nối" từ cùng IP khác cổng, và khi gói trả lời về, router dựa vào cổng đích để biết trả cho máy nào. Dòng cuối là hệ quả quan trọng: một kết nối **từ bên ngoài vào** không có mục nào trong bảng nên bị bỏ. NAT vô tình thành một dạng tường lửa "chỉ cho kết nối do bên trong khởi tạo".
+
+NAT làm được việc nhưng đánh đổi nhiều thứ:
+
+- **Phá nguyên lý end-to-end.** Địa chỉ trong header không còn là địa chỉ thật của máy gửi. Giao thức nhúng địa chỉ IP vào **nội dung** (FTP chế độ active, SIP, một số game) hỏng, trừ khi router có ALG (Application Layer Gateway) sửa hộ.
+- **Không nhận được kết nối vào.** Muốn chạy server sau NAT cần **port forwarding** (cấu hình tay: "cổng công cộng 8080 chuyển tới `192.168.1.10:80`"). Hai máy cùng sau NAT muốn nối trực tiếp (P2P, WebRTC, game) dùng **NAT traversal**: STUN để tìm địa chỉ công cộng, **hole punching** để cả hai cùng gửi trước, và TURN (relay qua server) khi các cách khác thất bại.
+- **Bảng NAT là trạng thái và có hạn.** Mỗi kết nối chiếm một mục; Linux giữ ở `conntrack` với thời hạn dài cho TCP đang mở (`nf_conntrack_tcp_timeout_established = 432000` giây, tức 5 ngày, trên máy này) nhưng ngắn cho UDP (khoảng 30 tới 120 giây). Kết nối nhàn rỗi quá hạn bị quên và hỏng: lý do ứng dụng giữ kết nối lâu cần **keepalive** định kỳ. Bảng đầy (hết cổng, hoặc hết bộ nhớ `conntrack`) làm kết nối mới thất bại; một server chạy sau NAT mở hàng chục nghìn kết nối ra ngoài có thể chạm giới hạn này (so với giới hạn cổng nguồn ở bài [TCP vs UDP](/docs/networking/tcp-vs-udp)).
+- **CGNAT** là NAT thêm một tầng ở **nhà mạng**: hàng trăm khách hàng chia nhau một địa chỉ công cộng. Hậu quả: một IP công cộng đại diện nhiều người (chặn nhầm khi một người trong đó làm sai), không port forward được, và log theo IP không còn định danh được ai. Dải `100.64.0.0/10` sinh ra cho đúng mục đích này, như đã thấy ở hop 3 của traceroute trên.
+
+Linux bật NAT bằng vài dòng: `sysctl -w net.ipv4.ip_forward=1`, rồi một luật `nftables` hoặc `iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE`. Docker bridge network, Kubernetes pod ra Internet, và router nhà bạn đều làm như vậy.
+
+## IPv6
+
+IPv6 ra đời vì cạn địa chỉ IPv4, nhưng cũng làm sạch nhiều thứ:
+
+| | IPv4 | IPv6 |
+|---|---|---|
+| Độ dài địa chỉ | 32 bit | 128 bit |
+| Cách viết | `192.168.1.1` | `2606:4700::6810:85e5` |
+| Header | 20 byte có option, có checksum | cố định 40 byte, **không có** checksum, option chuyển thành extension header |
+| Phân mảnh | router được phân mảnh | **chỉ máy gửi** phân mảnh; router không bao giờ |
+| MTU tối thiểu | 68 (host phải nhận được gói 576) | 1280 |
+| Tìm MAC | ARP | NDP (trên ICMPv6) |
+| Cấu hình | DHCP | SLAAC (tự cấu hình từ prefix mà router thông báo) hoặc DHCPv6 |
+| NAT | rất phổ biến | không cần (mỗi thiết bị có địa chỉ công cộng riêng) |
+
+```python
+import ipaddress
+a = ipaddress.IPv6Address('2606:4700:0000:0000:0000:0000:6810:85e5')
+print('đầy đủ  :', a.exploded); print('rút gọn :', a.compressed)
+n = ipaddress.ip_network('2001:db8:abcd:12::/64'); print(n, 'có', n.num_addresses, '= 2^64 địa chỉ')
+print('link-local fe80::1 ->', ipaddress.ip_address('fe80::1').is_link_local, '| fc00::/7 (unique local):', ipaddress.ip_address('fd12:3456::1').is_private)
+mac = '00:15:5d:5a:68:ef'.split(':'); b = bytearray(int(x, 16) for x in mac); b[0] ^= 2
+eui = bytes(b[:3]) + b'\xff\xfe' + bytes(b[3:]); print('SLAAC EUI-64 từ MAC:', ipaddress.IPv6Address(b'\xfe\x80' + bytes(6) + eui))
+print('IPv4 trong IPv6:', ipaddress.IPv6Address('::ffff:192.0.2.1'))
+```
+
+```text
+đầy đủ  : 2606:4700:0000:0000:0000:0000:6810:85e5
+rút gọn : 2606:4700::6810:85e5
+2001:db8:abcd:12::/64 có 18446744073709551616 = 2^64 địa chỉ
+link-local fe80::1 -> True | fc00::/7 (unique local): True
+SLAAC EUI-64 từ MAC: fe80::215:5dff:fe5a:68ef
+IPv4 trong IPv6: ::ffff:192.0.2.1
+```
+
+- **Cách viết**: tám nhóm 16 bit hex cách nhau bằng dấu hai chấm; các số 0 đầu mỗi nhóm bỏ được, và **một** dãy nhóm toàn số 0 liên tiếp rút thành `::` (chỉ một lần mỗi địa chỉ, nếu không sẽ mơ hồ). Địa chỉ Cloudflare ở ví dụ rút từ 32 chữ số hex xuống còn `2606:4700::6810:85e5`.
+- **Một mạng con chuẩn là `/64`**: 2 mũ 64 địa chỉ (hơn 18 tỷ tỷ), nên không còn chuyện "tiết kiệm địa chỉ trong subnet" như IPv4. 64 bit sau là định danh giao diện. Một khách hàng gia đình thường được cấp `/56` hoặc `/48`, tức 256 hoặc 65.536 mạng `/64`.
+- **Link-local** `fe80::/10` luôn có trên mọi giao diện IPv6, dùng cho NDP và định tuyến cục bộ. Ví dụ trên cho thấy cách dựng địa chỉ link-local từ MAC (EUI-64: chèn `ff:fe` vào giữa và lật bit thứ 7); trên máy thí nghiệm, `ip -6 addr` cũng cho thấy địa chỉ link-local của `eth0` có đúng dạng `fe80::215:5dff:fe5a:xxxx` với phần cuối lấy từ MAC. Hệ điều hành hiện đại thường dùng định danh ngẫu nhiên thay vì suy từ MAC vì lý do riêng tư.
+- **Dual-stack**: máy có cả IPv4 và IPv6 và dùng cái nào chạy được. **Happy Eyeballs** (bài [DNS](/docs/networking/dns)) thử cả hai song song để không bị kẹt khi IPv6 hỏng. Còn **NAT64 + DNS64** cho máy chỉ có IPv6 truy cập server chỉ có IPv4 (hay thấy ở mạng di động).
+
+## BGP và cấu trúc của Internet
+
+Internet không phải một mạng mà là **hơn 70.000 mạng tự quản** gọi là <Term>Autonomous System</Term> (AS): nhà mạng, nhà cung cấp cloud, trường đại học, công ty lớn. Mỗi AS có một số hiệu (ASN), tự chọn giao thức định tuyến **bên trong** (OSPF, IS-IS), và dùng <Term>BGP</Term> (Border Gateway Protocol) để trao đổi thông tin tới được những prefix nào **với các AS khác**.
+
+BGP không tính "đường ngắn nhất" theo chi phí. Nó là **path-vector**: mỗi tuyến được quảng bá kèm theo **AS path** (danh sách các AS đã đi qua), và mỗi AS áp dụng **chính sách** (ai là khách hàng, ai là đối tác, giá cả) để quyết định tuyến nào chấp nhận, ưu tiên và quảng bá tiếp cho ai. AS path cũng giúp chống vòng lặp: thấy AS của mình đã nằm trong path thì bỏ tuyến đó.
+
+Có thể tra ra "IP này do AS nào quảng bá, qua prefix BGP nào" ngay bằng DNS, nhờ dịch vụ của Team Cymru (dùng lại bộ code DNS của bài [DNS](/docs/networking/dns)):
+
+```python
+"""Tra prefix BGP và AS sở hữu một IP, qua dịch vụ DNS của Team Cymru."""
+from dnsmsg import ask_udp
+def origin(ip):
+    rev = '.'.join(reversed(ip.split('.')))
+    _, _, r = ask_udp('1.1.1.1', f'{rev}.origin.asn.cymru.com', 'TXT')
+    asn, prefix, cc, rir, _ = [x.strip() for x in r['sections']['answer'][0][3].strip('"').split('|')]
+    _, _, r2 = ask_udp('1.1.1.1', f'AS{asn.split()[0]}.asn.cymru.com', 'TXT')
+    name = r2['sections']['answer'][0][3].strip('"').split('|')[-1].strip()
+    print(f'{ip:<16} AS{asn:<6} prefix BGP {prefix:<18} {cc}  {name}')
+for ip in ('1.1.1.1', '8.8.8.8', '172.66.147.243', '104.20.23.154'): origin(ip)
+```
+
+```text
+1.1.1.1          AS13335  prefix BGP 1.1.1.0/24         AU  CLOUDFLARENET - Cloudflare, Inc., US
+8.8.8.8          AS15169  prefix BGP 8.8.8.0/24         US  GOOGLE - Google LLC, US
+172.66.147.243   AS13335  prefix BGP 172.66.144.0/20    US  CLOUDFLARENET - Cloudflare, Inc., US
+104.20.23.154    AS13335  prefix BGP 104.20.16.0/20     US  CLOUDFLARENET - Cloudflare, Inc., US
+```
+
+Cả `example.com` (hai địa chỉ cuối) lẫn `1.1.1.1` đều thuộc AS13335, tức Cloudflare, quảng bá ba prefix khác nhau: `/24`, `/20`, `/20`. Đây là longest prefix match chạy ở quy mô toàn cầu: hàng trăm nghìn tuyến như vậy nằm trong bảng của mọi router lõi.
+
+### Các loại quan hệ giữa AS
+
+| Quan hệ | Tiền | Ví dụ |
+|---|---|---|
+| **Transit** (khách hàng trả tiền nhà cung cấp) | khách trả | một ISP nhỏ mua đường ra Internet từ một ISP lớn |
+| **Peering** (hai bên trao đổi lưu lượng của nhau) | thường miễn phí | hai nhà mạng nối trực tiếp, thường ở một **IXP** (Internet Exchange Point) |
+| **Tier 1** | | nhóm nhỏ AS không phải mua transit từ ai, peering với nhau để cùng tới được mọi nơi |
+
+Chính sách điển hình: ưu tiên tuyến học từ **khách hàng** (có tiền) hơn tuyến từ đối tác (miễn phí) hơn tuyến từ nhà cung cấp (tốn tiền). Hệ quả là **đường BGP không nhất thiết ngắn nhất, mà là rẻ nhất** theo chính sách, và là lý do độ trễ giữa hai nhà mạng đôi khi cao bất thường (gói đi vòng qua nước khác vì không có peering trực tiếp).
+
+### Tin cậy dựa trên lòng tin
+
+BGP được thiết kế khi Internet còn nhỏ, và **mặc định tin mọi thứ láng giềng nói**. Một AS quảng bá nhầm hay cố ý một prefix không phải của mình (hoặc một prefix cụ thể hơn của người khác) thì nhờ longest prefix match, lưu lượng bị hút về nó:
+
+- **2008**: Pakistan Telecom quảng bá một prefix `/24` của YouTube để chặn trong nước; nó lan ra toàn cầu và YouTube không truy cập được ở nhiều nơi trong khoảng hai giờ.
+- **2021**: Facebook gỡ nhầm các quảng bá BGP tới các prefix chứa name server DNS của mình trong lúc bảo trì. Máy chủ DNS vẫn chạy nhưng **không ai tới được** chúng, nên tên miền không còn phân giải, và dịch vụ biến mất khỏi Internet trong nhiều giờ. Một ví dụ cho thấy DNS ([DNS](/docs/networking/dns)) và BGP phụ thuộc vào nhau.
+
+Đối sách chính là **RPKI** (Resource Public Key Infrastructure): chủ prefix ký một chứng nhận gọi là ROA nói "prefix này chỉ AS nào được quảng bá", và router kiểm chứng để từ chối quảng bá sai. Tỷ lệ triển khai đang tăng nhưng chưa hoàn tất.
+
+**Anycast**, đã nhắc ở bài DNS, là quảng bá **cùng một prefix** từ nhiều nơi bằng BGP: mỗi router chọn bản gần nhất theo chính sách của nó, nên người dùng tới bản gần mình. Cloudflare, root DNS và CDN dựa vào đó.
+
+## Quan sát và chẩn đoán
+
+```bash
+ip -br addr                      # địa chỉ của từng interface
+ip route                         # bảng định tuyến
+ip route get 1.1.1.1             # kernel chọn tuyến nào cho đích này (kèm source IP)
+ip -6 route                      # bảng IPv6
+ip -s link show eth0             # bộ đếm gói, lỗi, rớt trên interface
+sysctl net.ipv4.ip_forward       # 1 nếu máy hoạt động như router
+sysctl net.ipv4.conf.all.rp_filter   # lọc gói có nguồn "không thể tới từ cổng này" (chống giả mạo)
+ping -c4 1.1.1.1                 # tới được không, RTT, mất gói
+traceroute -n example.com        # các hop (-n: không phân giải tên)
+mtr -n example.com               # traceroute + ping liên tục: thấy hop nào mất gói
+tracepath example.com            # traceroute kèm dò path MTU, không cần root
+```
+
+`mtr` gộp `ping` và `traceroute` chạy liên tục, rất hợp để tìm **hop nào gây mất gói hoặc tăng trễ**. Chỉ tin mất gói ở một hop khi các hop **sau** nó cũng mất: nếu hop 5 báo mất 50% nhưng hop 6 trở đi báo 0%, router hop 5 chỉ giới hạn tốc độ trả ICMP (bình thường) chứ không làm rơi lưu lượng thật.
+
+| Triệu chứng | Nguyên nhân hay gặp và cách kiểm tra |
+|---|---|
+| Ping được IP bên ngoài nhưng không ping được máy trong mạng khác | thiếu tuyến, hoặc netmask sai nên máy tưởng "cùng mạng" và ARP thay vì gửi tới router; xem `ip route get` |
+| Ra được Internet nhưng không vào được dịch vụ trong nhà từ ngoài | NAT chặn kết nối vào: cần port forwarding; hoặc CGNAT, không có IP công cộng (hop `100.64.x.x` trong traceroute) |
+| Hai mạng nội bộ (VPC, VPN) không nối được | dải địa chỉ **trùng nhau** (cùng `10.0.0.0/16`) |
+| Gói đi một chiều được, chiều về không | định tuyến bất đối xứng, `rp_filter` chặn gói về, hoặc firewall có trạng thái chỉ thấy một chiều |
+| `Destination Host Unreachable` từ chính máy mình | không có ARP trả lời (máy đích tắt, sai VLAN, cắt cáp) |
+| `Destination Net Unreachable` từ một router | router đó không có tuyến tới đích |
+| traceroute vòng lặp, cùng hai hop lặp lại | vòng định tuyến; TTL sẽ chấm dứt nhưng gói không bao giờ tới |
+| Khi tới một vài site, kết nối treo ở IPv6 nhưng IPv4 bình thường | IPv6 được quảng bá mà không chạy tới đích (hoặc MTU/PMTUD), Happy Eyeballs che bớt, nhưng vẫn chậm |
+| Chậm bất thường tới một nước, đường vòng | BGP chọn tuyến theo chính sách; so sánh `traceroute` hai chiều |
+
+## Lưu ý
+
+- **Forwarding và routing là hai việc khác nhau.** Forwarding là tra bảng trên mỗi gói (phần cứng, nano giây); routing là dựng bảng (phần mềm, giây).
+- **Router quyết định từng bước, không biết cả đường.** Mỗi router chỉ biết next hop. Gói thường đi qua hơn chục router mà không router nào biết trước đích cuối.
+- **Longest prefix match chọn tuyến cụ thể nhất**, không phải tuyến đầu tiên khớp hay tuyến rẻ nhất. Một tuyến `/32` thêm vào đủ để chiếm lưu lượng của cả một dải `/16`, và đó cũng chính là cách các vụ BGP hijack hoạt động.
+- **`/26` không đồng nghĩa với "dải `.x` nào đó".** Mạng bắt đầu ở bội số của kích thước khối (64 với `/26`), nên `.37` và `.100` ở **hai mạng khác nhau** dù cùng `192.168.10.x`. Cấu hình netmask sai là nguyên nhân kinh điển của "ping được vài máy mà không ping được máy khác".
+- **Quy hoạch địa chỉ là quyết định khó đổi.** Chọn dải trùng với mạng sẽ phải nối (VPN, peering VPC, công ty được mua lại) sẽ gây xung đột. Dùng dải riêng ít người chọn, và để dư chỗ (chia `/24` khi chưa cần cũng được).
+- **TTL cứu mạng khỏi vòng lặp.** Mỗi router trừ 1, về 0 thì bỏ gói. Nó cũng là nền của `traceroute`.
+- **Dấu `*` trong traceroute không nhất thiết là hỏng.** Nhiều thiết bị không trả ICMP nhưng vẫn chuyển gói. Chỉ có ý nghĩa khi hop **sau** cũng mất.
+- **`traceroute` chỉ thấy đường đi, không thấy đường về**, và hai đường thường khác nhau trên Internet.
+- **NAT không phải tường lửa**, dù nó chặn kết nối vào "tiện thể". Nó cũng phá nguyên lý end-to-end, nên các giao thức P2P phải dùng STUN, hole punching hoặc relay.
+- **Bảng NAT/conntrack có hạn.** Kết nối nhàn rỗi bị quên sau thời gian timeout (UDP vài chục giây), nên cần keepalive; còn một node mở rất nhiều kết nối ra ngoài có thể cạn bảng.
+- **IPv6 là cách thật sự để thoát khỏi NAT**, và không đòi hỏi bạn học lại mọi thứ: cùng TCP, UDP, DNS, HTTP; chỉ khác địa chỉ và vài cơ chế ở tầng dưới. Hãy viết code không giả định địa chỉ là bốn số.
+- **BGP chạy trên lòng tin.** Một quảng bá sai của một AS có thể làm cả dịch vụ biến mất khỏi Internet; RPKI là hàng rào đang được dựng.

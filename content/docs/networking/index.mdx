@@ -4,4 +4,15 @@ description: TCP/IP, HTTP, DNS, TLS.
 tags: [networking]
 ---
 
-Phần này ghi chú cách các máy nói chuyện với nhau qua mạng, đi từ tầng transport lên tầng application. Bắt đầu với [TCP vs UDP](/docs/networking/tcp-vs-udp), rồi [DNS](/docs/networking/dns).
+Phần này ghi chú cách các máy nói chuyện với nhau qua mạng, đi từ tầng link lên tầng application. Mỗi bài tự cài hoặc bắt gói tin thật bằng code (raw socket, struct, server tự viết) để thấy cơ chế chạy ra sao, không chỉ mô tả. Đọc theo thứ tự dưới đây vì bài sau dựa vào bài trước.
+
+| Bài | Trả lời câu hỏi |
+|---|---|
+| [OSI & TCP/IP Model](/docs/networking/network-layers) | Vì sao mạng chia tầng? Một khung thật gồm những header nào, mỗi byte để làm gì? Ethernet, ARP, MTU và phân mảnh hoạt động ra sao? |
+| [IP & Routing](/docs/networking/ip-routing) | Địa chỉ và subnet tính thế nào? Router chọn đường bằng longest prefix match ra sao? `ping`, `traceroute`, NAT, IPv6 và BGP chạy thế nào? |
+| [TCP vs UDP](/docs/networking/tcp-vs-udp) | Tầng transport làm gì mà IP không làm? TCP dựng độ tin cậy, flow control, congestion control thế nào, và khi nào nên chọn UDP hay QUIC? |
+| [DNS](/docs/networking/dns) | Một cái tên được đổi thành địa chỉ ra sao? Uỷ quyền, cache, TTL, message trên dây, DNSSEC, và vì sao "đổi DNS mà chưa thấy đổi"? |
+| [HTTP](/docs/networking/http) | Message HTTP trông thế nào trên dây? Method, status, cookie, caching, keep-alive, HTTP/2 và HTTP/3 khác nhau ở đâu? |
+| [TLS & HTTPS](/docs/networking/tls) | Handshake TLS 1.3 làm gì từng message? Chứng chỉ và chuỗi tin cậy được kiểm chứng ra sao, và các lỗi chứng chỉ hay gặp là gì? |
+
+Kể lại hành trình của một request từ lúc gõ URL tới lúc nhận response là mục tiêu của chặng này trong [roadmap CS Fundamentals](/roadmaps/cs-fundamentals): tra DNS, mở kết nối TCP, bắt tay TLS, gửi HTTP.

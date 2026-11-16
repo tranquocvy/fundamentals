@@ -1,0 +1,652 @@
+---
+title: HTTP
+description: HTTP từ cú pháp message trên dây tới HTTP/3, tự viết một server HTTP/1.1 trên socket, method và idempotency, status code, header, cookie và session, caching với ETag, keep-alive và head-of-line blocking (có số đo), HTTP/2 với frame và HPACK nói chuyện bằng tay, và các sự cố hay gặp.
+status: draft
+tags: [networking, http, web]
+authors: [tranquocvy]
+references:
+  - title: "RFC 9110 — HTTP Semantics"
+    url: https://www.rfc-editor.org/rfc/rfc9110
+    kind: web
+    note: method, status code, header, caching ở mức ngữ nghĩa; không phụ thuộc phiên bản HTTP
+  - title: "RFC 9112 — HTTP/1.1"
+    url: https://www.rfc-editor.org/rfc/rfc9112
+    kind: web
+    note: cú pháp message, cách xác định độ dài body, chunked, connection
+  - title: "RFC 9113 — HTTP/2"
+    url: https://www.rfc-editor.org/rfc/rfc9113
+    kind: web
+    note: frame, stream, flow control; HPACK ở RFC 7541
+  - title: "RFC 9114 — HTTP/3"
+    url: https://www.rfc-editor.org/rfc/rfc9114
+    kind: web
+  - title: "RFC 9111 — HTTP Caching"
+    url: https://www.rfc-editor.org/rfc/rfc9111
+    kind: web
+  - title: "RFC 6265 — HTTP State Management Mechanism (Cookies)"
+    url: https://www.rfc-editor.org/rfc/rfc6265
+    kind: web
+  - title: "MDN — HTTP"
+    url: https://developer.mozilla.org/en-US/docs/Web/HTTP
+    kind: web
+    note: tài liệu tham khảo nhanh cho header, status code, CORS, caching
+  - title: "Ilya Grigorik — High Performance Browser Networking, Chapter 11–13: HTTP/1.1, HTTP/2"
+    url: https://hpbn.co/http2/
+    kind: web
+  - title: "Kurose & Ross, Computer Networking: A Top-Down Approach — Chapter 2.2: The Web and HTTP"
+    kind: book
+---
+
+## Ý chính
+
+**HTTP** (HyperText Transfer Protocol) là giao thức tầng ứng dụng của Web. Về cốt lõi nó là một quy ước hỏi đáp đơn giản: client gửi một **request** (muốn làm gì với tài nguyên nào), server trả về một **response** (kết quả ra sao, kèm dữ liệu nếu có). Mỗi cặp độc lập với các cặp khác, nên HTTP là giao thức **không giữ trạng thái** (stateless): server không tự nhớ bạn là ai giữa hai request. Mọi thứ trông như "đăng nhập rồi" đều được dựng lại bằng cookie hay token gắn kèm mỗi request.
+
+Hai tầng của HTTP đáng tách ra:
+
+- **Ngữ nghĩa** (RFC 9110): method, status code, header, body có nghĩa gì. Không đổi qua các phiên bản. Một `GET /users/42` có cùng nghĩa trên HTTP/1.1, 2 và 3.
+- **Cách mã hoá lên dây** (RFC 9112, 9113, 9114): ngữ nghĩa đó được chuyển thành byte ra sao. HTTP/1.1 là văn bản đọc được, HTTP/2 là các frame nhị phân trên TCP, HTTP/3 là frame trên QUIC (UDP). Phần này thay đổi để chữa một vấn đề hiệu năng: một kết nối chỉ làm được một việc một lúc.
+
+Bài này đi từ dưới lên. Đầu tiên là cú pháp message HTTP/1.1 gõ tay (kể cả cách xác định độ dài body, nguồn của nhiều lỗi), rồi **tự viết một server HTTP/1.1** trên socket để thấy mọi chức năng chạy thế nào. Từ server đó ta khảo sát method, status code, header, cookie và caching bằng request thật. Sau đó đến chi phí của một kết nối và **head-of-line blocking** (có số đo), vì sao có HTTP/2 (nói chuyện HTTP/2 bằng tay với một server thật), và HTTP/3. Cuối cùng là bảo mật, công cụ chẩn đoán và các sự cố hay gặp.
+
+Output lấy từ máy Linux (WSL2): server tự viết chạy trên loopback, còn các truy vấn tới `example.com`, `github.com` là thật. Header và số liệu của bạn tại thời điểm chạy sẽ khác về giá trị, nhưng giống về cấu trúc.
+
+## Một lần truy cập tốn những gì
+
+Trước khi vào chi tiết, đo một lần tải trang thật để thấy HTTP nằm ở đâu trong chuỗi các bước đã học ở các bài trước:
+
+```text
+$ curl -s -o /dev/null -w 'dns=%{time_namelookup} tcp=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total}\n' https://example.com
+dns=0.007435 tcp=0.066407 tls=0.132472 ttfb=0.202598 total=0.202648
+```
+
+| Mốc | Thời gian tích luỹ | Phần tăng thêm | Là gì |
+|---|---|---|---|
+| `dns` | 7 ms | 7 ms | tra tên ([DNS](/docs/networking/dns)); nhanh vì resolver đã cache |
+| `tcp` | 66 ms | 59 ms | bắt tay TCP: **1 RTT** ([TCP vs UDP](/docs/networking/tcp-vs-udp)) |
+| `tls` | 132 ms | 66 ms | bắt tay TLS 1.3: **1 RTT** ([TLS & HTTPS](/docs/networking/tls)) |
+| `ttfb` | 203 ms | 70 ms | gửi request, nhận byte đầu tiên của response: **1 RTT** |
+
+Ba RTT liên tiếp (khoảng 60 ms mỗi cái trên đường này) trước khi thấy byte đầu tiên của trang, và chính phần HTTP chỉ là RTT cuối cùng. Mọi tối ưu hiệu năng web đều đi theo hướng: bớt số RTT (tái sử dụng kết nối, QUIC), bớt số byte (nén, cache), hoặc đưa server gần người dùng hơn (CDN).
+
+## Cú pháp message HTTP/1.1
+
+URL `http://example.com/path?q=1` chia thành: scheme (`http`) cho biết giao thức và cổng mặc định (80; `https` dùng 443), host (`example.com`) để tra DNS, path và query để server biết cần tài nguyên nào. HTTP/1.1 là giao thức **văn bản**: mọi thứ là chuỗi ký tự ASCII, mỗi dòng kết thúc bằng `\r\n` (CRLF). Gõ tay trực tiếp bằng socket:
+
+```python
+import socket
+s = socket.create_connection(('example.com', 80), timeout=5)
+req = (b'GET / HTTP/1.1\r\n'
+       b'Host: example.com\r\n'
+       b'User-Agent: raw-python\r\n'
+       b'Accept: text/html\r\n'
+       b'Connection: close\r\n'
+       b'\r\n')
+s.sendall(req)
+data = b''
+while (c := s.recv(4096)): data += c
+head, _, body = data.partition(b'\r\n\r\n')
+print(head.decode()); print(f'--- body {len(body)} byte, bắt đầu bằng:', body[:60])
+```
+
+```text
+HTTP/1.1 200 OK
+Date: Mon, 16 Nov 2026 04:31:24 GMT
+Content-Type: text/html; charset=utf-8
+Transfer-Encoding: chunked
+Connection: close
+Server: cloudflare
+Last-Modified: Mon, 16 Nov 2026 00:26:08 GMT
+Allow: GET, HEAD
+Accept-Ranges: bytes
+Age: 5
+cf-cache-status: HIT
+CF-RAY: a5b3c4151913096c-HKG
+alt-svc: h3=":443"; ma=86400
+--- body 589 byte, bắt đầu bằng: b'241\r\n<!doctype html><html lang=en><head><meta charset=utf-8>'
+```
+
+Cấu trúc của **request**:
+
+```text
+GET / HTTP/1.1                  ← request line: method, target, phiên bản
+Host: example.com               ← header: "Tên: giá trị", mỗi dòng một cái
+User-Agent: raw-python
+Accept: text/html
+Connection: close
+                                ← một dòng trống kết thúc phần header
+(body, nếu có)                  ← với GET thường không có
+```
+
+Cấu trúc của **response** giống hệt, chỉ khác dòng đầu là **status line**: phiên bản, mã trạng thái và lý do (`HTTP/1.1 200 OK`), rồi header, dòng trống, và body.
+
+Chi tiết đáng chú ý trong ví dụ này:
+
+- **`Host` là header bắt buộc từ HTTP/1.1.** Một địa chỉ IP phục vụ được hàng nghìn tên miền; kết nối TCP chỉ biết IP, nên chính header `Host` cho server biết khách muốn site nào (**virtual hosting**). Gõ thiếu là lỗi `400 Bad Request`.
+- **`Age: 5` và `cf-cache-status: HIT`**: response này không do server gốc trả, mà từ **cache của CDN** (Cloudflare), đã được lưu 5 giây. Phần caching nói kỹ ở dưới.
+- **`alt-svc: h3=":443"`**: server báo "tôi cũng nói HTTP/3 trên cổng 443 UDP". Trình duyệt dùng thông tin này để chuyển lần sau sang QUIC.
+- **`Transfer-Encoding: chunked`** và body bắt đầu bằng `241\r\n`: đây là cách chia khung body, xem ngay bên dưới.
+
+### Xác định độ dài body
+
+Bên nhận phải biết **khi nào body kết thúc**, vì cùng một kết nối TCP còn dùng cho response kế tiếp (TCP là dòng byte, không có ranh giới message: xem bài [TCP vs UDP](/docs/networking/tcp-vs-udp)). HTTP/1.1 có ba cách, kiểm tra theo thứ tự:
+
+| Cách | Header | Khi nào | Đánh đổi |
+|---|---|---|---|
+| Độ dài biết trước | `Content-Length: 577` | server biết trước kích thước | đơn giản; phải tính xong cả body mới gửi |
+| **Chunked** | `Transfer-Encoding: chunked` | độ dài chưa biết (sinh động, streaming) | body chia thành các khúc, mỗi khúc có độ dài ở đầu; khúc `0` là hết |
+| Đóng kết nối | (không header nào) | HTTP/1.0 cũ | mất khả năng dùng lại kết nối; không phân biệt được "hết" với "mạng đứt" |
+
+Định dạng chunked, lấy từ server tự viết bên dưới:
+
+```text
+HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+
+4\r\nmot \r\n       ← khúc dài 4 byte (số hex), nội dung "mot "
+4\r\nhai \r\n       ← khúc dài 4 byte
+2\r\nba\r\n         ← khúc dài 2 byte
+0\r\n\r\n           ← khúc dài 0: kết thúc
+```
+
+Đó cũng là chính xác điều đã thấy ở response của `example.com`: `241` (hex) là 0x241 = 577 byte của khúc đầu tiên (cái số `577` xuất hiện lại ở phần nén bên dưới).
+
+## Tự viết một server HTTP/1.1
+
+Cách chắc nhất để hiểu HTTP là viết nó. Server dưới đây xử lý request line, header, body có `Content-Length`, kết nối giữ mở (keep-alive), và có vài route để minh hoạ các tính năng sẽ nói tiếp: 301, ETag và 304, cookie, chunked.
+
+```python
+"""HTTP/1.1 server tối giản trên socket: parse request, keep-alive, ETag, cookie, chunked."""
+import socket, threading, time, hashlib, sys
+
+REASONS = {200: 'OK', 301: 'Moved Permanently', 304: 'Not Modified', 400: 'Bad Request', 401: 'Unauthorized', 404: 'Not Found', 500: 'Internal Server Error'}
+SESSIONS = {}
+conn_count = 0
+
+def read_request(f):
+    line = f.readline(8192)                                         # giới hạn độ dài dòng: chống bị nhồi
+    if not line: return None
+    method, target, version = line.decode('latin-1').rstrip('\r\n').split(' ')
+    headers = {}
+    while (h := f.readline(8192)) not in (b'\r\n', b'\n', b''):      # đọc tới dòng trống
+        k, _, v = h.decode('latin-1').partition(':'); headers[k.strip().lower()] = v.strip()
+    body = f.read(int(headers.get('content-length', 0)))              # body có độ dài biết trước
+    return method, target, version, headers, body
+
+def response(status, headers, body=b''):
+    h = {'Content-Length': str(len(body)), **headers}
+    head = f'HTTP/1.1 {status} {REASONS[status]}\r\n' + ''.join(f'{k}: {v}\r\n' for k, v in h.items()) + '\r\n'
+    return head.encode() + body
+
+def route(method, target, headers, body):
+    if target == '/':            return response(200, {'Content-Type': 'text/plain; charset=utf-8'}, b'xin chao')
+    if target == '/slow':        time.sleep(0.1); return response(200, {}, b'cham 100ms')
+    if target == '/old':         return response(301, {'Location': '/'})
+    if target == '/etag':
+        body = b'noi dung on dinh'; tag = '"' + hashlib.md5(body).hexdigest()[:8] + '"'
+        if headers.get('if-none-match') == tag: return response(304, {'ETag': tag})        # không gửi lại body
+        return response(200, {'ETag': tag, 'Cache-Control': 'max-age=0, must-revalidate'}, body)
+    if target == '/login' and method == 'POST':
+        sid = hashlib.md5(body + str(time.time()).encode()).hexdigest()[:12]; SESSIONS[sid] = body.decode()
+        return response(200, {'Set-Cookie': f'sid={sid}; HttpOnly; SameSite=Lax; Path=/'}, b'da dang nhap')
+    if target == '/me':
+        sid = dict(p.strip().split('=', 1) for p in headers.get('cookie', '').split(';') if '=' in p).get('sid')
+        return response(200, {}, f'ban la {SESSIONS[sid]}'.encode()) if sid in SESSIONS else response(401, {}, b'chua dang nhap')
+    if target == '/chunked':
+        parts = [b'mot ', b'hai ', b'ba']
+        out = b''.join(f'{len(p):x}\r\n'.encode() + p + b'\r\n' for p in parts) + b'0\r\n\r\n'
+        return (b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n' + out)
+    return response(404, {}, b'khong co')
+
+def handle(conn):
+    global conn_count; conn_count += 1
+    f = conn.makefile('rb')
+    while True:                                                       # vòng lặp: nhiều request trên cùng một kết nối
+        try: req = read_request(f)
+        except Exception: break
+        if req is None: break
+        method, target, version, headers, body = req
+        conn.sendall(route(method, target, headers, body))
+        if headers.get('connection', '').lower() == 'close' or version == 'HTTP/1.0': break   # keep-alive là mặc định của 1.1
+    conn.close()
+
+def serve(port):
+    srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(('127.0.0.1', port)); srv.listen(128)
+    while True:
+        c, _ = srv.accept(); threading.Thread(target=handle, args=(c,), daemon=True).start()
+
+if __name__ == '__main__': serve(int(sys.argv[1]) if len(sys.argv) > 1 else 8080)
+```
+
+Khoảng 60 dòng, và đã đủ để `curl` và trình duyệt nói chuyện được. Một số quyết định đáng nhìn kỹ:
+
+- **Giới hạn độ dài dòng** (`readline(8192)`): server thật luôn giới hạn kích thước header và body, nếu không một client gửi vô hạn sẽ ăn hết bộ nhớ.
+- **Vòng lặp `while True` trong `handle`**: một kết nối phục vụ nhiều request liên tiếp. Chỉ dừng khi client gửi `Connection: close`, đóng kết nối, hoặc lỗi.
+- **Mỗi kết nối một thread**: đơn giản nhưng không mở rộng được tới hàng chục nghìn kết nối (xem phần [Process vs Thread](/docs/os/process-thread) và epoll ở [I/O & Devices](/docs/os/io-devices)). Nginx hay Node.js dùng một vòng lặp sự kiện thay thế.
+- **Đây là server không an toàn**: không parse chunked cho request, không kiểm tra `Content-Length` hợp lệ, không giới hạn số header hay timeout đọc chậm. Phần bảo mật bên dưới nói hậu quả.
+
+Dùng `curl -v` để nhìn trao đổi (đã lược các dòng chẩn đoán của curl):
+
+```text
+> GET / HTTP/1.1
+> Host: 127.0.0.1:8081
+> User-Agent: curl/8.5.0
+> Accept: */*
+>
+< HTTP/1.1 200 OK
+< Content-Length: 8
+< Content-Type: text/plain; charset=utf-8
+<
+```
+
+Dấu `>` là byte client gửi, dấu `<` là byte server trả. `curl -v` là cách nhanh nhất để thấy chính xác mà không cần công cụ bắt gói.
+
+## Method
+
+Method nói **hành động** muốn làm với tài nguyên. Điều quan trọng không phải thuộc tên mà là hai tính chất:
+
+- **Safe** (an toàn): không làm thay đổi trạng thái trên server (chỉ đọc). Cache, crawler và trình duyệt prefetch được phép tự gọi các method safe.
+- **Idempotent**: gọi **n lần** cho kết quả trạng thái cuối cùng **giống gọi 1 lần**. Quan trọng với tính tin cậy: nếu mạng đứt sau khi gửi request mà chưa thấy response, bạn **có thể thử lại một cách an toàn** khi method idempotent.
+
+| Method | Dùng để | Safe | Idempotent | Có body request |
+|---|---|---|---|---|
+| `GET` | lấy tài nguyên | có | có | không |
+| `HEAD` | như GET nhưng chỉ lấy header | có | có | không |
+| `POST` | tạo mới, hoặc hành động chung | không | **không** | có |
+| `PUT` | thay thế toàn bộ tài nguyên tại URL | không | có | có |
+| `PATCH` | sửa một phần | không | **không** (tuỳ cách thiết kế) | có |
+| `DELETE` | xoá | không | có | thường không |
+| `OPTIONS` | hỏi server hỗ trợ gì (CORS preflight dùng) | có | có | không |
+
+Điểm khó nằm ở **idempotent không có nghĩa là cùng response**. `DELETE /users/5` lần hai trả `404` thay vì `200`, nhưng trạng thái cuối cùng (user 5 không còn) giống nhau, nên vẫn idempotent. Còn `POST /orders` hai lần tạo hai đơn hàng: client thử lại một cách mù quáng sau lỗi mạng sẽ **trả tiền hai lần**. Các API thanh toán giải quyết bằng một **idempotency key** (client sinh một mã duy nhất, gửi kèm header `Idempotency-Key`; server nhớ và trả lại cùng kết quả cho cùng mã). Kiến thức này ăn khớp với điều đã nói ở bài TCP: kết nối rớt sau khi gửi thì bạn **không biết** server đã xử lý hay chưa.
+
+Hai lỗi hay gặp: dùng `GET` cho hành động thay đổi dữ liệu (`GET /delete?id=5`): crawler hay prefetch của trình duyệt sẽ vô tình xoá dữ liệu. Và dùng `POST` cho mọi thứ vì "tiện": mất cache, mất khả năng thử lại an toàn.
+
+## Status code
+
+Dòng status trả lời "chuyện gì đã xảy ra". Chữ số đầu cho biết lớp:
+
+| Lớp | Nghĩa | Ví dụ thường gặp |
+|---|---|---|
+| 1xx | thông tin | `101 Switching Protocols` (nâng lên WebSocket) |
+| 2xx | thành công | `200 OK`, `201 Created` (tạo xong, kèm `Location`), `204 No Content` (xong, không có body) |
+| 3xx | chuyển hướng hoặc dùng bản cache | `301` và `308` (chuyển vĩnh viễn), `302` và `307` (tạm thời), `304 Not Modified` |
+| 4xx | **lỗi do client** | `400` (request sai), `401` (chưa xác thực), `403` (xác thực rồi nhưng không được phép), `404`, `409` (xung đột trạng thái), `422` (dữ liệu sai nghiệp vụ), `429` (gọi quá nhiều) |
+| 5xx | **lỗi do server** | `500` (lỗi chung), `502 Bad Gateway`, `503 Service Unavailable`, `504 Gateway Timeout` |
+
+Vài phân biệt hay bị hiểu sai:
+
+- **`401` và `403`**: `401` thực chất nghĩa là "chưa xác thực" (tên gốc gây nhầm): bạn chưa chứng minh mình là ai. `403` là "tôi biết bạn là ai nhưng bạn không được phép". Server đã thấy `401` ở ví dụ cookie bên dưới khi chưa đăng nhập.
+- **`301`, `302`, `307`, `308`**: `301` và `302` cho phép client đổi `POST` thành `GET` khi chuyển hướng (hành vi lịch sử). `307` và `308` **giữ nguyên method và body**. Ví dụ chuyển hướng vĩnh viễn thật, từ `http` sang `https`:
+
+```text
+$ curl -sI http://github.com
+HTTP/1.1 301 Moved Permanently
+Content-Length: 0
+Location: https://github.com/
+```
+
+- **`502`, `503`, `504`** đều là "lỗi server" nhưng chỉ ra khác nhau khi gỡ lỗi phía sau một reverse proxy hay load balancer: `502` là proxy nhận được trả lời **không hợp lệ** (hoặc kết nối bị đóng) từ backend; `503` là backend (hoặc proxy) **quá tải hoặc đang bảo trì**; `504` là backend **không trả lời kịp** (hết timeout). Biết phân biệt giúp quyết định nhìn vào log nào.
+- Server **không bắt buộc** trả đúng mã. Nhiều API trả `200` kèm `{"error": ...}` trong body. Đó là thiết kế tồi: cache, proxy và công cụ giám sát chỉ nhìn status, nên lỗi bị coi là thành công.
+
+## Header
+
+Header là cách mang **siêu dữ liệu** của request và response. Các header mà một kỹ sư thật sự gặp hằng tuần:
+
+| Header | Chiều | Vai trò |
+|---|---|---|
+| `Host` | request | tên miền muốn truy cập (bắt buộc ở HTTP/1.1) |
+| `Content-Type` | cả hai | kiểu của body: `application/json`, `text/html; charset=utf-8`, `multipart/form-data` |
+| `Content-Length` | cả hai | độ dài body tính bằng byte |
+| `Accept`, `Accept-Language` | request | kiểu và ngôn ngữ client muốn nhận (content negotiation) |
+| `Accept-Encoding` / `Content-Encoding` | request / response | nén: `gzip`, `br`, `zstd` |
+| `Authorization` | request | thông tin xác thực: `Bearer <token>`, `Basic ...` |
+| `Cookie` / `Set-Cookie` | request / response | trạng thái phiên (phần dưới) |
+| `Location` | response | đích của chuyển hướng 3xx, hay URL của tài nguyên vừa tạo (201) |
+| `Cache-Control`, `ETag`, `Last-Modified`, `Vary` | response | caching (phần dưới) |
+| `User-Agent` | request | phần mềm client |
+| `Origin` | request | nguồn gốc trang gọi (CORS) |
+| `Strict-Transport-Security` (HSTS) | response | buộc trình duyệt chỉ dùng HTTPS cho site này |
+| `Alt-Svc` | response | cho biết có thể dùng giao thức khác (HTTP/3) |
+
+Header không phân biệt hoa thường (`content-type` và `Content-Type` như nhau, và HTTP/2 bắt buộc chữ thường).
+
+### Nén nội dung
+
+Client báo nó giải nén được những thuật toán nào qua `Accept-Encoding`, và server nén tương ứng. Cùng một trang `example.com`, ba lần tải với ba lựa chọn:
+
+```text
+identity size=577
+gzip     size=400
+br       size=334
+```
+
+Brotli (`br`) nhỏ hơn bản gốc 42%, gzip 31%. Với trang thật vài trăm KB (HTML, CSS, JavaScript, JSON), mức giảm thường 70 tới 90%, nên nén là một trong những tối ưu rẻ nhất. Chỉ nén được dữ liệu dạng văn bản; ảnh JPEG, video đã nén sẵn thì nén thêm không có ích mà còn tốn CPU. Nén kết hợp với dữ liệu bí mật và dữ liệu do kẻ tấn công kiểm soát trong cùng một response từng bị khai thác (BREACH, CRIME): đó là một lý do cần cẩn thận khi nén response có chứa token CSRF.
+
+### CORS
+
+Trình duyệt chặn trang ở `a.com` đọc response từ `b.com` trừ khi `b.com` cho phép bằng header `Access-Control-Allow-Origin`. Đây là **chính sách của trình duyệt** (same-origin policy), không phải của HTTP: `curl` không bị chặn. Với request "không đơn giản" (như `PUT`, hay có `Authorization`), trình duyệt gửi trước một `OPTIONS` (**preflight**) để hỏi server có cho phép không, rồi mới gửi request thật. Một lỗi hay gặp: CORS báo lỗi dù server đã chạy đúng, vì **server lỗi `5xx` trước khi tới bước thêm header CORS**, nên trình duyệt chỉ thấy "thiếu header" chứ không thấy lỗi gốc.
+
+## Cookie và session
+
+Vì HTTP không giữ trạng thái, cách để server "nhớ" một người dùng là **cookie**: server gửi `Set-Cookie`, trình duyệt lưu và tự gắn `Cookie` vào mọi request tiếp theo tới cùng site. Chạy trên server tự viết, với `curl` giữ cookie trong một file:
+
+```text
+$ curl -si -c jar -d "user=vy" http://127.0.0.1:8081/login
+HTTP/1.1 200 OK
+Content-Length: 12
+Set-Cookie: sid=6e53287d93a1; HttpOnly; SameSite=Lax; Path=/
+
+da dang nhap
+
+$ curl -si -b jar http://127.0.0.1:8081/me
+HTTP/1.1 200 OK
+Content-Length: 14
+
+ban la user=vy
+
+$ curl -si http://127.0.0.1:8081/me          # không gửi cookie
+HTTP/1.1 401 Unauthorized
+Content-Length: 14
+
+chua dang nhap
+```
+
+Cơ chế **session** kinh điển đúng như thế: sau khi đăng nhập, server sinh một **mã phiên ngẫu nhiên** (`sid`), giữ dữ liệu phiên trong bộ nhớ (hoặc Redis, database) ở phía server (`SESSIONS[sid]` trong code), và chỉ gửi mã đó cho client. Request sau mang mã lại, server tra ra người dùng. Không có cookie thì server không biết bạn là ai (`401`).
+
+Các thuộc tính của cookie quyết định bảo mật, cần thuộc:
+
+| Thuộc tính | Tác dụng |
+|---|---|
+| `HttpOnly` | JavaScript trong trang **không đọc được** cookie: chặn XSS lấy cắp mã phiên |
+| `Secure` | chỉ gửi qua HTTPS; không có thì cookie bay qua HTTP không mã hoá |
+| `SameSite=Lax` hoặc `Strict` | không gắn cookie vào request xuất phát từ site khác: chống CSRF |
+| `Max-Age` hoặc `Expires` | thời hạn; không có thì cookie sống tới khi đóng trình duyệt (session cookie) |
+| `Domain`, `Path` | phạm vi gửi cookie |
+
+**Session và token (JWT):** session lưu trạng thái ở server (thu hồi tức thì bằng cách xoá mục, nhưng cần kho chia sẻ giữa các server). Token như JWT mang dữ liệu đã ký **ngay trong token**, server không cần lưu (dễ mở rộng ngang, nhưng khó thu hồi trước hạn). Không cái nào "tốt hơn" tuyệt đối: đó là đánh đổi giữa trạng thái ở server và khả năng thu hồi. Chủ đề xác thực nằm ở bài Authentication & Authorization của cây Backend.
+
+## Caching
+
+Bytes nhanh nhất là byte **không phải gửi**. HTTP có hai cơ chế bổ sung nhau:
+
+1. **Freshness (tươi)**: response kèm `Cache-Control: max-age=3600` nghĩa là "trong 3600 giây tới cứ dùng bản này, **đừng hỏi lại tôi**". Không tốn kết nối nào.
+2. **Validation (kiểm chứng)**: khi bản trong cache đã cũ, client hỏi lại bằng **request có điều kiện**: "bản của tôi có `ETag` này, nếu chưa đổi thì đừng gửi lại". Nếu chưa đổi, server trả `304 Not Modified` **không kèm body**.
+
+Thử trên server tự viết (`/etag` trả `max-age=0, must-revalidate`, tức luôn phải kiểm chứng):
+
+```text
+$ curl -si http://127.0.0.1:8081/etag
+HTTP/1.1 200 OK
+Content-Length: 16
+ETag: "6dffe2cc"
+Cache-Control: max-age=0, must-revalidate
+
+noi dung on dinh
+
+$ curl -si -H 'If-None-Match: "6dffe2cc"' http://127.0.0.1:8081/etag
+HTTP/1.1 304 Not Modified
+Content-Length: 0
+ETag: "6dffe2cc"
+```
+
+Lần đầu: `200` kèm body và một `ETag` (một dấu vân tay của nội dung, ở đây là hash). Lần sau client gửi `If-None-Match` với ETag đã có; server so và thấy khớp, nên trả `304` **không body**. Với tài nguyên lớn (một file JavaScript 500 KB) đó là chênh lệch giữa tải lại 500 KB và vài trăm byte header. (Server tối giản này gửi `Content-Length: 0` cho 304; đặc tả cho phép bỏ hẳn.)
+
+Các lệnh `Cache-Control` quan trọng:
+
+| Chỉ thị | Nghĩa |
+|---|---|
+| `max-age=N` | tươi N giây |
+| `no-cache` | được lưu, nhưng **phải kiểm chứng** mỗi lần dùng (tên gây hiểu nhầm) |
+| `no-store` | **không được lưu** ở đâu cả (dữ liệu nhạy cảm) |
+| `private` | chỉ cache của trình duyệt cá nhân, không cho CDN/proxy dùng chung |
+| `public` | cache dùng chung được |
+| `immutable` | nội dung sẽ không bao giờ đổi trong thời gian tươi |
+| `stale-while-revalidate=N` | dùng bản cũ ngay, vừa tải bản mới ở nền |
+
+Hai kỹ thuật thực tế:
+
+- **Tên file có hash** (`app.3f9a1c.js`) kèm `Cache-Control: public, max-age=31536000, immutable`: file không bao giờ đổi vì đổi nội dung thì đổi tên. Cache một năm không sợ cũ. Chỉ file HTML (trỏ tới tên mới) cần kiểm chứng. Đây là cách các bundler hiện đại (và site này khi build) làm việc.
+- **Header `Vary`**: nếu server trả nội dung khác nhau theo `Accept-Encoding` hay `Accept-Language`, `Vary: Accept-Encoding` báo cache rằng phải lưu **riêng** theo giá trị đó, không thì cache đưa bản nén gzip cho client không hiểu gzip.
+
+CDN là cache dùng chung đặt gần người dùng. Ở response thật phía trên, `Age: 5` và `cf-cache-status: HIT` là bằng chứng: bản này được tạo 5 giây trước và phục vụ từ biên của Cloudflare, không chạm server gốc. Gỡ lỗi cache là nhìn các header đó.
+
+## Kết nối: keep-alive và head-of-line blocking
+
+### Keep-alive
+
+HTTP/1.0 mở một kết nối TCP **cho mỗi request** rồi đóng. Với chi phí 1 RTT bắt tay TCP (cộng 1 RTT TLS) và slow start của TCP, rất phí. HTTP/1.1 làm **kết nối bền (persistent) là mặc định**: một kết nối dùng cho nhiều request liên tiếp, và chỉ đóng khi một bên gửi `Connection: close` hay quá thời gian nhàn rỗi. Xác nhận trên server tự viết (curl yêu cầu hai URL trong một lệnh):
+
+```text
+200 num_connects=1 | 200 num_connects=0 | server đếm 1 kết nối
+```
+
+Hai request, `num_connects=1` cho cái đầu (tạo mới) và `0` cho cái sau (dùng lại), và server đếm đúng một kết nối. Cái lợi cộng dồn: kết nối đã "nóng" (cửa sổ TCP đã mở rộng sau slow start), không phải bắt tay lại.
+
+### Head-of-line blocking trong HTTP/1.1
+
+Nhưng trên một kết nối HTTP/1.1, response phải trả về **đúng thứ tự** request: chưa xong response số 1 thì chưa trả được số 2. Một request chậm chặn mọi request sau nó trên cùng kết nối: <Term>head-of-line blocking</Term> ở tầng ứng dụng. HTTP/1.1 có tính năng **pipelining** (gửi dồn nhiều request không chờ response) nhưng không giải quyết được vì response vẫn phải theo thứ tự, và quá nhiều proxy hỏng khi gặp nó nên trình duyệt tắt đi.
+
+Đo thật: 12 request, mỗi request server mất 100 ms để xử lý (route `/slow` ở trên):
+
+```python
+REQ = b'GET /slow HTTP/1.1\r\nHost: x\r\n\r\n'
+def one_conn(k):                                  # một kết nối, tuần tự: gửi -> chờ -> gửi
+    s = socket.create_connection(('127.0.0.1', 8082)); f = s.makefile('rb')
+    for _ in range(k): s.sendall(REQ); read_resp(f)
+    s.close()
+def pipelined(k):                                 # gửi liền k request không chờ, rồi đọc k response
+    s = socket.create_connection(('127.0.0.1', 8082)); f = s.makefile('rb')
+    s.sendall(REQ * k)
+    for _ in range(k): read_resp(f)
+    s.close()
+def parallel(conns, total):                       # nhiều kết nối song song
+    ts = [threading.Thread(target=one_conn, args=(total // conns,)) for _ in range(conns)]
+    for t in ts: t.start()
+    for t in ts: t.join()
+```
+
+```text
+12 request, mỗi request server mất 100 ms:
+1 kết nối, tuần tự                                1220 ms
+1 kết nối, pipelining (gửi dồn)                   1204 ms
+6 kết nối song song (như trình duyệt)              208 ms
+12 kết nối song song                               109 ms
+```
+
+- **Tuần tự và pipelining đều khoảng 1200 ms**: 12 lần 100 ms cộng dồn. Gửi dồn không giúp gì vì server xử lý lần lượt trên một kết nối.
+- **6 kết nối song song: 208 ms.** Mỗi kết nối chạy 2 request. Đây là cách trình duyệt thực tế né vấn đề: mở **tối đa 6 kết nối** tới mỗi host.
+- **12 kết nối: 109 ms**, gần mức tối thiểu 100 ms, nhưng mở nhiều kết nối là tốn kém: mỗi cái cần bắt tay TCP và TLS riêng, tốn bộ nhớ và slow start riêng, và nhiều kết nối cạnh tranh băng thông, mỗi cái chạy congestion control riêng.
+
+Nhiều kỹ thuật tối ưu của thời HTTP/1.1 sinh ra từ giới hạn này, và nay thành **phản mẫu** trên HTTP/2: **domain sharding** (chia tài nguyên ra `img1.example.com`, `img2...` để vượt giới hạn 6 kết nối), **gộp file** (một bundle JavaScript lớn, sprite ảnh để bớt số request). Có thể chúng vẫn hữu ích vì lý do khác (ít tốn header hơn), nhưng lý do ban đầu không còn.
+
+## HTTP/2
+
+HTTP/2 (2015) giữ nguyên **ngữ nghĩa** (method, status, header giống HTTP/1.1) nhưng đổi hẳn cách mã hoá lên dây, để chữa head-of-line blocking mà không cần nhiều kết nối. Ba ý tưởng:
+
+1. **Frame nhị phân.** Thay vì văn bản, mọi thứ là các **frame** có header 9 byte cố định: độ dài (3 byte), loại (1), cờ (1), và **stream ID** (4). Dễ parse hơn và không có kiểu lỗi "dòng trống ở đâu" của văn bản.
+2. **Stream và multiplexing.** Một kết nối TCP chở **nhiều stream** song song, mỗi stream là một cặp request/response, có ID riêng. Các frame của nhiều stream **xen kẽ** nhau trên cùng một kết nối. Response nào xong trước trả trước; request chậm không chặn request khác ở tầng HTTP.
+3. **HPACK** nén header: tên header phổ biến có chỉ mục trong **bảng tĩnh**, và các header đã gửi được nhớ trong **bảng động** của kết nối, nên header lặp lại (`User-Agent`, `Cookie` dài hàng trăm byte) chỉ tốn một hoặc hai byte ở request sau.
+
+### Nói chuyện HTTP/2 bằng tay
+
+Kết nối TLS tới `example.com` và thương lượng giao thức `h2` bằng **ALPN** (một extension của TLS cho client liệt kê giao thức mong muốn, xem bài [TLS & HTTPS](/docs/networking/tls)). Sau đó gửi **connection preface** (24 byte cố định), một frame `SETTINGS` rỗng, và một frame `HEADERS` mở stream 1, với header được **mã hoá HPACK bằng tay**:
+
+```python
+"""Nói chuyện HTTP/2 bằng tay: ALPN, preface, SETTINGS, HEADERS (HPACK viết tay), rồi đọc frame."""
+import socket, ssl, struct
+
+def frame(t, flags, sid, payload=b''):
+    return struct.pack('!I', len(payload))[1:] + bytes([t, flags]) + struct.pack('!I', sid) + payload
+
+def hpack_request(authority, path='/'):
+    out = bytes([0x82, 0x87, 0x84 if path == '/' else 0x85])        # :method GET, :scheme https, :path /   (bảng tĩnh, 1 byte mỗi header)
+    out += bytes([0x41, len(authority)]) + authority.encode()       # :authority: literal, tên = chỉ mục 1, giá trị không Huffman
+    return out
+
+host = 'example.com'
+ctx = ssl.create_default_context(); ctx.set_alpn_protocols(['h2'])
+tls = ctx.wrap_socket(socket.create_connection((host, 443), timeout=5), server_hostname=host)
+print('TLS:', tls.version(), '| ALPN thương lượng:', tls.selected_alpn_protocol())
+hp = hpack_request(host)
+print(f'HPACK: {len(hp)} byte cho 4 header: {hp.hex(" ")}')
+tls.sendall(b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n' + frame(4, 0, 0) + frame(1, 0x05, 1, hp))    # preface, SETTINGS, HEADERS (END_STREAM|END_HEADERS)
+
+def read_frames(tls, secs=1.5):
+    tls.settimeout(secs); buf = b''
+    try:
+        while True:
+            c = tls.recv(65536)
+            if not c: break
+            buf += c
+    except (socket.timeout, TimeoutError): pass
+    i, out = 0, []
+    while i + 9 <= len(buf):                                         # mỗi frame: header 9 byte rồi payload
+        ln = int.from_bytes(buf[i:i+3], 'big'); t, fl = buf[i+3], buf[i+4]; sid = struct.unpack('!I', buf[i+5:i+9])[0] & 0x7FFFFFFF
+        out.append((t, fl, sid, buf[i+9:i+9+ln])); i += 9 + ln
+    return out
+
+TYPES = {0: 'DATA', 1: 'HEADERS', 4: 'SETTINGS', 8: 'WINDOW_UPDATE'}
+FLAGS = {0: {1: 'END_STREAM'}, 1: {1: 'END_STREAM', 4: 'END_HEADERS'}, 4: {1: 'ACK'}}
+SETTING = {3: 'MAX_CONCURRENT_STREAMS', 4: 'INITIAL_WINDOW_SIZE', 5: 'MAX_FRAME_SIZE'}
+for t, fl, sid, p in read_frames(tls):
+    names = ','.join(n for b, n in FLAGS.get(t, {}).items() if fl & b) or '-'
+    extra = ''
+    if t == 4 and not fl & 1: extra = ' ' + ', '.join(f"{SETTING.get(k, k)}={v}" for k, v in (struct.unpack('!HI', p[j:j+6]) for j in range(0, len(p), 6)))
+    if t == 8: extra = f' +{struct.unpack("!I", p)[0]}'
+    if t == 0: extra = f' {p[:40]!r}...'
+    print(f'  stream {sid} {TYPES.get(t, t):<14} {len(p):>5} byte  [{names}]{extra}')
+```
+
+```text
+TLS: TLSv1.3 | ALPN thương lượng: h2
+HPACK: 16 byte cho 4 header: 82 87 84 41 0b 65 78 61 6d 70 6c 65 2e 63 6f 6d
+  stream 0 SETTINGS          18 byte  [-] MAX_CONCURRENT_STREAMS=256, INITIAL_WINDOW_SIZE=65536, MAX_FRAME_SIZE=16777215
+  stream 0 WINDOW_UPDATE      4 byte  [-] +2147418112
+  stream 0 SETTINGS           0 byte  [ACK]
+  stream 1 HEADERS          160 byte  [END_HEADERS]
+  stream 1 DATA             577 byte  [-] b'<!doctype html><html lang=en><head><meta'...
+  stream 1 DATA               0 byte  [END_STREAM] b''...
+```
+
+Đọc từng phần:
+
+- **HPACK 16 byte** cho bốn header: `82` = "chỉ mục 2 trong bảng tĩnh" = `:method: GET` (một byte cho cả header!), `87` = `:scheme: https`, `84` = `:path: /`. Header thứ tư `:authority: example.com` không có sẵn giá trị trong bảng tĩnh, nên dùng dạng **literal**: `41` nghĩa là "tên là chỉ mục 1 (`:authority`), giá trị viết thẳng sau đây", `0b` là độ dài 11, rồi 11 byte `example.com`. So với HTTP/1.1 viết `GET / HTTP/1.1\r\nHost: example.com\r\n\r\n` mất 37 byte, và còn tăng nhanh khi thêm `User-Agent`, `Accept`, `Cookie`: HPACK xử lý các header lặp lại ở những request sau bằng bảng động.
+- **`SETTINGS`** của server: nó cho biết `MAX_CONCURRENT_STREAMS=256` (cho phép 256 stream song song trên kết nối này), kích thước cửa sổ và kích thước frame tối đa. Client cũng đáp `SETTINGS ACK`.
+- **`WINDOW_UPDATE`** `+2147418112`: server mở **cửa sổ flow control** cấp độ kết nối lên gần 2 GB. HTTP/2 có flow control **riêng** ở tầng stream (ngoài flow control của TCP), để một stream lớn không chiếm hết bộ đệm của các stream khác.
+- **`HEADERS` 160 byte trên stream 1** là response header đã được nén bằng HPACK (đầy đủ status, `content-type`, `cf-cache-status`, `alt-svc`...), thay vì khoảng 340 byte văn bản của response HTTP/1.1 ở đầu bài (hai response không hoàn toàn cùng bộ header, nên đây chỉ là so sánh về cỡ). Cờ `END_HEADERS` cho biết đây là toàn bộ phần header.
+- **`DATA` 577 byte** là body (chính con số 577 khi đo nén), rồi một frame `DATA` rỗng với cờ **`END_STREAM`**: kết thúc stream 1. Chú ý: **không có `Content-Length` hay chunked**: ranh giới response được chốt bởi chính frame, nên cả lớp lỗi "xác định độ dài body" của HTTP/1.1 biến mất.
+
+Trường `stream 1`: client luôn dùng ID lẻ, server khi push dùng ID chẵn (server push cuối cùng bị bỏ vì khó dùng đúng, Chrome gỡ năm 2022). Nhiều request song song chỉ là mở thêm stream 3, 5, 7 trên cùng kết nối và xen kẽ frame của chúng.
+
+### HTTP/2 vẫn còn head-of-line blocking ở TCP
+
+HTTP/2 chữa head-of-line blocking ở **tầng HTTP**, nhưng cả các stream vẫn chạy trên **một** kết nối TCP, và TCP chỉ thấy một dòng byte. Mất một gói thì TCP giữ lại mọi byte phía sau (dù thuộc stream khác đã tới nơi) chờ gói bị mất được gửi lại. Trên mạng nhiều mất gói (di động, Wi-Fi yếu), một kết nối HTTP/2 duy nhất có thể **tệ hơn** sáu kết nối HTTP/1.1, vì mất gói làm đứng cả kết nối. Đó là động lực của HTTP/3.
+
+## HTTP/3
+
+HTTP/3 (RFC 9114) cũng giữ ngữ nghĩa, nhưng chạy trên **QUIC** thay vì TCP (xem phần QUIC ở bài [TCP vs UDP](/docs/networking/tcp-vs-udp)):
+
+- Mỗi stream HTTP là một **stream QUIC** có độ tin cậy riêng: mất gói chỉ chặn đúng stream chứa gói đó.
+- Handshake gộp transport và TLS: 1 RTT (hoặc 0 RTT khi kết nối lại), thay vì 2 RTT của TCP cộng TLS 1.3.
+- Header dùng **QPACK** (bản sửa của HPACK để không phụ thuộc thứ tự tới nơi).
+- Kết nối gắn với **Connection ID** nên đổi mạng (Wi-Fi sang 4G) không làm rớt.
+
+Làm sao trình duyệt biết server có HTTP/3 khi chưa có kết nối nào? Lần đầu nó vẫn dùng HTTP/2 hoặc 1.1 qua TCP, và server khai báo trong header `Alt-Svc`, như đã thấy ở response `example.com`:
+
+```text
+alt-svc: h3=":443"; ma=86400
+```
+
+"Tôi nói HTTP/3 ở cổng 443 (UDP); nhớ thông tin này 86400 giây." Lần sau trình duyệt thử QUIC, và nếu bị chặn (nhiều mạng chặn UDP) thì lùi về TCP. Gần đây còn có bản ghi DNS `HTTPS` để báo trước, khỏi cần lần đầu qua TCP ([DNS](/docs/networking/dns)).
+
+| | HTTP/1.1 | HTTP/2 | HTTP/3 |
+|---|---|---|---|
+| Mã hoá lên dây | văn bản | frame nhị phân | frame nhị phân |
+| Transport | TCP | TCP | QUIC (UDP) |
+| Nhiều request song song | nhiều kết nối (tối đa 6/host) | multiplexing trên 1 kết nối | multiplexing trên 1 kết nối |
+| Head-of-line blocking | tầng HTTP và tầng TCP | tầng TCP | không (theo từng stream) |
+| Nén header | không | HPACK | QPACK |
+| Mã hoá | tuỳ (HTTP hoặc HTTPS) | thực tế luôn TLS | bắt buộc (TLS 1.3 trong QUIC) |
+| Bắt tay (với TLS 1.3) | 2 RTT | 2 RTT | 1 RTT (0 RTT khi kết nối lại) |
+
+## HTTPS
+
+HTTPS là HTTP chạy **bên trong** một kết nối TLS: cùng message, nhưng được mã hoá và xác thực server. Chi tiết (chứng chỉ, bắt tay) ở bài [TLS & HTTPS](/docs/networking/tls). Những gì HTTP tự làm để hỗ trợ:
+
+- **Chuyển hướng http sang https** (301 như ví dụ `github.com` ở trên), và header **HSTS** để lần sau trình duyệt **không bao giờ thử HTTP** nữa (tránh cuộc tấn công hạ cấp ở lần truy cập đầu):
+
+```text
+strict-transport-security: max-age=31536000; includeSubdomains; preload
+```
+
+- **Cookie `Secure`**: chỉ gửi qua HTTPS.
+
+Một số header bảo mật khác mà `github.com` đang dùng, mỗi cái đóng một loại tấn công trình duyệt:
+
+| Header | Chống |
+|---|---|
+| `Content-Security-Policy` | XSS: liệt kê nguồn script, ảnh, kết nối được phép |
+| `X-Frame-Options: deny` | clickjacking: không cho nhúng trang vào iframe |
+| `Strict-Transport-Security` | hạ cấp xuống HTTP |
+
+## Bảo mật ở tầng giao thức
+
+Vì HTTP/1.1 là văn bản với nhiều cách xác định độ dài, nó có một họ lỗi riêng:
+
+- **Request smuggling**: một chuỗi proxy và server ở phía sau hiểu khác nhau ranh giới giữa hai request, chẳng hạn proxy dùng `Content-Length` còn backend dùng `Transfer-Encoding: chunked` khi cả hai header cùng có mặt. Kẻ tấn công nhét một request thứ hai vào phần "body" của request thứ nhất, và nó được backend hiểu là request của **người dùng tiếp theo** trên cùng kết nối. HTTP/2 và 3 loại bỏ phần lớn lớp lỗi này vì độ dài nằm ở frame (nhưng chuyển ngược HTTP/2 sang HTTP/1.1 ở biên lại tạo ra chỗ hở mới).
+- **Tấn công chiếm kết nối chậm (slowloris)**: client mở nhiều kết nối và gửi header **từng byte một rất chậm**. Server giữ mỗi kết nối chờ cho đến khi hết thread hay hết file descriptor. Phòng: timeout đọc header, giới hạn số kết nối mỗi IP, và kiến trúc dựa trên vòng lặp sự kiện thay vì một thread mỗi kết nối. Server tự viết ở trên **dính cả hai**.
+- **Header injection**: nếu chèn dữ liệu người dùng vào header mà không loại `\r\n`, kẻ tấn công thêm header hoặc cả response thứ hai (HTTP response splitting). Nguyên tắc: mọi dữ liệu từ bên ngoài đi vào header phải bị loại hoặc mã hoá ký tự xuống dòng.
+
+## Trong hạ tầng thật
+
+- **Reverse proxy và load balancer.** Trình duyệt gần như không bao giờ nói thẳng với ứng dụng. Nó nói với một Nginx, Envoy, hay load balancer của cloud (L7, xem [OSI & TCP/IP Model](/docs/networking/network-layers)), nơi kết thúc TLS, nén, cache, và mở kết nối **riêng** tới backend (thường HTTP/1.1 keep-alive nội bộ). Header `X-Forwarded-For` và `X-Forwarded-Proto` (hay `Forwarded`) mang IP và scheme thật của client qua các tầng đó; backend phải tin chúng **chỉ khi** chúng đến từ proxy của mình, vì client có thể tự gửi header giả.
+- **Timeout là một cặp, và phải khớp.** Proxy có timeout đọc từ backend (gây `504` nếu backend quá chậm), backend có timeout nhàn rỗi của keep-alive. Nếu **timeout keep-alive của backend ngắn hơn của proxy**, proxy sẽ gửi request qua một kết nối mà backend vừa đóng, và nhận về lỗi `502` thỉnh thoảng không giải thích được. Quy tắc: timeout nhàn rỗi của bên **sau** phải dài hơn bên **trước**.
+- **Thử lại và idempotency.** Client và proxy chỉ nên tự động thử lại các method idempotent, hoặc request `POST` có idempotency key (xem phần Method). Thử lại mù quáng khi hệ thống đang quá tải chỉ làm nặng thêm (retry storm); cần exponential backoff có jitter (cùng nguyên lý với RTO của TCP).
+- **Giới hạn tốc độ** trả `429 Too Many Requests` kèm header `Retry-After`: client tốt tôn trọng nó.
+- **WebSocket và Server-Sent Events** là hai cách thực hiện "server chủ động đẩy dữ liệu" trên nền HTTP: WebSocket nâng cấp kết nối bằng `101 Switching Protocols` thành kênh hai chiều hoàn toàn khác HTTP; SSE giữ một response chunked mở mãi và đẩy dòng văn bản.
+
+## Quan sát và chẩn đoán
+
+```bash
+curl -v https://example.com                 # thấy cả request và response header (> và <)
+curl -sI https://example.com                # chỉ header (method HEAD)
+curl -s -o /dev/null -w '%{http_version} dns=%{time_namelookup} tcp=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer}\n' https://example.com
+curl --http2 -I https://example.com         # ép HTTP/2; --http1.1 để ép 1.1
+curl -H 'Accept-Encoding: br' --compressed -s -o /dev/null -w '%{size_download}\n' https://example.com
+curl -i -H 'If-None-Match: "abc"' https://example.com/file    # thử caching có điều kiện
+curl --resolve example.com:443:1.2.3.4 https://example.com    # ép IP, bỏ qua DNS: thử server mới trước khi đổi DNS
+printf 'GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n' | nc example.com 80    # gõ tay, không curl
+```
+
+Trình duyệt có công cụ tương đương: tab **Network** của DevTools hiển thị từng request, giao thức (cột `Protocol`: `h2`, `h3`), và biểu đồ thời gian chia thành Queueing, DNS, Initial connection, SSL, Waiting (TTFB), Content Download, đúng các mốc ở bảng đầu bài. Mục "Waiting" dài nghĩa là server chậm, "Initial connection" và "SSL" dài nghĩa là mạng và bắt tay, "Queueing" dài nghĩa là trình duyệt đã chạm giới hạn 6 kết nối (HTTP/1.1).
+
+Ánh xạ triệu chứng sang nguyên nhân:
+
+| Triệu chứng | Hướng kiểm tra |
+|---|---|
+| Trang chậm, TTFB cao | server xử lý chậm (kiểm tra thời gian "Waiting"), cache miss, hoặc backend quá tải |
+| `502 Bad Gateway` thỉnh thoảng | backend đóng kết nối keep-alive trước proxy; backend sập hoặc restart; lỗi giao thức giữa proxy và backend |
+| `504 Gateway Timeout` | backend quá chậm so với timeout của proxy |
+| `503 Service Unavailable` | quá tải, đang bảo trì, hết instance khoẻ; xem health check |
+| Đổi nội dung nhưng người dùng vẫn thấy cũ | cache của trình duyệt (max-age còn hạn), cache của CDN (cần purge), hoặc tên file không đổi dù nội dung đổi |
+| Lỗi CORS trong trình duyệt nhưng `curl` chạy tốt | thiếu `Access-Control-Allow-Origin`; preflight `OPTIONS` không được xử lý; hoặc server `5xx` trước khi thêm header CORS |
+| Đăng nhập xong vẫn bị coi là chưa | cookie không gửi: `Secure` trên HTTP, `SameSite` chặn request xuyên site, sai `Domain` hay `Path`, hoặc bị trình duyệt chặn cookie bên thứ ba |
+| Request treo rồi `connection reset` | proxy hoặc load balancer cắt kết nối nhàn rỗi quá hạn, hoặc request vượt giới hạn kích thước |
+| Tải lên file lớn thất bại với `413` | giới hạn `client_max_body_size` của Nginx hoặc giới hạn của proxy |
+| Chuyển hướng lặp vô tận | luật chuyển http sang https đặt ở cả proxy và ứng dụng và hai bên không đồng ý scheme (do thiếu `X-Forwarded-Proto`) |
+
+## Lưu ý
+
+- **HTTP không giữ trạng thái.** Mọi "đã đăng nhập" đều do cookie hay token gắn kèm từng request; server không tự nhớ gì giữa hai request.
+- **Thử lại chỉ an toàn với method idempotent.** `POST` không idempotent: dùng idempotency key khi thử lại để khỏi tạo trùng. Đó là hệ quả trực tiếp của việc không biết server đã xử lý hay chưa khi mạng đứt.
+- **`GET` không bao giờ được làm thay đổi dữ liệu.** Crawler, prefetch và cache đều coi `GET` là an toàn.
+- **Status code là tín hiệu cho máy.** Trả `200` kèm `{"error": ...}` làm hỏng cache, giám sát và retry. Dùng đúng 4xx (lỗi client) và 5xx (lỗi server).
+- **`401` là chưa xác thực, `403` là không được phép**; `502`, `503`, `504` chỉ ra ba nguyên nhân khác nhau phía sau proxy.
+- **Độ dài body là chỗ sinh lỗi và lỗ hổng** (request smuggling) ở HTTP/1.1. Dùng thư viện và server đã được kiểm chứng; đừng tự parse HTTP cho môi trường thật, và đừng tin server tự viết trong bài này.
+- **Cache bằng tên file có hash.** `max-age` một năm cộng `immutable` cho tài nguyên có hash, và kiểm chứng (ETag hoặc `no-cache`) cho HTML.
+- **`no-cache` không có nghĩa là không cache**: nó có nghĩa là phải kiểm chứng. Muốn không lưu gì thì `no-store`.
+- **Keep-alive nhàn rỗi giữa proxy và backend phải khớp**: timeout của bên sau dài hơn bên trước, nếu không có lỗi `502` thỉnh thoảng khó giải thích.
+- **HTTP/2 không tự làm trang nhanh hơn trong mọi trường hợp**: nó bỏ bớt các mánh của HTTP/1.1 (sharding, gộp file không còn cần thiết) nhưng vẫn dính head-of-line blocking của TCP khi mất gói. HTTP/3 chữa phần đó, đổi lại tốn CPU hơn và có thể bị chặn UDP.
+- **Header `X-Forwarded-*` có thể bị giả** nếu client nói thẳng với ứng dụng. Chỉ tin chúng từ proxy của bạn.
+- **CORS là chính sách của trình duyệt**, không phải bảo vệ phía server. Server vẫn phải tự xác thực và phân quyền mọi request.

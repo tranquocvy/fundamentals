@@ -1,72 +1,1069 @@
 ---
 title: TCP vs UDP
-description: Hai giao thức tầng transport, một đảm bảo mọi thứ, một không đảm bảo gì, và vì sao cả hai đều cần.
-status: reviewed
+description: Tầng transport từ gốc, UDP chỉ làm gì, vì sao phải cần một giao thức có kết nối, và TCP dựng độ tin cậy, flow control, congestion control như thế nào, kèm gói tin thật, code tự cài và cách chẩn đoán trên Linux.
+status: draft
 tags: [networking, transport]
 authors: [tranquocvy]
 references:
   - title: "Kurose & Ross, Computer Networking: A Top-Down Approach — Chapter 3: Transport Layer"
     kind: book
+    note: reliable data transfer từ rdt 1.0 tới TCP, nền cho phần "tự dựng độ tin cậy trên UDP"
   - title: "RFC 9293 — Transmission Control Protocol (TCP)"
     url: https://www.rfc-editor.org/rfc/rfc9293
     kind: web
+    note: bản đặc tả hiện hành, gộp RFC 793 và các bản vá; đọc phần header, state machine
   - title: "RFC 768 — User Datagram Protocol"
     url: https://www.rfc-editor.org/rfc/rfc768
     kind: web
+    note: chỉ hai trang, đọc hết
+  - title: "RFC 6298 — Computing TCP's Retransmission Timer"
+    url: https://www.rfc-editor.org/rfc/rfc6298
+    kind: web
+    note: công thức SRTT, RTTVAR, RTO và thuật toán của Karn
+  - title: "RFC 5681 — TCP Congestion Control"
+    url: https://www.rfc-editor.org/rfc/rfc5681
+    kind: web
+    note: slow start, congestion avoidance, fast retransmit, fast recovery
+  - title: "RFC 9438 — CUBIC for Fast and Long-Distance Networks"
+    url: https://www.rfc-editor.org/rfc/rfc9438
+    kind: web
   - title: "RFC 9000 — QUIC: A UDP-Based Multiplexed and Secure Transport"
     url: https://www.rfc-editor.org/rfc/rfc9000
+    kind: web
+  - title: "Van Jacobson — Congestion Avoidance and Control (SIGCOMM 1988)"
+    url: https://ee.lbl.gov/papers/congavoid.pdf
+    kind: paper
+    note: bài báo gốc về slow start và AIMD, viết sau đợt congestion collapse năm 1986
+  - title: "Ilya Grigorik — High Performance Browser Networking, Chapter 2: Building Blocks of TCP"
+    url: https://hpbn.co/building-blocks-of-tcp/
     kind: web
 ---
 
 ## Ý chính
 
-Tầng IP chỉ cố gắng chuyển gói tin từ máy này sang máy kia (best effort): gói có thể mất, đến sai thứ tự, hoặc bị nhân đôi. Tầng transport nằm trên IP và dùng <Term>port</Term> để đưa dữ liệu tới đúng chương trình trên máy. Hai lựa chọn chính:
+Tầng IP chỉ hứa một điều: cố gắng đưa từng gói tin tới máy đích (best effort). Gói có thể mất, đến trễ, đến sai thứ tự, hoặc đến hai lần, và IP không báo gì cho ai. Hơn nữa địa chỉ IP chỉ chỉ tới **một máy**, trong khi trên máy đó có hàng trăm chương trình đang nghe mạng.
 
-- <Term>TCP</Term>: tạo một kết nối, đảm bảo dữ liệu tới **đủ, đúng thứ tự, không trùng**. Đổi lại phải bắt tay trước và chậm lại khi mạng có vấn đề.
-- <Term>UDP</Term>: gửi từng gói độc lập, **không đảm bảo gì** ngoài kiểm tra lỗi (checksum). Đổi lại nhanh, nhẹ, không cần thiết lập.
+Tầng **transport** nằm ngay trên IP và giải hai việc:
 
-## So sánh
+1. **Phân kênh (multiplexing)**: dùng <Term>port</Term> để đưa dữ liệu tới đúng chương trình. Cả <Term>UDP</Term> và <Term>TCP</Term> đều làm việc này.
+2. **Độ tin cậy** (tuỳ giao thức): làm cho một đường truyền hay mất gói trông như một đường truyền đáng tin. Chỉ TCP làm việc này, và đó là phần lớn độ phức tạp của nó.
 
-| | TCP | UDP |
+Bài này đi theo thứ tự từ ít tới nhiều. UDP trước, vì nó chính là IP cộng thêm port. Sau đó tự dựng độ tin cậy trên UDP bằng code, gặp lần lượt từng vấn đề (mất gói, chậm vì chờ ACK, cần cửa sổ trượt). Cuối cùng đối chiếu với TCP thật: header, handshake bắt từ gói tin thật, state machine, ước lượng timeout, flow control, congestion control, và các cơ chế nhỏ nhưng hay gây sự cố như Nagle và <Term>TIME_WAIT</Term>. Phần cuối là QUIC, cách chọn giao thức, và các lệnh để nhìn thấy mọi thứ trên máy thật.
+
+Mọi output trong bài lấy từ máy Linux (WSL2, kernel 6.6): gói tin được bắt trên interface `lo` bằng một raw socket rồi tự giải mã bằng Python, mất gói và trễ được giả lập bằng `tc netem`. Số liệu của bạn sẽ khác về giá trị tuyệt đối nhưng giống về hình dạng.
+
+## Hai giao thức, nhìn nhanh
+
+| | UDP | TCP |
 |---|---|---|
-| Kết nối | Có, bắt tay 3 bước trước khi gửi | Không, gửi ngay |
-| Đảm bảo tới nơi | Có, mất thì gửi lại | Không |
-| Thứ tự | Đúng thứ tự gửi | Không đảm bảo |
-| Dạng dữ liệu | Dòng byte liên tục (stream), không có ranh giới tin nhắn | Từng gói (datagram) riêng, giữ nguyên ranh giới |
-| Điều tiết | Flow control + congestion control | Không có, ứng dụng tự lo |
-| Header | 20–60 byte | 8 byte |
-| Dùng cho | Web (HTTP/1.1, HTTP/2), email, SSH, tải file | DNS, gọi video, game, streaming, HTTP/3 (qua QUIC) |
+| Đơn vị dữ liệu | datagram: mỗi lần gửi là một gói riêng, giữ nguyên ranh giới | byte stream: dòng byte liên tục, không có ranh giới |
+| Kết nối | không, gửi ngay | có, phải bắt tay trước |
+| Tới nơi | không đảm bảo | đảm bảo (hoặc báo lỗi) |
+| Thứ tự | không đảm bảo | đúng thứ tự gửi |
+| Trùng lặp | có thể | loại bỏ |
+| Flow control | không | có (receive window) |
+| Congestion control | không, ứng dụng tự lo | có, trong kernel |
+| Header | 8 byte | tối thiểu 20 byte, thường 32 byte có option |
+| Trạng thái trong kernel | gần như không | nhiều: buffer, timer, cửa sổ, RTT... |
+| Một ứng dụng nói chuyện với bao nhiêu bên | một socket nhận được từ nhiều bên | một kết nối là đúng hai đầu |
 
-## Bắt tay 3 bước
+Câu "UDP nhanh còn TCP chậm" dễ gây hiểu nhầm. UDP không **làm** những việc TCP làm, nên nếu bạn cần những việc đó thì phải tự làm và thường làm kém hơn. UDP thắng khi bạn không cần những việc đó, hoặc cần làm chúng theo cách riêng.
 
-TCP phải thống nhất số thứ tự (sequence number) ban đầu của cả hai bên trước khi gửi dữ liệu:
+## Phân kênh bằng port
+
+Mỗi gói tin mang hai cặp (địa chỉ IP, port): nguồn và đích. Port là số 16 bit, nên có 65535 port cho mỗi giao thức. Port của TCP và UDP là hai không gian riêng: TCP port 53 và UDP port 53 là hai thứ khác nhau (DNS dùng cả hai).
+
+- **UDP** nhận dữ liệu theo cặp (IP đích, port đích). Mọi datagram gửi tới cặp này, từ bất kỳ ai, đều vào cùng một socket.
+- **TCP** nhận theo **bốn thành phần**: (IP nguồn, port nguồn, IP đích, port đích). Máy chủ nghe ở port 443 nhưng mỗi client là một kết nối riêng, vì khác IP nguồn hoặc port nguồn. Đó là lý do một server chỉ cần một port mà phục vụ được hàng chục nghìn client.
+
+Hệ quả thực tế: số kết nối tới **một** server tối đa theo lý thuyết rất lớn (2 mũ 32 IP nguồn nhân 2 mũ 16 port). Giới hạn thật ở phía client: khi một máy client kết nối nhiều lần tới cùng một (IP, port) đích, nó chỉ còn port nguồn để phân biệt. Linux cấp port nguồn từ dải `ip_local_port_range`, mặc định 32768 tới 60999, tức khoảng 28.000 port. Phần <Term>TIME_WAIT</Term> bên dưới cho thấy giới hạn này bị chạm sớm hơn người ta nghĩ.
+
+## UDP
+
+Đặc tả UDP (RFC 768) dài hai trang. Header có bốn trường, mỗi trường 16 bit:
 
 ```text
-Client → Server:  SYN        (seq = x)
-Server → Client:  SYN-ACK    (seq = y, ack = x + 1)
-Client → Server:  ACK        (ack = y + 1)
+ 0      7 8     15 16    23 24    31
++--------+--------+--------+--------+
+|   source port   |  destination port |
++--------+--------+--------+--------+
+|     length      |     checksum      |
++--------+--------+--------+--------+
+|              payload ...            |
 ```
 
-Mất ít nhất một vòng đi về (RTT) trước khi gửi được byte dữ liệu đầu tiên. Với kết nối có TLS thì còn thêm các vòng bắt tay TLS nữa; đây là một lý do HTTP/3 chuyển sang QUIC.
+- `length`: độ dài của header cộng payload, tối đa 65535. Trừ 20 byte header IP và 8 byte header UDP còn **65507 byte** payload.
+- `checksum`: tổng bù một (one's complement) của payload, header UDP và một "pseudo-header" chứa IP nguồn, IP đích. Với IPv4 có thể để 0 (không kiểm tra); với IPv6 bắt buộc.
 
-<Expand title="TCP làm sao để đảm bảo tới nơi và đúng thứ tự">
+Checksum chỉ phát hiện được lỗi bit ngẫu nhiên, và khá yếu: hai bit đảo ngược ở hai vị trí khác nhau có thể bù nhau. Nó không bảo vệ gì trước kẻ tấn công. Muốn toàn vẹn dữ liệu thật sự thì cần lớp trên (TLS, hoặc một MAC của riêng ứng dụng).
 
-- Mỗi byte có một **sequence number**. Bên nhận gửi lại **ACK** cho biết đã nhận liên tục tới byte nào.
-- Gửi xong mà quá thời gian chưa thấy ACK (timeout), hoặc nhận nhiều ACK trùng lặp liên tiếp, thì bên gửi **gửi lại**.
-- Bên nhận dùng sequence number để **sắp lại** các đoạn đến sai thứ tự và bỏ đoạn trùng.
-- **Flow control**: bên nhận báo còn trống bao nhiêu bộ đệm (receive window) để bên gửi không gửi quá khả năng nhận.
-- **Congestion control**: bên gửi tự giảm tốc khi phát hiện mất gói (dấu hiệu mạng nghẽn) rồi tăng dần lại, để không làm sập đường truyền chung.
+### Datagram giữ ranh giới, TCP thì không
 
-</Expand>
+Đây là khác biệt lớn nhất khi viết code. Gửi hai lần trên UDP, nhận hai lần; gửi hai lần trên TCP, có thể nhận một lần với cả hai gộp lại:
 
-## Vì sao vẫn cần UDP
+```python
+import socket, threading, time
+# TCP: hai lần send, một lần recv
+srv = socket.socket(); srv.bind(('127.0.0.1', 9001)); srv.listen()
+def s():
+    c, _ = srv.accept(); c.sendall(b'AAAA'); c.sendall(b'BBBBBB'); time.sleep(0.2); c.close()
+threading.Thread(target=s, daemon=True).start()
+c = socket.create_connection(('127.0.0.1', 9001)); time.sleep(0.1)
+print('TCP recv #1:', c.recv(100))
+# UDP: hai lần sendto, hai lần recvfrom
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.bind(('127.0.0.1', 9002))
+v = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+v.sendto(b'AAAA', ('127.0.0.1', 9002)); v.sendto(b'BBBBBB', ('127.0.0.1', 9002)); time.sleep(0.1)
+print('UDP recv #1:', u.recvfrom(100)[0]); print('UDP recv #2:', u.recvfrom(100)[0])
+# UDP: buffer nhỏ hơn datagram -> phần thừa bị bỏ
+v.sendto(b'0123456789', ('127.0.0.1', 9002)); time.sleep(0.05)
+print('UDP recv(4):', u.recvfrom(4)[0], '(phần còn lại mất)')
+```
 
-Với gọi video hay game, dữ liệu **cũ thì vô dụng**: khung hình bị mất nửa giây trước không cần gửi lại, cái cần là khung hình mới nhất. TCP thì bắt mọi dữ liệu phía sau chờ gói bị mất được gửi lại (<Term>head-of-line blocking</Term>), làm hình bị khựng.
+```text
+TCP recv #1: b'AAAABBBBBB'
+UDP recv #1: b'AAAA'
+UDP recv #2: b'BBBBBB'
+UDP recv(4): b'0123' (phần còn lại mất)
+```
 
-UDP cũng là nền để xây giao thức riêng ở tầng ứng dụng. QUIC (nền của HTTP/3) chạy trên UDP nhưng tự làm phần tin cậy, mã hoá và nhiều luồng độc lập, nên một luồng mất gói không chặn các luồng khác.
+Dòng cuối là cái bẫy của UDP: `recvfrom(4)` trên datagram 10 byte trả 4 byte đầu và **vứt 6 byte còn lại**, không báo lỗi. Buffer nhận phải đủ lớn cho datagram lớn nhất có thể gặp.
+
+### UDP và lỗi
+
+UDP không có kết nối nên không có chuyện "kết nối bị từ chối", nhưng kernel vẫn báo vài điều qua <Term>ICMP</Term>. Khi gửi tới port không ai nghe, máy đích trả về ICMP "port unreachable". Với socket UDP đã `connect()` (chỉ ghi nhớ địa chỉ đích, không có handshake nào), lỗi này hiện ra ở lần gửi **sau**:
+
+```python
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.connect(('127.0.0.1', 9999))
+u.send(b'x'); time.sleep(0.05)
+try: u.send(b'y')
+except OSError as e: print('UDP lần 2:', type(e).__name__)
+try: socket.create_connection(('127.0.0.1', 9999))
+except OSError as e: print('TCP:', type(e).__name__)
+v = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for n in (65507, 65508):
+    try: v.sendto(b'x' * n, ('127.0.0.1', 9998)); print(n, 'byte: gửi được')
+    except OSError as e: print(n, 'byte:', e.strerror)
+```
+
+```text
+UDP lần 2: ConnectionRefusedError
+TCP: ConnectionRefusedError
+65507 byte: gửi được
+65508 byte: Message too long
+```
+
+Lần gửi đầu "thành công" vì nó chỉ nghĩa là kernel đã nhận datagram; lỗi tới sau, bất đồng bộ. Đó là điểm chung của mọi lỗi mạng trên UDP: bạn biết muộn, hoặc không bao giờ biết.
+
+### Kích thước datagram và MTU
+
+Datagram 65507 byte gửi được về mặt giao thức, nhưng đường truyền thật có <Term>MTU</Term> (Maximum Transmission Unit): Ethernet là 1500 byte cho phần IP. Datagram lớn hơn MTU bị IP **fragment** thành nhiều mảnh, và chỉ cần mất một mảnh là cả datagram mất, kernel bên nhận ghép không đủ nên bỏ hết. Xác suất mất tăng theo số mảnh. Nhiều firewall còn chặn mảnh.
+
+Quy tắc thực dụng: giữ payload UDP **không quá khoảng 1200 tới 1400 byte**. 1500 trừ 20 (IPv4) trừ 8 (UDP) là 1472, nhưng IPv6 header dài hơn, và nhiều mạng (VPN, tunnel, PPPoE) có MTU nhỏ hơn 1500. QUIC bắt buộc datagram đầu tiên tối thiểu 1200 byte và giữ các gói sau không vượt quá mức đã thử. Chi tiết về MTU nằm ở bài [Network Layers](/docs/networking/network-layers).
+
+### UDP dùng khi nào
+
+- **Dữ liệu cũ vô nghĩa**: gọi video, game, thoại. Khung hình mất nửa giây trước không đáng gửi lại, cái cần là khung mới nhất. Ứng dụng tự quyết định gửi lại hay bỏ.
+- **Hỏi đáp ngắn**: DNS. Một truy vấn, một trả lời, mỗi cái vừa một gói. Handshake của TCP làm thời gian tăng gấp đôi.
+- **Broadcast và multicast**: DHCP, mDNS, phát hiện dịch vụ. TCP chỉ có hai đầu, không làm được.
+- **Muốn tự làm độ tin cậy**: QUIC, WireGuard, một số giao thức game. Khi giao thức có yêu cầu mà TCP không đáp ứng được (nhiều luồng độc lập, đổi mạng không rớt kết nối), cách duy nhất là bắt đầu từ UDP.
+- **Một socket phục vụ rất nhiều bên**: không tốn một file descriptor và một khối trạng thái kernel cho mỗi bên.
+
+## Tự dựng độ tin cậy trên UDP
+
+Cách tốt nhất để hiểu TCP làm gì là thử đạt những điều nó hứa mà chỉ có UDP, rồi xem mình phải thêm gì. Mục tiêu: truyền một file 40.000 byte qua mạng hay mất gói, bên nhận phải nhận đúng nội dung.
+
+### Bước 1: stop-and-wait
+
+Ý tưởng đơn giản nhất: gửi một gói, chờ **ACK** (gói xác nhận), nhận ACK rồi mới gửi gói tiếp. Không thấy ACK sau một khoảng thời gian (timeout) thì gửi lại. Cần ba thứ:
+
+- Mỗi gói có **số thứ tự** (`seq`), để bên nhận biết gói nào và phát hiện gói trùng (ACK mất khiến bên gửi gửi lại gói đã nhận rồi).
+- Mỗi gói có **checksum** (ở đây dùng CRC32) để bỏ gói hỏng.
+- **Timer** ở bên gửi.
+
+```python
+"""Truyền tin cậy trên UDP: stop-and-wait."""
+import socket, struct, random, threading, time, zlib, hashlib
+
+LOSS = 0.2
+rnd = random.Random(7)
+def lossy_sendto(sock, data, addr):          # giả lập mạng mất 20% gói
+    if rnd.random() >= LOSS: sock.sendto(data, addr)
+
+HDR = struct.Struct('!BII')                  # type(1=DATA,2=ACK,3=FIN) | seq | crc32
+def pack(t, seq, payload=b''):
+    return HDR.pack(t, seq, zlib.crc32(payload)) + payload
+def unpack(b):
+    t, seq, crc = HDR.unpack(b[:HDR.size]); p = b[HDR.size:]
+    return (t, seq, p) if zlib.crc32(p) == crc else None
+
+def receiver(sock, out):
+    expected = 0
+    while True:
+        b, addr = sock.recvfrom(2048)
+        m = unpack(b)
+        if not m: continue
+        t, seq, p = m
+        if t == 3: lossy_sendto(sock, pack(2, seq), addr); return
+        if seq == expected: out.append(p); expected += 1
+        lossy_sendto(sock, pack(2, seq), addr)     # ACK cả gói trùng, vì ACK trước có thể đã mất
+
+def sender(sock, addr, chunks):
+    sock.settimeout(0.05); sent = 0
+    for seq, c in enumerate(chunks + [None]):
+        t = 3 if c is None else 1
+        while True:
+            lossy_sendto(sock, pack(t, seq, c or b''), addr); sent += 1
+            try:
+                m = unpack(sock.recvfrom(2048)[0])
+                if m and m[0] == 2 and m[1] == seq: break
+            except socket.timeout: pass
+    return sent
+
+data = bytes(random.Random(1).randrange(256) for _ in range(40_000))
+chunks = [data[i:i+1000] for i in range(0, len(data), 1000)]
+rs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); rs.bind(('127.0.0.1', 9100))
+ss = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+got = []; th = threading.Thread(target=receiver, args=(rs, got)); th.start()
+t0 = time.perf_counter(); sent = sender(ss, ('127.0.0.1', 9100), chunks); th.join()
+dt = time.perf_counter() - t0
+ok = hashlib.sha256(b''.join(got)).digest() == hashlib.sha256(data).digest()
+print(f"{len(chunks)} gói, đã gửi {sent} lần (+{sent-len(chunks)-1} gửi lại), {dt:.2f}s, đúng nội dung: {ok}")
+```
+
+```text
+40 gói, đã gửi 68 lần (+27 gửi lại), 1.68s, đúng nội dung: True
+```
+
+Nó chạy đúng: 40 gói, mất 20% mỗi chiều, nội dung nhận về khớp từng byte. Đáng chú ý là số lần gửi lại (27) nhiều hơn hẳn 20% của 40, vì một vòng chỉ thành công khi **cả gói lẫn ACK** cùng sống sót (0,8 × 0,8 = 64%), và khi ACK mất thì bên gửi gửi lại một gói đã tới nơi. Dòng `# ACK cả gói trùng` là chỗ tinh tế nhất: nếu bên nhận lờ gói trùng, ACK đã mất sẽ không bao giờ được gửi lại và bên gửi kẹt mãi.
+
+Vấn đề của stop-and-wait nằm ở hiệu suất, không phải tính đúng. Trong 1,68 giây đó phần lớn thời gian **không có gói nào trên đường dây**: bên gửi ngồi chờ timeout hoặc ACK. Với đường truyền thật, độ dài đường đi khiến việc này tệ hơn nhiều. Gọi <Term>RTT</Term> là thời gian một gói đi và ACK quay về, thì mỗi RTT chỉ gửi được một gói:
+
+```text
+throughput tối đa = kích thước gói / RTT
+1460 byte / 50 ms = 29,2 KB/s, tức khoảng 0,23 Mbit/s
+```
+
+dù đường truyền là 1 Gbit/s. Đường truyền giống như ống nước: có thể chứa nhiều nước hơn một lần gửi, mà ta chỉ cho vào một giọt rồi đợi nó chảy hết ống.
+
+### Bước 2: pipelining và cửa sổ trượt
+
+Cho phép gửi **nhiều gói chưa được ACK** cùng lúc. Số gói tối đa đang bay gọi là **kích thước cửa sổ** W, và cửa sổ "trượt" về phía trước khi ACK tới. Throughput trở thành:
+
+```text
+throughput = W × kích thước gói / RTT        (cho tới khi chạm giới hạn đường truyền)
+```
+
+Để lấp đầy ống cần W bằng <Term>bandwidth-delay product</Term> (BDP): dung lượng đường truyền nhân RTT. Với 1 Gbit/s và RTT 50 ms:
+
+```text
+BDP = 1.000.000.000 bit/s × 0,05 s / 8 = 6,25 MB
+```
+
+Tức là phải có 6,25 MB dữ liệu đang bay để đường truyền không rảnh. Hãy nhớ con số này, nó xuất hiện lại ở flow control.
+
+Khi có cửa sổ, mất gói đặt ra một câu hỏi mới: gói số 5 mất nhưng gói 6, 7, 8 đã tới. Bên nhận làm gì?
+
+- **Go-Back-N (GBN)**: bên nhận chỉ chấp nhận gói đúng thứ tự, bỏ gói 6, 7, 8 và ACK lặp lại "đã nhận tới 4". Bên gửi timeout ở gói 5 thì gửi lại **từ 5 trở đi**. Bên nhận rất đơn giản (không cần buffer), nhưng gửi lại thừa.
+- **Selective Repeat (SR)**: bên nhận giữ gói 6, 7, 8 trong buffer, ACK từng gói riêng. Bên gửi chỉ gửi lại gói 5. Tốn buffer hơn nhưng không gửi thừa.
+
+Mô phỏng ba cách này để thấy khác biệt thay vì tin lý thuyết. Đơn vị là tick, gửi một gói mất 1 tick, RTT là 20 tick, timeout 30 tick, truyền 200 gói:
+
+```python
+import random
+RTT, TIMEOUT, N = 20, 30, 200       # đơn vị: tick; gửi một gói mất 1 tick
+def run(kind, W, p, seed=1):
+    rnd = random.Random(seed)
+    t, base, nxt, sent = 0, 0, 0, 0
+    inflight, acked = {}, set()        # seq -> thời điểm gửi
+    ev = []                            # (thời điểm tới nơi, loại, seq)
+    expected = 0; recvd = set()        # phía nhận
+    while base < N:
+        t += 1
+        # 1. xử lý các ACK tới hạn
+        for e in [e for e in ev if e[0] <= t]:
+            ev.remove(e); _, k, s = e
+            if k == 'data':
+                if kind == 'gbn':
+                    if s == expected: expected += 1
+                    ev.append((t + RTT//2, 'ack', expected - 1))
+                else:
+                    recvd.add(s); ev.append((t + RTT//2, 'ack', s))
+            else:
+                if kind == 'gbn':
+                    if s >= base:
+                        for q in range(base, s+1): inflight.pop(q, None)
+                        base = s + 1
+                else:
+                    acked.add(s); inflight.pop(s, None)
+                    while base in acked: base += 1
+        # 2. timeout
+        for s, ts in list(inflight.items()):
+            if t - ts >= TIMEOUT:
+                if kind == 'gbn':
+                    inflight.clear(); nxt = base; break
+                else:
+                    sent += 1; inflight[s] = t
+                    if rnd.random() >= p: ev.append((t + RTT//2, 'data', s))
+        # 3. gửi một gói nếu cửa sổ còn chỗ
+        if nxt < base + W and nxt < N and (kind == 'gbn' or nxt not in inflight):
+            sent += 1; inflight[nxt] = t
+            if rnd.random() >= p: ev.append((t + RTT//2, 'data', nxt))
+            nxt += 1
+    return t, sent
+print(f"{'giao thức':<18}{'loss':>5}{'tick':>7}{'gói gửi':>9}")
+for p in (0.0, 0.05):
+    for name, kind, W in (('stop-and-wait', 'sr', 1), ('go-back-N W=8', 'gbn', 8), ('selective rep. W=8', 'sr', 8), ('selective rep. W=32', 'sr', 32)):
+        t, s = run(kind, W, p); print(f"{name:<18}{p*100:>4.0f}%{t:>7}{s:>9}")
+```
+
+```text
+giao thức          loss   tick  gói gửi
+stop-and-wait        0%   4001      200
+go-back-N W=8        0%    508      200
+selective rep. W=8   0%    508      200
+selective rep. W=32   0%    220      200
+stop-and-wait        5%   4571      219
+go-back-N W=8        5%    886      320
+selective rep. W=8   5%    808      219
+selective rep. W=32   5%    338      219
+```
+
+Đọc bảng:
+
+- Khi không mất gói: stop-and-wait mất đúng 20 tick cho mỗi gói (200 gói nhân 20 tick là 4000). Cửa sổ 8 nhanh gấp 8. Cửa sổ 32 đã gần ngưỡng 1 gói mỗi tick (220 tick cho 200 gói), tức là đã lấp đầy ống.
+- Khi mất 5%: **Go-Back-N gửi 320 gói để chuyển 200 gói thật**, tức thừa 60%, vì mỗi lần mất nó gửi lại cả cửa sổ. Selective Repeat chỉ gửi 219 (thừa đúng số gói bị mất). Cửa sổ lớn bù được cả tác động của việc mất gói: SR với W=32 xong trong 338 tick, nhanh hơn GBN với W=8 gần ba lần.
+
+TCP là một biến thể lai: ACK **tích luỹ** như GBN (đơn giản, một con số) nhưng thêm <Term>SACK</Term> (Selective ACK) để bên nhận báo "tôi đã có các đoạn này", nên bên gửi chỉ gửi lại phần thật sự thiếu như SR.
+
+### Còn thiếu gì so với TCP
+
+Chương trình trên dùng timeout cố định 50 ms, cửa sổ cố định, và chạy trên loopback không có hàng đợi nào. Đem nó ra Internet thật sẽ hỏng ở ba chỗ, và mỗi chỗ tương ứng một cơ chế của TCP:
+
+1. **Timeout đúng bao nhiêu?** Ngắn quá thì gửi lại thừa làm nghẽn thêm; dài quá thì chậm phát hiện mất gói. RTT đổi liên tục nên timeout phải thích nghi. Đó là ước lượng RTO.
+2. **Cửa sổ lớn bao nhiêu?** Bên nhận có thể chậm hơn bên gửi, nên cần cơ chế để bên nhận nói "tôi chỉ chịu được chừng này". Đó là flow control.
+3. **Mạng chịu được bao nhiêu?** Nếu mọi người đều gửi theo cửa sổ lớn, router ở giữa quá tải, hàng đợi đầy, mất gói hàng loạt, và mọi người gửi lại làm tệ hơn. Đó là congestion control, và nó là phần khó nhất.
+
+## Header của TCP
+
+Đặc tả TCP có 20 byte header cố định, tiếp theo là option:
+
+```text
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-------------------------------+-------------------------------+
+|          source port          |       destination port        |
++-------------------------------+-------------------------------+
+|                        sequence number                        |
++---------------------------------------------------------------+
+|                    acknowledgment number                      |
++-------+-------+---------------+-------------------------------+
+| data  | rsvd  |C E U A P R S F|            window             |
+| offset|       |W C R C S S Y I|                               |
+|       |       |R E G K H T N N|                               |
++-------+-------+---------------+-------------------------------+
+|           checksum            |         urgent pointer        |
++-------------------------------+-------------------------------+
+|                    options (0 tới 40 byte)                    |
+```
+
+| Trường | Bit | Vai trò |
+|---|---|---|
+| source / destination port | 16 + 16 | như UDP |
+| sequence number | 32 | số thứ tự của **byte đầu tiên** trong đoạn này (không phải số thứ tự của gói) |
+| acknowledgment number | 32 | số thứ tự của byte tiếp theo bên gửi **mong nhận**; nghĩa là mọi byte trước đó đã nhận đủ |
+| data offset | 4 | độ dài header tính bằng từ 4 byte, nên header tối đa 60 byte |
+| flags | 8 | SYN (mở kết nối), ACK (trường ack có nghĩa), FIN (đóng một chiều), RST (huỷ), PSH (đẩy lên ứng dụng ngay), URG (gần như không ai dùng), CWR/ECE (báo nghẽn tường minh) |
+| window | 16 | số byte bên gửi gói này **còn nhận được** (flow control) |
+| checksum | 16 | như UDP, tính cả pseudo-header |
+| options | 0 tới 320 | MSS, window scale, SACK, timestamp... |
+
+Khác với UDP, sequence number đánh số **byte**, không phải gói. Nếu đoạn có seq 1000 và mang 500 byte thì đoạn kế tiếp có seq 1500. ACK 1500 nghĩa là "tôi đã nhận mọi byte từ ISN tới 1499".
+
+### Tự dựng một gói SYN
+
+Header chỉ là 20 byte với bố cục cố định, nên dựng bằng `struct` được. Đoạn dưới dựng một đoạn SYN, tính checksum theo đúng quy tắc, và gửi qua raw socket tới một server đang nghe ở port 9006 (cần quyền root):
+
+```python
+import socket, struct, subprocess, time
+
+def checksum(b):
+    if len(b) % 2: b += b'\0'
+    s = sum(struct.unpack('!%dH' % (len(b) // 2), b))
+    while s >> 16: s = (s & 0xFFFF) + (s >> 16)      # cộng bù một
+    return ~s & 0xFFFF
+
+def tcp_header(src, dst, sport, dport, seq, ack, flags, win, opts=b''):
+    off = (20 + len(opts)) // 4
+    h = struct.pack('!HHIIBBHHH', sport, dport, seq, ack, off << 4, flags, win, 0, 0) + opts
+    pseudo = socket.inet_aton(src) + socket.inet_aton(dst) + struct.pack('!BBH', 0, 6, len(h))
+    ck = checksum(pseudo + h)
+    return h[:16] + struct.pack('!H', ck) + h[18:]
+
+SYN = 0x02
+opts = struct.pack('!BBH', 2, 4, 1460)               # option MSS = 1460
+pkt = tcp_header('127.0.0.1', '127.0.0.1', 40000, 9006, 1000, 0, SYN, 64240, opts)
+print(len(pkt), 'byte:', pkt.hex(' '))
+f = struct.unpack('!HHIIBBHHH', pkt[:20])
+print(dict(zip(['sport','dport','seq','ack','off<<4','flags','win','cksum','urg'], f)))
+
+srv = socket.socket(); srv.bind(('127.0.0.1', 9006)); srv.listen()
+raw = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
+raw.sendto(pkt, ('127.0.0.1', 0))
+```
+
+```text
+24 byte: 9c 40 23 2e 00 00 03 e8 00 00 00 00 60 02 fa f0 db dc 00 00 02 04 05 b4
+{'sport': 40000, 'dport': 9006, 'seq': 1000, 'ack': 0, 'off<<4': 96, 'flags': 2, 'win': 64240, 'cksum': 56284, 'urg': 0}
+```
+
+Đọc từng byte: `9c40` là 40000, `232e` là 9006, `000003e8` là 1000, `60` cho data offset 6 từ (24 byte), `02` là cờ SYN, `faf0` là window 64240, `dbdc` là checksum, và bốn byte cuối `02 04 05b4` là option MSS (loại 2, dài 4, giá trị 1460).
+
+Kernel của server chấp nhận checksum này (nếu sai nó âm thầm bỏ gói) và trả lời đúng như đặc tả. Bắt gói thấy ba dòng:
+
+```text
+40000 → 9006 S    mss 1460
+9006 → 40000 S.   mss 1460
+40000 → 9006 R
+```
+
+Server trả `SYN-ACK`. Rồi dòng thứ ba: **máy gửi gửi RST**. Vì kernel của máy gửi không biết gì về kết nối từ port 40000 (ta gửi bằng raw socket, đi vòng qua TCP stack), nó thấy một SYN-ACK cho kết nối không tồn tại và huỷ ngay. Đây chính là cách hoạt động của quét port kiểu SYN scan và cũng là một ví dụ rõ ràng rằng TCP chỉ là các quy ước trên các trường header đó, không có gì thần bí.
+
+## Kết nối: bắt đầu, kết thúc, và các trạng thái ở giữa
+
+### Three-way handshake bằng gói thật
+
+Đoạn dưới chạy một server viết hoa chuỗi nhận được, một client gửi `hello`, đóng kết nối, và bắt mọi gói trên `lo`:
+
+```text
+  0.000 ms  C→S  [S ] seq=0     ack=0     win=65495 len=0    mss 65495,sackOK,TS,wscale 7
+  0.025 ms  S→C  [S.] seq=0     ack=1     win=65483 len=0    mss 65495,sackOK,TS,wscale 7
+  0.041 ms  C→S  [. ] seq=1     ack=1     win=512   len=0    TS
+  0.049 ms  C→S  [P.] seq=1     ack=1     win=512   len=5    TS
+  0.059 ms  S→C  [. ] seq=1     ack=6     win=512   len=0    TS
+  0.067 ms  S→C  [P.] seq=1     ack=6     win=512   len=5    TS
+  0.233 ms  C→S  [. ] seq=6     ack=6     win=512   len=0    TS
+  0.247 ms  S→C  [F.] seq=6     ack=6     win=512   len=0    TS
+  0.334 ms  C→S  [F.] seq=6     ack=7     win=512   len=0    TS
+  0.362 ms  S→C  [. ] seq=7     ack=7     win=512   len=0    TS
+```
+
+Cột `[S ]` là các cờ (S là SYN, `.` là ACK, P là PSH, F là FIN); `seq` và `ack` được in **tương đối** so với số thứ tự khởi đầu của mỗi bên, vì giá trị thật là số ngẫu nhiên 32 bit. Tách thành các pha:
+
+**Mở kết nối (ba dòng đầu).**
+
+1. Client gửi `SYN` kèm số thứ tự khởi đầu (ISN) của mình. SYN **tiêu thụ một số thứ tự**, nên dòng thứ hai báo `ack=1`, tức "tôi mong byte số 1 của bạn".
+2. Server gửi `SYN-ACK`: vừa xác nhận ISN của client, vừa gửi ISN của chính nó.
+3. Client gửi `ACK` xác nhận ISN của server. Kể từ đây hai bên ở trạng thái `ESTABLISHED`, và dữ liệu có thể đi cùng gói ACK này hoặc gói sau.
+
+Vì sao ba bước, không phải hai? Vì TCP là **hai chiều độc lập** và mỗi chiều có số thứ tự riêng. Cần bốn thông tin trao đổi: client gửi ISN, server xác nhận, server gửi ISN, client xác nhận. Bước hai của server gộp "xác nhận" với "gửi ISN của mình" nên còn ba gói thay vì bốn. Hai bước không đủ vì server không có cách biết client **thực sự** nhận được ISN của nó, và một SYN cũ bị trễ trong mạng từ kết nối đã đóng có thể khiến server tưởng có kết nối mới. ISN ngẫu nhiên (RFC 6528) cộng bước thứ ba là thứ chặn điều đó, và cũng khiến việc giả mạo kết nối từ xa khó hơn.
+
+**Option thương lượng ngay ở SYN.** Hai gói SYN mang các option mà chỉ nói được ở lúc này:
+
+| Option | Ý nghĩa |
+|---|---|
+| `mss 65495` | Maximum Segment Size: đoạn dữ liệu lớn nhất bên này muốn nhận. Loopback có MTU 65536 nên MSS gần 64 KB; trên Ethernet là 1460 (1500 trừ 40 byte header IP và TCP). Hai bên lấy giá trị nhỏ hơn. |
+| `wscale 7` | Window scale: trường `window` chỉ có 16 bit (tối đa 65535 byte), nên giá trị thật là trường đó **nhân 2 mũ 7** (128). Đó là lý do cột `win=512` ở các gói sau thực ra là 512 × 128 = 65536 byte. Chỉ thương lượng được ở SYN. |
+| `sackOK` | Cho phép Selective ACK. |
+| `TS` | Timestamp: mỗi gói mang thời điểm gửi và thời điểm của gói được ACK, để đo RTT chính xác cho cả gói bị ACK gộp, và chống seq bị lặp lại (PAWS). |
+
+Cái giá của handshake: **một RTT trước khi gửi được byte dữ liệu đầu tiên** (client gửi SYN, một RTT sau mới nhận SYN-ACK và gửi dữ liệu). Với RTT 150 ms từ Việt Nam sang server ở Mỹ, đó là 150 ms chỉ để bắt đầu. Cộng thêm TLS thì còn nhiều hơn, xem bài [TLS & HTTPS](/docs/networking/tls). TCP Fast Open (`net.ipv4.tcp_fastopen`) cho phép gửi dữ liệu ngay trong SYN từ lần kết nối thứ hai nhờ một cookie, nhưng việc triển khai gặp nhiều trở ngại từ middlebox nên ít được dùng.
+
+### Đóng kết nối: bốn gói, hai chiều độc lập
+
+Bốn dòng cuối của output là phần đóng. Server gửi `FIN` (`F.`) trước, client ACK, rồi client gửi `FIN` của nó, server ACK. Có thể gộp thành ba gói khi ACK và FIN đi cùng nhau, nhưng về nguyên tắc là bốn bước vì mỗi chiều đóng riêng:
+
+- `FIN` nghĩa là "tôi không gửi thêm gì nữa", **không** nghĩa là "tôi không nhận nữa". Bên kia vẫn có thể gửi tiếp. Trạng thái đó gọi là **half-close**: `shutdown(fd, SHUT_WR)` trong code. Nhiều giao thức dùng nó, ví dụ client gửi hết yêu cầu rồi `shutdown(SHUT_WR)` để báo "hết rồi", server hiểu và trả lời nốt.
+- `close()` thì đóng cả hai chiều: sau đó kernel vứt mọi dữ liệu đến.
+- `RST` là cách đóng **thô bạo**: mất kết nối ngay, dữ liệu chưa gửi bị bỏ. Có ba nguồn chính: gửi tới port không có ai nghe (như thí nghiệm SYN ở trên, hoặc `ConnectionRefusedError` ở trên), một bên `close()` khi trong buffer nhận còn dữ liệu chưa đọc, và một bên gửi dữ liệu tới kết nối mà đối phương đã biến mất (như sau khi reboot). Ứng dụng thấy nó là `Connection reset by peer`.
+
+### State machine
+
+Kernel giữ cho mỗi kết nối một trạng thái, đi theo sơ đồ trong RFC 9293. Các trạng thái đáng nhớ:
+
+| Trạng thái | Ý nghĩa | Gặp khi |
+|---|---|---|
+| `LISTEN` | server đang chờ SYN | sau `listen()` |
+| `SYN-SENT` | client đã gửi SYN, chờ SYN-ACK | sau `connect()`; nếu thấy nhiều là server không trả lời hoặc firewall chặn |
+| `SYN-RECV` | server đã gửi SYN-ACK, chờ ACK cuối | nằm trong "SYN queue"; nhiều bất thường là dấu hiệu SYN flood |
+| `ESTABLISHED` | đang truyền dữ liệu | phần lớn thời gian |
+| `FIN-WAIT-1` / `FIN-WAIT-2` | mình đã `close()`, chờ ACK rồi chờ FIN của bên kia | bên chủ động đóng |
+| `CLOSE-WAIT` | bên kia đã gửi FIN, **ứng dụng mình chưa `close()`** | bên bị động đóng |
+| `LAST-ACK` | mình gửi FIN sau khi nhận FIN, chờ ACK cuối | |
+| `TIME-WAIT` | đã đóng xong, giữ lại một lúc | bên chủ động đóng |
+
+Quan sát trực tiếp bằng `ss -tan` ở ba thời điểm. Sau khi kết nối:
+
+```text
+LISTEN 0      128        127.0.0.1:9008       0.0.0.0:*
+ESTAB  0      0          127.0.0.1:56918    127.0.0.1:9008
+ESTAB  0      0          127.0.0.1:9008     127.0.0.1:56918
+```
+
+Sau khi **server** gọi `close()` (client chưa đóng):
+
+```text
+CLOSE-WAIT 1      0          127.0.0.1:56918    127.0.0.1:9008
+FIN-WAIT-2 0      0          127.0.0.1:9008     127.0.0.1:56918
+```
+
+Client (cổng 56918) ở `CLOSE-WAIT` với `Recv-Q = 1`: một đơn vị đó chính là FIN (nó chiếm một số thứ tự) đang chờ ứng dụng đọc ra EOF, và ứng dụng chưa gọi `close()`. Còn server ở `FIN-WAIT-2`, chờ FIN từ client. Sau khi client cũng `close()`:
+
+```text
+TIME-WAIT 0      0          127.0.0.1:9008    127.0.0.1:56918
+```
+
+Chỉ còn một dòng, ở **phía đã đóng trước** (server).
+
+Hai trạng thái này là hai nguồn sự cố thường gặp nhất:
+
+- **`CLOSE-WAIT` tích tụ** là lỗi trong ứng dụng của bạn. Kernel đang chờ **bạn** gọi `close()`. Một server có hàng nghìn kết nối `CLOSE-WAIT` gần như chắc chắn quên đóng socket (thường ở nhánh xử lý lỗi, hoặc connection pool rò rỉ). Kernel không tự dọn các kết nối này.
+- **`TIME-WAIT`** không phải lỗi, mà là cơ chế có chủ đích, nên được giải thích kỹ hơn bên dưới.
+
+### TIME_WAIT
+
+Bên chủ động đóng, sau khi gửi ACK cuối cho FIN của đối phương, **không** giải phóng kết nối ngay mà giữ ở `TIME-WAIT` trong 2 lần MSL (Maximum Segment Lifetime). Linux cố định là **60 giây**. Hai lý do:
+
+1. **ACK cuối có thể mất.** Nếu mất, bên kia sẽ gửi lại FIN. Nếu bên chủ động đã quên hết kết nối, nó sẽ đáp bằng RST và bên kia báo lỗi dù mọi dữ liệu đã truyền đúng. Giữ trạng thái để còn ACK lại FIN lặp.
+2. **Gói cũ lạc trong mạng.** Nếu mở ngay kết nối mới với cùng bốn thành phần (IP, port), một đoạn trễ của kết nối cũ có thể xuất hiện và bị nhận nhầm là dữ liệu của kết nối mới. 2×MSL đủ để mọi gói cũ chết đi.
+
+Cái giá: mỗi kết nối `TIME-WAIT` chiếm một bộ bốn thành phần. Client mở rất nhiều kết nối ngắn tới cùng một đích (một ứng dụng gọi một API mà không dùng keep-alive hay connection pool) tiêu tốn port nguồn:
+
+```text
+28.232 port nguồn (32768 tới 60999) / 60 giây ≈ 470 kết nối mới mỗi giây
+```
+
+Vượt tốc độ đó tới cùng một (IP, port) đích thì `connect()` bắt đầu báo `Cannot assign requested address`. Cách sửa đúng là **tái sử dụng kết nối** (HTTP keep-alive, connection pool), không phải hạ thời gian `TIME-WAIT`. `net.ipv4.tcp_tw_reuse` cho phép dùng lại port ở `TIME-WAIT` cho kết nối đi ra nhờ timestamp (giá trị 2 trên máy này, nghĩa là chỉ áp dụng cho loopback). Đừng bật `tcp_tw_recycle`: tuỳ chọn đó từng tồn tại nhưng phá hỏng client sau NAT và đã bị xoá khỏi kernel từ bản 4.12.
+
+### Hàng đợi khi nhận kết nối: backlog
+
+Khi `listen(fd, backlog)` được gọi, kernel giữ **hai hàng đợi** cho socket nghe:
+
+1. **SYN queue** (kết nối ở `SYN-RECV`): đã nhận SYN, đã gửi SYN-ACK, chờ ACK cuối.
+2. **Accept queue** (kết nối `ESTABLISHED`): đã bắt tay xong, chờ ứng dụng gọi `accept()` lấy ra.
+
+Nếu ứng dụng không `accept()` kịp, accept queue đầy và kết nối mới **bị bỏ lặng lẽ**. Thử `listen(1)` mà không bao giờ gọi `accept()`, rồi mở năm kết nối:
+
+```text
+client 0: connect() xong
+client 1: connect() xong
+client 2: TimeoutError
+client 3: TimeoutError
+client 4: TimeoutError
+— server
+State  Recv-Q Send-Q Local Address:Port Peer Address:Port
+LISTEN 2      1          127.0.0.1:9009      0.0.0.0:*
+ESTAB  0      0          127.0.0.1:9009    127.0.0.1:59132
+ESTAB  0      0          127.0.0.1:9009    127.0.0.1:59134
+```
+
+Hai điều đáng nhớ. Một là queue chứa `backlog + 1` kết nối chứ không phải `backlog`. Hai là với socket ở `LISTEN`, **`ss` đổi nghĩa hai cột**: `Recv-Q` là số kết nối đang chờ trong accept queue (ở đây 2), `Send-Q` là độ dài tối đa (1). Một server có `Recv-Q` tiến gần `Send-Q` đang không `accept()` kịp: tăng backlog (cũng bị chặn bởi `net.core.somaxconn`), hoặc, thường đúng hơn, tìm xem vì sao vòng lặp accept chậm. Client bị bỏ thì **không nhận lỗi**, nó chỉ gửi lại SYN sau 1, 2, 4, 8 giây... (`tcp_syn_retries`, mặc định 6, tổng khoảng 127 giây). Đó là lý do ứng dụng quá tải hiện ra bên ngoài như "treo", không phải "từ chối". Bộ đếm `ListenOverflows` và `ListenDrops` trong `nstat` (xem phần chẩn đoán) ghi lại đúng sự kiện này.
+
+**SYN flood** nhắm vào hàng đợi kia: kẻ tấn công gửi thật nhiều SYN với IP nguồn giả, server giữ `SYN-RECV` chờ ACK không bao giờ tới và hàng đợi đầy. **SYN cookies** (`net.ipv4.tcp_syncookies = 1`) là đối sách: khi hàng đợi đầy, server không lưu gì cả mà **mã hoá thông tin kết nối vào chính ISN** của SYN-ACK. Chỉ khi ACK cuối quay về với số ack đúng thì server mới giải mã và dựng kết nối. Cái giá là vài option (như window scale) bị mất ở chế độ cookie.
+
+## TCP là một dòng byte
+
+Vì TCP không giữ ranh giới giữa các lần `send()`, ứng dụng nào cần "tin nhắn" thì phải tự dựng khung (framing). Ba cách phổ biến:
+
+| Cách | Ví dụ | Đánh đổi |
+|---|---|---|
+| ký tự phân cách | HTTP/1.1 header kết thúc bằng dòng trống, Redis RESP, SMTP | dễ đọc bằng mắt; dữ liệu có thể chứa ký tự đó nên phải escape |
+| độ dài ở đầu | TLS record, HTTP/2 frame, Kafka, MySQL, PostgreSQL | biết trước phải đọc bao nhiêu; cần hạn mức kích thước để chống bị nhồi |
+| đóng kết nối là hết | HTTP/1.0, `nc` gửi file | không dùng lại được kết nối |
+
+Code chuẩn để đọc đúng `n` byte (vì `recv(n)` được phép trả ít hơn `n`) và khung bằng độ dài đứng đầu:
+
+```python
+import socket, struct, threading
+def recv_exact(s, n):
+    buf = b''
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk: raise ConnectionError('peer đóng kết nối giữa chừng')
+        buf += chunk
+    return buf
+def send_msg(s, payload): s.sendall(struct.pack('!I', len(payload)) + payload)
+def recv_msg(s): return recv_exact(s, struct.unpack('!I', recv_exact(s, 4))[0])
+
+srv = socket.socket(); srv.bind(('127.0.0.1', 9007)); srv.listen()
+def serve():
+    c, _ = srv.accept()
+    while True:
+        try: m = recv_msg(c)
+        except ConnectionError: break
+        send_msg(c, m[::-1])
+threading.Thread(target=serve, daemon=True).start()
+c = socket.create_connection(('127.0.0.1', 9007))
+for w in (b'hello', b'x' * 70000, b''):
+    send_msg(c, w); r = recv_msg(c); print(len(w), '->', len(r), r[:5])
+```
+
+```text
+5 -> 5 b'olleh'
+70000 -> 70000 b'xxxxx'
+0 -> 0 b''
+```
+
+Thông điệp 70.000 byte vượt xa một segment nên bị TCP cắt thành nhiều đoạn trên đường đi, nhưng `recv_msg` ghép lại đúng. Hai quy tắc kèm theo: dùng `sendall` (hoặc `send` có vòng lặp), vì `send` có thể chỉ nhận một phần buffer; và luôn **giới hạn độ dài** đọc từ header (không `recv_exact` một số bốn tỷ do kẻ lạ gửi tới).
+
+## Độ tin cậy trong TCP
+
+### Seq và ACK tích luỹ
+
+Mỗi byte trong dòng có một số thứ tự. Bên nhận gửi ACK mang số của **byte kế tiếp nó chờ**. Nếu nhận được các byte 0 tới 999 và 2000 tới 2999 nhưng chưa có 1000 tới 1999, ACK vẫn là 1000. Đó là ACK **tích luỹ**: nó chỉ nói về đoạn liền mạch từ đầu. Hệ quả là thông tin về "cái gì tới rồi nhưng cách quãng" bị mất, trừ khi có SACK (bên dưới).
+
+Một bản bắt thật khi gửi 6000 byte (MTU 1500, nên MSS là 1448 sau khi trừ option timestamp 12 byte):
+
+```text
+C→S  [P.] seq=1     ack=1     len=2896
+C→S  [P.] seq=2897  ack=1     len=2896
+C→S  [P.] seq=5793  ack=1     len=208
+S→C  [. ] seq=1     ack=2897  len=0
+S→C  [. ] seq=1     ack=5793  len=0
+S→C  [. ] seq=1     ack=6001  len=0
+```
+
+Ba lưu ý. Các dòng `len=2896` là hai segment 1448 byte gộp lại do kernel dùng TSO/GSO (để card mạng cắt giúp), và bản bắt trên `lo` thấy dạng gộp. Cả ba đoạn đi liền nhau mà không chờ ACK, vì **cửa sổ khởi đầu của Linux là 10 segment** (`cwnd:10` trong `ss`). Và các ACK tăng 2897, 5793, 6001, mỗi ACK nhắc lại seq của byte tiếp theo cần.
+
+### Ước lượng RTO
+
+Khi nào gửi lại? Chờ quá lâu thì chậm, chờ quá ngắn thì gửi thừa và làm nghẽn thêm. RTT thay đổi theo đường đi và theo hàng đợi trong router, nên TCP phải đo và theo dõi liên tục. Công thức trong RFC 6298 là **exponential averaging**, cùng kiểu với ước lượng độ dài CPU burst ở bài [CPU Scheduling](/docs/os/cpu-scheduling):
+
+```text
+Lần đo đầu:   SRTT = R,  RTTVAR = R / 2
+Các lần sau:  RTTVAR = (1 - β) × RTTVAR + β × |SRTT - R|       β = 1/4
+              SRTT   = (1 - α) × SRTT   + α × R                α = 1/8
+RTO = SRTT + 4 × RTTVAR
+```
+
+`SRTT` là RTT trung bình trượt, `RTTVAR` là độ **dao động** của nó. Cộng bốn lần độ dao động để RTO nằm đủ xa trên mức trung bình, chỉ gửi lại khi thật sự quá bất thường. Chạy với dãy RTT đo được 100, 110, 90, 105, rồi một lần đột biến 400 ms, rồi về 100:
+
+```python
+ALPHA, BETA, K = 1/8, 1/4, 4
+MIN_RTO = 200      # ms, giá trị tối thiểu của Linux (RFC 6298 đề xuất 1000)
+
+class Rto:
+    def __init__(self): self.srtt = None
+    def sample(self, r):
+        if self.srtt is None:
+            self.srtt, self.var = r, r / 2
+        else:
+            self.var = (1 - BETA) * self.var + BETA * abs(self.srtt - r)
+            self.srtt = (1 - ALPHA) * self.srtt + ALPHA * r
+        return max(MIN_RTO, self.srtt + K * self.var)
+
+e = Rto()
+print(f"{'#':>2} {'R':>5} {'SRTT':>7} {'RTTVAR':>7} {'RTO':>7}")
+for i, r in enumerate([100, 110, 90, 105, 400, 100, 100, 100, 100, 100, 100, 100], 1):
+    rto = e.sample(r)
+    print(f"{i:>2} {r:>5} {e.srtt:7.1f} {e.var:7.1f} {rto:7.1f}")
+```
+
+```text
+ #     R    SRTT  RTTVAR     RTO
+ 1   100   100.0    50.0   300.0
+ 2   110   101.2    40.0   261.2
+ 3    90    99.8    32.8   231.1
+ 4   105   100.5    25.9   204.1
+ 5   400   137.9    94.3   515.1
+ 6   100   133.2    80.2   454.0
+ 7   100   129.0    68.5   402.8
+ 8   100   125.4    58.6   359.8
+ 9   100   122.2    50.3   323.4
+10   100   119.5    43.3   292.6
+11   100   117.0    37.3   266.3
+12   100   114.9    32.3   243.9
+```
+
+Khi RTT ổn định (dòng 2 tới 4), RTTVAR giảm dần và RTO tiến gần SRTT (204 ms với SRTT là 100 ms). Một lần đột biến (dòng 5) nhảy RTO lên 515 ms vì RTTVAR vọt từ 26 lên 94; sau đó RTO **chậm rãi** trở về, mất hơn sáu mẫu mới xuống dưới 300 ms. Đó là thiết kế có chủ ý: trễ bất thường thường đi thành chuỗi, nên bi quan thêm một lúc là hợp lý.
+
+Hai chi tiết nữa:
+
+- **Thuật toán của Karn**: không lấy mẫu RTT từ đoạn đã gửi lại, vì ACK tới có thể là ACK của lần gửi đầu hay lần gửi lại, không phân biệt được. (Option timestamp giải quyết được vấn đề đó, nên Linux vẫn đo được.)
+- **RTO tối thiểu**: RFC đề xuất 1 giây, Linux dùng **200 ms** (`RtoMin 200` trong `/proc/net/snmp`). Trong data center RTT chỉ cỡ 100 µs nên 200 ms là rất dài; đó là một lý do người ta chỉnh nó ở một số hệ thống.
+
+### Exponential backoff khi vẫn mất
+
+Nếu gửi lại cũng không có ACK, RTO **nhân đôi** mỗi lần, vì nếu mạng đang nghẽn thì việc gửi dồn dập chỉ làm tệ hơn. Thí nghiệm: kết nối bình thường qua `lo` (đã thêm trễ 10 ms mỗi chiều bằng `tc netem`), rồi dùng `tc` **bỏ mọi gói đến port của server**, gửi `LOST?` và ghi lại thời điểm kernel gửi lại:
+
+```text
+các lần gửi LOST? (ms kể từ lần đầu): [0, 226, 454, 930, 1866, 3684]
+khoảng cách: [226, 228, 476, 936, 1818]
+```
+
+Khoảng cách giữa các lần: 226, 228, 476, 936, 1818, tức là gấp đôi sau mỗi lần sau cái thứ hai (228, 476, 936, 1818 gần đúng 1×, 2×, 4×, 8×). Lần đầu ở 226 ms **không phải RTO** mà là **tail loss probe (TLP)**: khi chỉ còn một gói đang bay thì kernel chờ khoảng `1,5 × SRTT + 200 ms` rồi gửi thử một bản sao, để tránh phải chờ RTO dài nếu gói chỉ bị mất đuôi. RTO thật mới bắt đầu từ lần thứ hai và tăng gấp đôi.
+
+Vậy một kết nối nằm trong mạng mất hẳn sẽ bị bỏ sau bao lâu? `net.ipv4.tcp_retries2` mặc định 15 lần; cộng dồn các RTO nhân đôi (tối đa 120 giây mỗi lần) ra khoảng **15 phút**. Đó là lý do một ứng dụng chỉ chờ TCP tự báo lỗi sẽ treo rất lâu trước khi biết mạng đã chết. Dùng timeout ở ứng dụng, hoặc `TCP_USER_TIMEOUT`.
+
+### Fast retransmit và SACK
+
+Chờ RTO là cách chậm. Nếu gói số 5 mất nhưng 6, 7, 8 tới, bên nhận sẽ gửi **ACK lặp** "tôi mong 5" cho mỗi gói tới sau. Bên gửi thấy **ba ACK trùng** liên tiếp thì suy ra gói 5 mất (không phải đảo thứ tự) và **gửi lại ngay** mà không đợi RTO. Đó là **fast retransmit**, và nó đáng giá vì hồi phục trong khoảng một RTT thay vì chờ 200 ms trở lên.
+
+ACK tích luỹ vẫn thiếu thông tin: ACK lặp chỉ nói "thiếu 5", không nói 6, 7, 8 đã có. Bên gửi có thể gửi lại thừa, hoặc chỉ biết một lỗ mỗi RTT. **SACK** (option đã thương lượng trong SYN, thấy `sackOK`) cho bên nhận đính kèm các khoảng đã nhận: ví dụ `ack=5, SACK 6-9`. Bên gửi biết chính xác cần gửi lại những khoảng nào, gần như Selective Repeat trong mô phỏng trên.
+
+### Delayed ACK
+
+Bên nhận không phải ACK mọi gói: nếu không có gì để gửi ngược, nó chờ một chút (Linux tối thiểu 40 ms, `ato:40` trong `ss`) để gộp ACK hai gói, hoặc nhập ACK vào dữ liệu trả lời. Tiết kiệm được một nửa số gói ACK, nhưng nó là một bên của một cái bẫy kinh điển, ở phần tiếp theo.
+
+## Flow control
+
+Bên nhận có buffer hữu hạn (`SO_RCVBUF`). Nếu ứng dụng đọc chậm, buffer đầy, mà bên gửi vẫn gửi thì phải bỏ gói. TCP chặn điều đó bằng trường **window** trong mỗi ACK: "tôi còn chỗ cho chừng này byte". Bên gửi không bao giờ để lượng dữ liệu chưa ACK vượt quá giá trị đó.
+
+Tổng hợp với cửa sổ của mô phỏng ở trên, throughput của TCP bị chặn bởi:
+
+```text
+throughput <= rwnd / RTT
+```
+
+Trường window gốc 16 bit nghĩa là tối đa 65535 byte. Với đường truyền 1 Gbit/s, RTT 50 ms (BDP 6,25 MB):
+
+```text
+65535 byte × 8 / 0,05 s = 10,49 Mbit/s
+```
+
+Chỉ khoảng 1% đường truyền, đấy là lý do có option **window scale** ở trong SYN: nhân trường window với 2 mũ n (tối đa n = 14, cho cửa sổ 1 GB). Máy này dùng `wscale 7` ở loopback. Kernel còn **tự điều chỉnh buffer nhận** (`tcp_moderate_rcvbuf`) từ 4 KB tới giá trị trong `net.ipv4.tcp_rmem` (ở đây 6 MB), nên thường không cần chỉnh tay. Nhưng nếu mạng có BDP lớn hơn 6 MB mà cần throughput tối đa, đó là nơi cần nâng.
+
+Còn hai tình huống ở biên:
+
+- **Zero window**: bên nhận báo `window = 0`. Bên gửi dừng và định kỳ gửi **zero-window probe** (1 byte) để biết khi nào có chỗ trở lại. Thấy `ss` có `Send-Q` lớn mà đầu kia không đọc là dấu hiệu này; vấn đề nằm ở **ứng dụng đầu kia**, không phải mạng.
+- **Silly window syndrome**: nếu bên nhận mở cửa sổ từng chút một (ứng dụng đọc 1 byte, báo "còn 1 byte"), bên gửi sẽ gửi các đoạn 1 byte cùng header 40 byte. Cả hai bên có luật tránh điều này: bên nhận không báo cửa sổ mới cho đến khi nó đủ lớn (một MSS hoặc nửa buffer), bên gửi không gửi đoạn bé nếu có thể gộp. Luật phía gửi là thuật toán Nagle.
+
+## Nagle và delayed ACK
+
+Thuật toán <Term>Nagle</Term> (RFC 896, 1984): nếu còn dữ liệu chưa được ACK, thì **giữ lại** các đoạn nhỏ cho tới khi có ACK hoặc đủ để đầy một MSS. Mục tiêu là đỡ phát đi vô số gói nhỏ (telnet gửi từng phím gõ, mỗi cái thành một gói 41 byte với 40 byte là header).
+
+Nó làm việc tốt cho tới khi gặp delayed ACK. Xét ứng dụng gửi một yêu cầu bằng **hai `send()` nhỏ liên tiếp** (header 4 byte, rồi body 100 byte) rồi chờ phản hồi:
+
+1. `send(4 byte)`: không có gì chưa ACK, đi ngay.
+2. `send(100 byte)`: còn 4 byte chưa ACK nên Nagle **giữ lại**, chờ ACK.
+3. Bên nhận không thể xử lý yêu cầu (chưa đủ 104 byte) và cũng không có gì để gửi ngược, nên **delayed ACK** giữ ACK 40 ms.
+4. Hết 40 ms ACK mới ra, Nagle thả 100 byte, rồi mới có phản hồi.
+
+Đo trên loopback, năm yêu cầu liên tiếp, với và không có `TCP_NODELAY`:
+
+```python
+def run(nodelay):
+    # ... server đợi đủ 104 byte rồi trả lời b'ok' ...
+    c = socket.create_connection(('127.0.0.1', port))
+    if nodelay: c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    for _ in range(5):
+        t = time.perf_counter()
+        c.sendall(b'HDR1')            # write nhỏ thứ nhất
+        c.sendall(b'x' * 100)         # write nhỏ thứ hai
+        c.recv(10)                    # chờ trả lời
+        ts.append((time.perf_counter() - t) * 1000)
+```
+
+```text
+TCP_NODELAY=0  ms/request:   0.08  44.61  44.01  44.06  44.04
+TCP_NODELAY=1  ms/request:   0.39   0.22   0.26   0.31   0.29
+```
+
+Yêu cầu đầu tiên nhanh (chưa có dữ liệu chưa ACK) còn bốn yêu cầu sau mất **44 ms mỗi lần**, gấp 150 lần so với `TCP_NODELAY`. Con số 40 ms chính là timer delayed ACK của Linux. Đây là lý do mọi thư viện RPC và database client nghiêm túc đều đặt `TCP_NODELAY`: Go bật sẵn cho `net.TCPConn`, và Nginx có chỉ thị `tcp_nodelay on`.
+
+Cách tốt nhất thay vì tắt Nagle là **không gửi hai `send()` nhỏ cho một thông điệp**: gom header và body vào một buffer rồi gửi một lần (hoặc dùng `writev`/`sendmsg`). Nếu vẫn muốn gộp theo cách thủ công có `TCP_CORK` của Linux, chặn gửi cho tới khi bỏ cork.
+
+## Congestion control
+
+### Vì sao cần
+
+Tháng 10/1986, đường truyền giữa LBL và UC Berkeley, vốn 32 Kbit/s, bỗng tụt xuống 40 bit/s. Nguyên nhân: các máy gửi lại khi mất gói (đúng theo TCP lúc đó), nhưng router quá tải mới là chỗ mất gói, nên gửi lại **làm nghẽn thêm**, mất thêm, gửi lại thêm. Hệ thống rơi vào trạng thái mà gần như toàn bộ băng thông dùng cho gói gửi lại. Hiện tượng gọi là **congestion collapse**. Van Jacobson sửa nó năm 1988 bằng cách thêm vào TCP khả năng **tự giảm tốc khi thấy mất gói**, và gần như mọi TCP hiện nay vẫn thừa hưởng ý tưởng đó.
+
+Điều khó là mạng không nói cho ai biết nó đang nghẽn. Bên gửi chỉ có thể **suy ra** từ những gì thấy được (mất gói, tăng RTT) và **tự điều tiết**. Bên gửi giữ thêm một biến, <Term>congestion window</Term> (`cwnd`), và lượng dữ liệu được phép đang bay là:
+
+```text
+min(rwnd, cwnd)
+```
+
+`rwnd` do bên nhận quyết định, `cwnd` do bên gửi tự ước lượng sức chứa của mạng. Mọi thuật toán congestion control chỉ là các cách khác nhau để cập nhật `cwnd`.
+
+### Slow start, congestion avoidance, AIMD
+
+Thuật toán cổ điển (TCP Reno, RFC 5681) có ba pha:
+
+1. **Slow start**: bắt đầu `cwnd` nhỏ (Linux: 10 segment), **nhân đôi** mỗi RTT (mỗi ACK tăng `cwnd` thêm 1 segment). Gọi là "slow" so với việc gửi cả cửa sổ lớn ngay, nhưng tăng theo hàm mũ. Dừng khi chạm `ssthresh` hoặc có mất gói.
+2. **Congestion avoidance**: sau `ssthresh`, tăng **cộng** 1 segment mỗi RTT. Chậm, dò dẫm tìm điểm nghẽn.
+3. **Khi mất gói**: giảm `cwnd` đi **một nửa** (và `ssthresh` bằng nửa đó). Nhân giảm đi nhanh, cộng tăng lại chậm: **AIMD** (Additive Increase, Multiplicative Decrease).
+
+AIMD không tự nhiên mà có: có chứng minh rằng với nhiều luồng chia một đường truyền, quy tắc này làm các luồng **hội tụ về chia đều** băng thông, còn các quy tắc khác (cộng tăng cộng giảm, nhân tăng nhân giảm) không đảm bảo công bằng hay ổn định.
+
+Hình dạng răng cưa của `cwnd` theo thời gian là đặc trưng của TCP Reno: tăng tuyến tính, rơi một nửa, tăng lại. Vấn đề của Reno nằm ở đường truyền lớn: với 10 Gbit/s và RTT 100 ms, BDP là 125 MB, tương đương khoảng 83.000 segment. Sau một lần mất gói, `cwnd` còn 41.000 và phải tăng **1 segment mỗi RTT** để quay lại: 41.000 RTT, tức khoảng 69 phút. Trong lúc đó đường truyền bị bỏ trống một nửa. Reno đơn giản là không dùng được ở tốc độ đó.
+
+### CUBIC
+
+CUBIC (mặc định của Linux từ 2.6.19, và cũng là mặc định của Windows) thay phần cộng tăng tuyến tính bằng một **hàm bậc ba** của thời gian kể từ lần mất gói gần nhất:
+
+```text
+W(t) = C × (t - K)^3 + Wmax          K = căn bậc ba của (Wmax × (1 - β) / C)
+```
+
+Sau lần mất gói, `cwnd` giảm xuống `β × Wmax` (β = 0,7; Reno giảm xuống 0,5), rồi tăng **nhanh** khi còn xa `Wmax`, **chậm dần** khi tới gần (đường cong phẳng quanh `Wmax`, dò từ từ), rồi nếu không mất gói thì tăng nhanh trở lại để dò mức mới. Quan trọng là hàm phụ thuộc vào **thời gian thực**, không phải số RTT, nên luồng RTT ngắn và RTT dài tăng gần như ngang nhau, khác với Reno vốn thiên vị RTT ngắn.
+
+Mô phỏng thô để thấy hình dạng: một mạng chứa được 80 segment, mất gói khi `cwnd` chạm 80. Mỗi dòng là một RTT. (CUBIC thật tính theo giây; ở đây t là số RTT nên chỉ minh hoạ hình dạng đường cong.)
+
+```python
+import math
+MSS_LOSS_AT = 80          # mạng "chứa" được 80 gói; vượt thì mất
+def reno(rounds):
+    cwnd, ssthresh, out = 10.0, 1e9, []
+    for _ in range(rounds):
+        out.append(cwnd)
+        if cwnd >= MSS_LOSS_AT:          # mất gói -> nhân đôi giảm (AIMD)
+            ssthresh = cwnd / 2; cwnd = ssthresh
+        elif cwnd < ssthresh: cwnd = min(cwnd * 2, MSS_LOSS_AT)   # slow start
+        else: cwnd += 1                                           # congestion avoidance
+    return out
+def cubic(rounds, C=0.4, beta=0.7):
+    cwnd, wmax, t, out, in_ss = 10.0, 0, 0, [], True
+    for _ in range(rounds):
+        out.append(cwnd)
+        if cwnd >= MSS_LOSS_AT:
+            wmax = cwnd; cwnd = wmax * beta; t = 0; in_ss = False
+        elif in_ss: cwnd = min(cwnd * 2, MSS_LOSS_AT)
+        else:
+            t += 1; K = (wmax * (1 - beta) / C) ** (1 / 3)
+            cwnd = max(cwnd, min(C * (t - K) ** 3 + wmax, MSS_LOSS_AT))
+    return out
+r, c = reno(36), cubic(36)
+print('RTT   Reno  CUBIC')
+for i in range(36): print(f"{i:>3} {r[i]:6.1f} {c[i]:6.1f}")
+print('trung bình từ RTT 4:', round(sum(r[4:])/32, 1), round(sum(c[4:])/32, 1))
+```
+
+```text
+RTT   Reno  CUBIC
+  0   10.0   10.0
+  1   20.0   20.0
+  2   40.0   40.0
+  3   80.0   80.0
+  4   40.0   56.0
+  5   41.0   70.1
+  6   42.0   77.2
+  7   43.0   79.7
+  8   44.0   80.0
+  9   45.0   56.0
+ 10   46.0   70.1
+ ...
+ 35   71.0   70.1
+trung bình từ RTT 4: 55.5 72.0
+```
+
+Bốn dòng đầu là slow start (10, 20, 40, 80, nhân đôi mỗi RTT) tới khi chạm 80 và mất gói. Từ đó:
+
+- Reno rơi xuống 40 và nhích **1 mỗi RTT**: phải 40 RTT mới trở lại 80. Trung bình dùng 55,5 trong 80.
+- CUBIC rơi xuống 56 và lên 70, 77, 79,7, 80 chỉ trong khoảng năm RTT. Trung bình 72,0, tức khai thác đường truyền hiệu quả hơn khoảng 30%.
+
+Cả hai đều dùng mất gói làm tín hiệu nghẽn, nên **luôn phải làm hàng đợi của router đầy thì mới thấy mất gói**. Điều đó dẫn tới bufferbloat: router có buffer lớn giữ hàng trăm ms dữ liệu trong hàng đợi, RTT của mọi luồng chia chung đường đó tăng vọt (kéo cả gọi video lẫn game) mà không ai bị mất gói để giảm tốc.
+
+### BBR
+
+**BBR** (Google, 2016) là hướng khác: **không** dùng mất gói làm tín hiệu. Nó ước lượng hai đại lượng và lái theo mô hình:
+
+- **BtlBw**: băng thông nút cổ chai, đo từ tốc độ ACK tới.
+- **RTprop**: RTT nhỏ nhất quan sát được (khi hàng đợi gần rỗng).
+
+Mục tiêu là giữ lượng dữ liệu đang bay xấp xỉ **BDP = BtlBw × RTprop**, tức vừa đủ lấp ống mà không chất đống trong buffer, và gửi đều theo tốc độ (pacing) thay vì thành cụm. Trên đường có tỷ lệ mất gói ngẫu nhiên cao (Wi-Fi, di động) BBR giữ được throughput mà CUBIC sụp đổ, vì CUBIC coi mọi mất gói là nghẽn. Đổi lại phiên bản đầu (BBRv1) bị chỉ trích là hung hãn với luồng CUBIC cùng đường và bỏ qua mất gói quá nhiều; BBRv2 và v3 sửa dần các điểm này. Bật trên Linux:
+
+```bash
+sysctl net.ipv4.tcp_available_congestion_control
+modprobe tcp_bbr
+sysctl -w net.ipv4.tcp_congestion_control=bbr
+```
+
+Có thể đặt thuật toán riêng cho từng socket bằng `setsockopt(TCP_CONGESTION)`, nên một server có thể dùng BBR cho client ở xa và CUBIC cho nội bộ.
+
+### Công thức ước lượng throughput
+
+Với Reno, **công thức Mathis** cho cận trên của throughput theo tỷ lệ mất gói `p`:
+
+```text
+throughput ≈ (MSS / RTT) × (1,22 / căn bậc hai của p)
+```
+
+Với MSS 1460 byte, RTT 50 ms:
+
+```text
+loss  0,01% -> 28,50 Mbit/s
+loss  0,10% ->  9,01 Mbit/s
+loss  1,00% ->  2,85 Mbit/s
+loss  5,00% ->  1,27 Mbit/s
+```
+
+Điều đáng nhớ không phải con số cụ thể mà **hình dạng**: throughput giảm theo căn bậc hai của mất gói và tỷ lệ nghịch với RTT. Mất 1% gói trên đường 50 ms đã đủ làm đường truyền 1 Gbit/s chỉ đạt vài Mbit/s với Reno (CUBIC khá hơn nhưng vẫn cùng xu hướng). Đó là lý do mất gói **nhỏ** vẫn giết hiệu năng TCP trên đường dài, và vì sao đặt CDN gần người dùng hơn (giảm RTT) hiệu quả hơn việc mua thêm băng thông.
+
+### Slow start sau khi nghỉ
+
+Mặc định Linux có `tcp_slow_start_after_idle = 1`: sau khi kết nối nhàn rỗi một RTO, `cwnd` đặt lại về giá trị khởi đầu. Ứng dụng giữ kết nối lâu dài nhưng gửi dữ liệu theo từng đợt (HTTP keep-alive, gRPC) sẽ phải slow start lại sau mỗi lần nghỉ. Nhiều hệ thống tắt tuỳ chọn này vì lý do đó.
+
+## Socket API
+
+Mọi thứ ở trên nằm trong kernel; ứng dụng chỉ thấy file descriptor và các lời gọi:
+
+| Lời gọi | Việc kernel làm |
+|---|---|
+| `socket(AF_INET, SOCK_STREAM, 0)` | tạo socket TCP (`SOCK_DGRAM` cho UDP) |
+| `bind(fd, addr)` | gán địa chỉ và port cục bộ |
+| `listen(fd, backlog)` | chuyển sang `LISTEN`, tạo SYN queue và accept queue |
+| `accept(fd)` | lấy một kết nối đã `ESTABLISHED` ra khỏi accept queue, trả về fd mới |
+| `connect(fd, addr)` | gửi SYN, chờ SYN-ACK; chọn port nguồn nếu chưa bind |
+| `send` / `write` | chép dữ liệu vào **send buffer** của kernel rồi trả về; chưa chắc đã lên dây |
+| `recv` / `read` | lấy dữ liệu từ **receive buffer**; chặn nếu rỗng |
+| `shutdown(fd, SHUT_WR)` | gửi FIN, đóng chiều gửi |
+| `close(fd)` | giải phóng fd; kernel đóng kết nối nếu đây là tham chiếu cuối |
+
+Một điều hay hiểu nhầm: **`send()` trả về không có nghĩa dữ liệu đã tới nơi**, thậm chí chưa chắc đã rời máy. Nó chỉ có nghĩa là kernel đã nhận dữ liệu vào buffer gửi. Muốn biết bên kia đã **đọc** hay chưa, TCP không có cách trực tiếp: phải có ACK ở tầng ứng dụng (thông điệp phản hồi). Gửi xong rồi `close()` ngay cũng có thể làm mất dữ liệu còn trong buffer nếu bên kia đã gửi RST, một lý do giao thức nên có bước đóng thoả thuận (như `shutdown(SHUT_WR)` rồi đọc tới EOF).
+
+Một số `setsockopt` quan trọng:
+
+| Tuỳ chọn | Tác dụng |
+|---|---|
+| `SO_REUSEADDR` | cho `bind` lại vào port còn kết nối `TIME-WAIT`; cần cho server khởi động lại nhanh |
+| `SO_REUSEPORT` | nhiều socket cùng nghe một port, kernel chia đều kết nối giữa chúng (dùng để mở rộng accept ra nhiều process/thread) |
+| `TCP_NODELAY` | tắt Nagle |
+| `SO_KEEPALIVE` | kernel gửi gói thăm dò khi nhàn rỗi (mặc định 2 giờ, chỉnh bằng `tcp_keepalive_time`), để phát hiện bên kia đã chết hoặc NAT đã quên kết nối |
+| `TCP_USER_TIMEOUT` | thời gian tối đa dữ liệu chưa được ACK trước khi bỏ kết nối, thay cho ~15 phút mặc định |
+| `SO_RCVBUF` / `SO_SNDBUF` | kích thước buffer; đặt tay sẽ **tắt** tự điều chỉnh |
+| `SO_LINGER` | chỉnh hành vi của `close()`; `l_onoff=1, l_linger=0` làm `close()` gửi RST thay vì FIN |
+
+Chương trình chuẩn của một server TCP một luồng, để thấy các lời gọi đi theo thứ tự:
+
+```python
+import socket
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(('0.0.0.0', 8080))
+srv.listen(128)
+while True:
+    conn, addr = srv.accept()            # chặn tới khi có kết nối trong accept queue
+    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    with conn:
+        while (data := conn.recv(4096)):  # b'' nghĩa là bên kia đã gửi FIN
+            conn.sendall(data)
+```
+
+Phục vụ nhiều client cùng lúc cần thread, hoặc I/O đa kênh (`epoll`) như đã mô tả ở bài [I/O & Devices](/docs/os/io-devices), nơi có cả một echo server `epoll`. Còn một điều tinh tế: `recv` trả `b''` **chỉ** khi bên kia đã gửi FIN (EOF), còn mất mạng đột ngột thì `recv` sẽ treo, đó là lý do cần keepalive hoặc timeout.
+
+## QUIC
+
+TCP có ba hạn chế mà ngay cả cải tiến vẫn không vượt được vì chúng nằm ở thiết kế:
+
+1. **Head-of-line blocking giữa các luồng.** HTTP/2 chạy nhiều request trên **một** kết nối TCP, nhưng TCP chỉ thấy một dòng byte. Mất một gói thì mọi luồng sau nó phải chờ gói đó được gửi lại, dù dữ liệu của chúng đã tới (<Term>head-of-line blocking</Term>).
+2. **Handshake nhiều vòng.** TCP mất một RTT, TLS 1.3 thêm một RTT nữa: hai RTT trước khi gửi được byte đầu của request.
+3. **Kết nối gắn với bốn thành phần (IP, port).** Điện thoại đổi từ Wi-Fi sang 4G là đổi IP, và kết nối rớt.
+
+Không sửa được trong TCP vì mọi router, firewall, NAT trên Internet đều đọc và đôi khi sửa header TCP, nên đổi nó là gần như không thể (hiện tượng gọi là **ossification**). Giải pháp là bắt đầu lại từ UDP, thứ mà các thiết bị đó coi là "gói nhị phân bất kỳ".
+
+<Term>QUIC</Term> (RFC 9000) là giao thức transport chạy trên UDP, hợp nhất những gì từng là ba lớp:
+
+| Điểm | TCP + TLS | QUIC |
+|---|---|---|
+| Độ tin cậy, thứ tự | trong kernel, một dòng byte | trong thư viện user-space, **nhiều stream độc lập** trên một kết nối |
+| Mất gói | chặn toàn bộ kết nối | chỉ chặn stream có gói bị mất |
+| Handshake | TCP 1 RTT + TLS 2 RTT (TLS 1.2) hoặc 1 RTT (TLS 1.3) | 1 RTT gộp cả bắt tay transport và mã hoá; **0-RTT** cho lần kết nối lại |
+| Mã hoá | tuỳ chọn, tách riêng | **bắt buộc**, TLS 1.3 nằm trong giao thức; kể cả phần lớn header cũng được mã hoá |
+| Định danh kết nối | bốn thành phần (IP, port) | **Connection ID**; đổi IP hoặc mạng vẫn giữ kết nối |
+| Cập nhật | cần cập nhật kernel | cập nhật thư viện của ứng dụng |
+| Congestion control | trong kernel (CUBIC, BBR) | trong thư viện (thường cũng CUBIC hoặc BBR) |
+
+Thời gian từ lúc bắt đầu tới byte dữ liệu đầu tiên, RTT 100 ms:
+
+| | RTT | Thời gian |
+|---|---|---|
+| TCP + TLS 1.2 | 3 | 300 ms |
+| TCP + TLS 1.3 | 2 | 200 ms |
+| QUIC (lần đầu) | 1 | 100 ms |
+| QUIC 0-RTT (đã từng kết nối) | 0 | 0 ms, nhưng dữ liệu 0-RTT có thể bị tấn công phát lại nên chỉ dùng cho request an toàn để lặp |
+
+QUIC là nền của HTTP/3 (xem bài [HTTP](/docs/networking/http)). Chi phí: xử lý mã hoá và đóng gói trong user-space tốn CPU hơn TCP đã được tối ưu hàng thập kỷ trong kernel và card mạng; một số mạng chặn hoặc giới hạn UDP nên trình duyệt phải có đường lui về TCP (HTTP/2). Đó cũng là bài học cho thiết kế: **mọi lớp có thể bị phá vỡ khi có thiết bị ở giữa hiểu nó**, nên giao thức mới chọn giấu mình trong mã hoá.
+
+## Chọn giao thức nào
+
+| Nhu cầu | Chọn | Ví dụ thật |
+|---|---|---|
+| Tải trang web, API, database, SSH, email | TCP | HTTP/1.1, HTTP/2, PostgreSQL, Redis, SMTP, Kafka |
+| Web hiện đại, mạng di động, nhiều luồng song song | QUIC (trên UDP) | HTTP/3 của Chrome, Cloudflare, Google |
+| Hỏi đáp một gói ngắn | UDP | DNS, NTP, DHCP |
+| Thoại, video, game thời gian thực | UDP, ứng dụng tự quyết gửi lại hay bỏ | WebRTC, RTP, hầu hết game online |
+| VPN | UDP (tránh chạy TCP trong TCP) | WireGuard, OpenVPN chế độ UDP |
+| Phát tới nhiều nơi cùng lúc | UDP multicast / broadcast | mDNS, phát hiện dịch vụ |
+| Cần độ tin cậy nhưng khác TCP (nhiều stream, thông điệp) | UDP + giao thức riêng, hoặc SCTP, hoặc QUIC | game có kênh tin cậy và không tin cậy |
+
+Một điểm hay bị bỏ qua là **TCP trong TCP**: chạy một kết nối TCP bên trong một đường hầm TCP (VPN qua TCP) khiến cả hai tầng cùng gửi lại và cùng giảm cửa sổ khi mất gói, dẫn tới hành vi sụp đổ gọi là TCP meltdown. Vì vậy tầng đường hầm thường dùng UDP.
+
+## Quan sát và chẩn đoán trên Linux
+
+**`ss`** (thay cho `netstat`) là công cụ chính. Kết nối đang ESTABLISHED, với `-i` in thông số nội tại của TCP (đây là output thật, sau khi gửi 12 MB qua loopback):
+
+```text
+ESTAB 0 0 127.0.0.1:33068 127.0.0.1:9005
+   cubic wscale:7,7 rto:204 rtt:0.017/0.01 mss:1448 pmtu:1500 rcvmss:536 advmss:1448
+   cwnd:453 bytes_sent:12000000 bytes_acked:12000001 segs_out:8391 segs_in:206
+   data_segs_out:8389 send 308679529412bps lastsnd:304 lastrcv:308 lastack:304
+   pacing_rate 599720228568bps delivery_rate 1287111104bps delivered:8390
+   busy:4ms rcv_space:14480 rcv_ssthresh:64088 minrtt:0.002 snd_wnd:5042560
+```
+
+| Trường | Đọc như thế nào |
+|---|---|
+| `cubic` | thuật toán congestion control |
+| `rto:204` | RTO hiện tại, 204 ms (200 ms tối thiểu cộng một chút) |
+| `rtt:0.017/0.01` | SRTT và RTTVAR tính bằng ms, đúng hai đại lượng ở phần RTO |
+| `mss:1448`, `pmtu:1500` | MSS đã thương lượng và path MTU |
+| `cwnd:453` | cửa sổ nghẽn, tính bằng segment: sau 12 MB đã tăng từ 10 lên 453 |
+| `snd_wnd` | cửa sổ bên nhận báo, tức `rwnd` (5 MB) |
+| `retrans:x/y` | (không xuất hiện ở đây vì không có gói nào bị gửi lại) số lần đang gửi lại / tổng |
+| `bytes_sent`, `bytes_acked` | số byte đã gửi và đã được ACK |
+| `delivery_rate`, `pacing_rate` | tốc độ thật đạt được và tốc độ kernel đang pace |
+| `minrtt` | RTT nhỏ nhất quan sát được (đầu vào của BBR) |
+
+Dòng `rcvmss:536` và `ato:40` phía nhận cho thấy ước lượng MSS bên nhận và timer delayed ACK ở trên.
+
+Các lệnh hay dùng:
+
+```bash
+ss -s                          # đếm theo trạng thái: nhìn timewait, orphaned có bất thường không
+ss -tan state close-wait       # liệt kê kết nối CLOSE-WAIT (lỗi ứng dụng quên close)
+ss -ltn                        # socket đang nghe: Recv-Q là accept queue đang chờ, Send-Q là backlog
+ss -tin dst 10.0.0.5           # thông số nội tại của các kết nối tới một đích
+ss -tanp | grep :443           # kèm process, cần root
+nstat -az | grep -E 'Retrans|Listen|Timeouts|LossProbes'
+tcpdump -nn -i any 'tcp port 8080'    # bắt gói, thêm -w file.pcap để mở bằng Wireshark
+```
+
+`nstat` đọc các bộ đếm toàn hệ thống. Trên máy thí nghiệm, sau các bài thử ở trên:
+
+```text
+TcpRetransSegs                  27
+TcpExtTCPTimeouts               20
+TcpExtTCPLossProbes              7
+TcpExtListenOverflows            3
+TcpExtListenDrops                3
+```
+
+`ListenOverflows 3` chính là ba client bị bỏ ở thí nghiệm `listen(1)`, `TCPLossProbes 7` là các lần TLP trong thí nghiệm backoff. Khi nghi ngờ mạng, lấy `nstat` hai lần cách nhau một khoảng rồi so sánh, tốt hơn nhiều so với đoán.
+
+Ánh xạ triệu chứng sang nguyên nhân hay gặp:
+
+| Triệu chứng | Hướng kiểm tra |
+|---|---|
+| `connect()` treo rồi `Connection timed out` | firewall bỏ gói (không trả RST), server không `accept` kịp (`ListenDrops` tăng, `Recv-Q` của LISTEN đầy), hoặc server sập; xem `SYN-SENT` bằng `ss` |
+| `Connection refused` ngay lập tức | không có ai nghe ở port đó (server RST) |
+| `Connection reset by peer` | bên kia đóng đột ngột, hoặc proxy/load balancer cắt kết nối nhàn rỗi quá lâu |
+| Nhiều `CLOSE-WAIT` | ứng dụng của bạn không `close()` socket |
+| Nhiều `TIME-WAIT` và `Cannot assign requested address` | client mở quá nhiều kết nối ngắn tới cùng đích; dùng connection pool |
+| Throughput thấp dù băng thông nhiều, RTT cao | `cwnd` hoặc `rwnd` nhỏ (xem `ss -i`), mất gói nhỏ (`TcpRetransSegs`), buffer quá bé so với BDP |
+| Mỗi request chậm đúng khoảng 40 ms | Nagle cộng delayed ACK; đặt `TCP_NODELAY` hoặc gom ghi |
+| Kết nối "ma" (client đã mất mà server vẫn thấy ESTAB) | thiếu keepalive hoặc `TCP_USER_TIMEOUT` |
+| Datagram UDP biến mất không báo gì | buffer nhận đầy (`netstat -su` mục `receive buffer errors`, tăng `net.core.rmem_max` và `SO_RCVBUF`), hoặc datagram quá MTU bị fragment rồi mất mảnh |
 
 ## Lưu ý
 
-- "UDP không tin cậy" nghĩa là **giao thức** không lo việc đó, không có nghĩa là ứng dụng dùng UDP thì mất dữ liệu: ứng dụng có thể tự đánh số và gửi lại khi cần.
-- TCP là stream: gọi `send()` hai lần không có nghĩa bên kia `recv()` hai lần. Ứng dụng phải tự đánh dấu ranh giới tin nhắn (độ dài ở đầu, ký tự xuống dòng, …).
-- DNS mặc định dùng UDP cho truy vấn nhỏ, chuyển sang TCP khi câu trả lời quá lớn hoặc khi đồng bộ cả zone.
+- **`send()` trả về không đảm bảo bên kia đã nhận.** Nó chỉ cho biết dữ liệu đã vào buffer gửi của kernel. Muốn biết bên kia xử lý xong, phải có phản hồi ở tầng ứng dụng.
+- **`recv()` không trả đúng ranh giới của `send()`.** Gom nhiều `send` thành một lần `recv`, hoặc cắt một `send` lớn thành nhiều lần `recv`, đều hợp lệ. Luôn tự đóng khung thông điệp và đọc đủ số byte bằng vòng lặp.
+- **"UDP không tin cậy" là tính chất của giao thức**, không phải của ứng dụng dùng nó. QUIC, WireGuard, và đoạn code trong bài tự có gửi lại, đánh số, kiểm tra toàn vẹn khi cần.
+- **TCP đảm bảo thứ tự và không mất trong một kết nối.** Nó không đảm bảo thông điệp **tới đúng một lần** qua nhiều kết nối: nếu kết nối rớt sau khi bạn gửi yêu cầu, bạn không biết server đã xử lý hay chưa. Muốn an toàn khi thử lại cần thiết kế idempotent hoặc có mã định danh yêu cầu.
+- **`TIME-WAIT` không phải lỗi; `CLOSE-WAIT` thì có.** Đừng "sửa" `TIME-WAIT` bằng cách rút ngắn nó hay bật tuỳ chọn lạ; hãy dùng lại kết nối. Còn `CLOSE-WAIT` nhiều nghĩa là code của bạn quên `close()`.
+- **Mất gói nhỏ giết throughput trên đường dài**, theo hình dạng của công thức Mathis, nên đo RTT và `TcpRetransSegs` trước khi tăng băng thông.
+- **Tắt Nagle chỉ là cách chữa triệu chứng.** Hai `send` nhỏ cho một thông điệp là lỗi thiết kế; gom lại bằng một lần ghi (`writev`) vẫn tốt hơn bật `TCP_NODELAY` rồi gửi ngàn gói 10 byte.
+- **TCP mặc định không tự phát hiện bên kia đã chết** khi hai bên đang nhàn rỗi, và sau khi bắt đầu gửi phải mất cỡ 15 phút mới bỏ. Dùng keepalive, `TCP_USER_TIMEOUT` và timeout ở tầng ứng dụng, vì chúng là các chốt chặn duy nhất.
+- **Đừng chạy UDP với datagram lớn hơn MTU.** Giữ payload dưới khoảng 1200 byte nếu muốn không bị fragment, và nhớ rằng UDP không có congestion control: một ứng dụng UDP gửi hết tốc độ đường truyền sẽ chèn ép mọi luồng TCP cùng đường.

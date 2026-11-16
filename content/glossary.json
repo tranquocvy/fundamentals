@@ -5,12 +5,61 @@
       "def": "Vùng bộ nhớ ảo riêng mà process nhìn thấy; process khác không truy cập trực tiếp được.",
       "subject": "os"
     },
+    "aead": {
+      "label": "AEAD",
+      "def": "Authenticated Encryption with Associated Data: kiểu mã hoá vừa giữ bí mật vừa xác thực dữ liệu trong một bước; sửa một bit của bản mã là bị từ chối. Ví dụ AES-GCM, ChaCha20-Poly1305.",
+      "subject": "networking"
+    },
+    "arp": {
+      "label": "ARP",
+      "def": "Address Resolution Protocol: giao thức hỏi cả mạng cục bộ bằng broadcast để đổi một địa chỉ IP thành địa chỉ MAC.",
+      "subject": "networking"
+    },
     "atomic operation": {
       "def": "Thao tác chạy trọn vẹn như một bước duy nhất: không thread nào thấy được trạng thái giữa chừng của nó.",
       "subject": "os",
       "aliases": [
         "atomic"
       ]
+    },
+    "authoritative server": {
+      "def": "Name server giữ dữ liệu thật của một zone DNS và trả lời có thẩm quyền, khác với resolver chỉ cache lại câu trả lời của nơi khác.",
+      "subject": "networking",
+      "aliases": [
+        "authoritative name server"
+      ]
+    },
+    "autonomous system": {
+      "def": "Một mạng hoặc nhóm mạng do một tổ chức quản lý, có số hiệu ASN riêng và tự quyết định định tuyến bên trong; Internet là tập các AS nối nhau bằng BGP.",
+      "subject": "networking",
+      "aliases": [
+        "as"
+      ]
+    },
+    "bandwidth-delay product": {
+      "def": "Băng thông của đường truyền nhân RTT: lượng dữ liệu phải đang bay cùng lúc để lấp đầy đường truyền.",
+      "subject": "networking",
+      "aliases": [
+        "bdp"
+      ]
+    },
+    "bgp": {
+      "label": "BGP",
+      "def": "Border Gateway Protocol: giao thức định tuyến giữa các autonomous system, trao đổi prefix nào tới được qua đường nào theo chính sách của từng AS.",
+      "subject": "networking"
+    },
+    "ca": {
+      "label": "CA",
+      "def": "Certificate Authority: tổ chức được trình duyệt và hệ điều hành tin cậy sẵn, ký chứng chỉ để xác nhận một khoá công khai thuộc về một tên miền.",
+      "subject": "networking",
+      "aliases": [
+        "certificate authority"
+      ]
+    },
+    "cidr": {
+      "label": "CIDR",
+      "def": "Classless Inter-Domain Routing: cách viết địa chỉ kèm độ dài prefix (như 192.168.10.0/26) cho phép chia và gom mạng ở kích thước bất kỳ.",
+      "subject": "networking"
     },
     "compare-and-swap": {
       "def": "Lệnh atomic của CPU: chỉ ghi giá trị mới vào một ô nhớ nếu giá trị hiện tại đúng bằng giá trị mong đợi, và cho biết có ghi được không.",
@@ -24,6 +73,13 @@
       "subject": "os",
       "aliases": [
         "condition variables"
+      ]
+    },
+    "congestion window": {
+      "def": "Biến do bên gửi TCP tự giữ, là lượng dữ liệu tối đa được phép đang bay mà chưa có ACK, ước lượng sức chứa của mạng; thường viết tắt cwnd.",
+      "subject": "networking",
+      "aliases": [
+        "cwnd"
       ]
     },
     "context switch": {
@@ -66,6 +122,15 @@
       "def": "Domain Name System: hệ thống phân cấp, phân tán dùng để đổi tên miền thành địa chỉ IP và các thông tin khác.",
       "subject": "networking"
     },
+    "doh": {
+      "label": "DoH",
+      "def": "DNS over HTTPS: gửi message DNS nhị phân trong HTTPS, nên được mã hoá và lẫn vào lưu lượng web.",
+      "subject": "networking"
+    },
+    "encapsulation": {
+      "def": "Mỗi tầng mạng bọc dữ liệu của tầng trên vào bên trong gói của mình và thêm header riêng; bên nhận bóc ngược từng lớp.",
+      "subject": "networking"
+    },
     "file descriptor": {
       "def": "Số nguyên nhỏ mà process dùng để chỉ một file, socket hay pipe đang mở; là chỉ số trong bảng file descriptor của process đó.",
       "subject": "os",
@@ -73,12 +138,28 @@
         "fd"
       ]
     },
+    "forward secrecy": {
+      "def": "Tính chất mà lộ khoá riêng của server về sau vẫn không giải mã được các phiên đã ghi lại trước đó, vì khoá phiên sinh từ trao đổi khoá tạm thời.",
+      "subject": "networking"
+    },
     "futex": {
       "def": "Fast userspace mutex: system call của Linux cho thread ngủ chờ trên một ô nhớ và đánh thức thread đang chờ ở đó; nền để cài mutex chỉ vào kernel khi có tranh chấp.",
       "subject": "os"
     },
+    "glue record": {
+      "def": "Địa chỉ IP của một name server được server cấp trên gửi kèm referral, khi tên của name server đó nằm trong chính zone được uỷ quyền, để phá vòng lặp tra cứu.",
+      "subject": "networking",
+      "aliases": [
+        "glue"
+      ]
+    },
     "head-of-line blocking": {
       "def": "Một gói tin bị chậm hoặc mất làm mọi dữ liệu xếp sau nó phải chờ, dù chúng đã tới nơi.",
+      "subject": "networking"
+    },
+    "icmp": {
+      "label": "ICMP",
+      "def": "Internet Control Message Protocol: giao thức đi kèm IP để báo lỗi và chẩn đoán, như port unreachable, TTL hết hạn, và là nền của ping và traceroute.",
       "subject": "networking"
     },
     "inode": {
@@ -112,16 +193,51 @@
       "def": "Các thread vẫn chạy và liên tục phản ứng với nhau nhưng không bên nào tiến triển; khác deadlock ở chỗ không ai bị block.",
       "subject": "os"
     },
+    "longest prefix match": {
+      "def": "Quy tắc router chọn trong bảng định tuyến dòng khớp địa chỉ đích có prefix dài nhất, tức tuyến cụ thể nhất.",
+      "subject": "networking"
+    },
+    "mac address": {
+      "label": "MAC address",
+      "def": "Địa chỉ phần cứng 48 bit của một giao diện mạng, chỉ có nghĩa trong một mạng cục bộ và bị thay ở mỗi router.",
+      "subject": "networking"
+    },
     "mmu": {
       "label": "MMU",
       "def": "Memory Management Unit: phần cứng trong CPU dịch địa chỉ ảo sang địa chỉ vật lý ở mỗi lần truy cập bộ nhớ.",
       "subject": "os"
+    },
+    "mtls": {
+      "label": "mTLS",
+      "def": "Mutual TLS: TLS mà cả client lẫn server đều trình chứng chỉ và chứng minh sở hữu khoá, nên server xác thực được client mà không cần mật khẩu.",
+      "subject": "networking"
+    },
+    "mtu": {
+      "label": "MTU",
+      "def": "Maximum Transmission Unit: kích thước tối đa của một gói tin mà một đường truyền gửi được trong một lần; Ethernet thường là 1500 byte.",
+      "subject": "networking"
     },
     "mutex": {
       "def": "Khoá loại trừ lẫn nhau: tại một thời điểm chỉ một thread được giữ khoá và vào vùng code được bảo vệ.",
       "subject": "os",
       "aliases": [
         "mutual exclusion lock"
+      ]
+    },
+    "nagle": {
+      "label": "Nagle",
+      "def": "Thuật toán của TCP giữ lại các đoạn nhỏ cho tới khi có ACK của dữ liệu trước hoặc đủ một MSS, để giảm số gói nhỏ; tắt bằng TCP_NODELAY.",
+      "subject": "networking",
+      "aliases": [
+        "nagle's algorithm"
+      ]
+    },
+    "nat": {
+      "label": "NAT",
+      "def": "Network Address Translation: router đổi địa chỉ (và cổng) nguồn của gói đi ra sang địa chỉ công cộng, để nhiều máy dùng địa chỉ riêng chia chung một IP.",
+      "subject": "networking",
+      "aliases": [
+        "napt"
       ]
     },
     "page": {
@@ -138,6 +254,13 @@
     "page table": {
       "def": "Bảng của mỗi process ánh xạ số trang ảo sang khung vật lý trong RAM, kèm các bit như present, dirty, protection.",
       "subject": "os"
+    },
+    "path mtu discovery": {
+      "def": "Cơ chế gửi gói có cờ DF và dựa vào ICMP Fragmentation Needed từ router để tìm MTU nhỏ nhất dọc đường đi, tránh phân mảnh.",
+      "subject": "networking",
+      "aliases": [
+        "pmtud"
+      ]
     },
     "pcb": {
       "label": "PCB",
@@ -158,6 +281,11 @@
         "processes"
       ]
     },
+    "quic": {
+      "label": "QUIC",
+      "def": "Giao thức transport chạy trên UDP, gộp độ tin cậy, mã hoá TLS 1.3 và nhiều stream độc lập trong một kết nối; nền của HTTP/3.",
+      "subject": "networking"
+    },
     "race condition": {
       "def": "Kết quả sai do nhiều thread truy cập dữ liệu chung không đồng bộ, phụ thuộc thứ tự thực thi.",
       "subject": "os"
@@ -173,6 +301,16 @@
       "def": "Thời gian từ lúc job đến tới lúc nó được chạy lần đầu; quan trọng với chương trình tương tác.",
       "subject": "os"
     },
+    "rtt": {
+      "label": "RTT",
+      "def": "Round-Trip Time: thời gian một gói đi tới máy kia và phản hồi quay về.",
+      "subject": "networking"
+    },
+    "sack": {
+      "label": "SACK",
+      "def": "Selective Acknowledgment: option của TCP cho bên nhận báo các khoảng byte đã nhận được nhưng cách quãng, để bên gửi chỉ gửi lại phần thật sự thiếu.",
+      "subject": "networking"
+    },
     "scheduler": {
       "def": "Phần của OS quyết định process hoặc thread nào được dùng CPU tiếp theo và trong bao lâu.",
       "subject": "os"
@@ -183,6 +321,11 @@
       "aliases": [
         "semaphores"
       ]
+    },
+    "sni": {
+      "label": "SNI",
+      "def": "Server Name Indication: extension trong ClientHello của TLS cho server biết tên miền client muốn vào, để chọn đúng chứng chỉ khi nhiều site chung một IP; ở dạng rõ nên lộ tên site.",
+      "subject": "networking"
     },
     "starvation": {
       "def": "Một thread hoặc job mãi không được cấp tài nguyên vì luôn có thứ khác được ưu tiên hơn, dù hệ thống vẫn chạy.",
@@ -217,6 +360,14 @@
       "subject": "os",
       "aliases": [
         "quantum"
+      ]
+    },
+    "time_wait": {
+      "label": "TIME_WAIT",
+      "def": "Trạng thái bên chủ động đóng kết nối TCP giữ lại khoảng 60 giây sau khi đóng xong, để ACK lại FIN bị lặp và để gói cũ lạc trong mạng chết hẳn.",
+      "subject": "networking",
+      "aliases": [
+        "time-wait"
       ]
     },
     "tlb": {
