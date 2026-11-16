@@ -105,6 +105,7 @@ sections:
             url: https://www.nand2tetris.org/
       - id: isa-assembly
         title: ISA & Assembly
+        article: architecture/isa-assembly
         description: Tập lệnh, thanh ghi, stack frame và cách đọc mã assembly do trình biên dịch sinh ra.
         requires: [data-representation]
         resources:

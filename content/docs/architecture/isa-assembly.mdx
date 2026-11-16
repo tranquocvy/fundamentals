@@ -1,0 +1,386 @@
+---
+title: ISA & Assembly
+description: Tập lệnh x86-64, thanh ghi và quy ước gọi hàm System V, đọc assembly gcc sinh ra ở -O0 và -O2, giải mã tay từng byte mã máy, khung stack và độ sâu đệ quy đo được, cmov thay nhánh, và chi phí thật của các mức tối ưu.
+status: draft
+tags: [architecture, isa, assembly, x86-64]
+authors: [tranquocvy]
+references:
+  - title: "Bryant & O'Hallaron — Computer Systems: A Programmer's Perspective, Chapter 3: Machine-Level Representation of Programs"
+    kind: book
+    note: x86-64, thanh ghi, chế độ địa chỉ, điều khiển luồng, thủ tục và stack frame
+  - title: "System V Application Binary Interface — AMD64 Architecture Processor Supplement"
+    url: https://gitlab.com/x86-psABIs/x86-64-ABI
+    kind: web
+    note: "quy ước gọi hàm trên Linux x86-64: thanh ghi đối số, giá trị trả về, thanh ghi callee-saved"
+  - title: "Intel — 64 and IA-32 Architectures Software Developer's Manual, Volume 2: Instruction Set Reference"
+    kind: book
+    note: mã hoá lệnh (REX, ModRM, SIB) và hành vi từng lệnh
+  - title: "Compiler Explorer (godbolt.org)"
+    url: https://godbolt.org/
+    kind: web
+    note: xem assembly của C, C++, Rust, Go bên cạnh mã nguồn, thử các mức tối ưu
+  - title: "Patterson & Hennessy — Computer Organization and Design: RISC-V Edition, Chapter 2: Instructions"
+    kind: book
+    note: ISA kiểu RISC, độ dài lệnh cố định, so sánh với x86
+  - title: "Fog — Instruction tables"
+    url: https://www.agner.org/optimize/
+    kind: web
+    note: độ trễ và thông lượng của từng lệnh trên từng đời CPU
+  - title: "Nand to Tetris — Part II, Chapter 7-8: Virtual Machine (stack and function calls)"
+    url: https://www.nand2tetris.org/
+    kind: video
+    note: dựng ngăn xếp và cơ chế gọi hàm từ đầu
+---
+
+## Ý chính
+
+**Tập lệnh** (instruction set architecture, **ISA**) là hợp đồng giữa phần mềm và phần cứng: những lệnh nào CPU hiểu, có những thanh ghi nào, bộ nhớ được địa chỉ hoá ra sao. Trình biên dịch dịch mã nguồn (C, Rust, Go) sang các lệnh đó, gọi là **assembly** (dạng đọc được của **mã máy**). Hầu hết lập trình viên không bao giờ viết assembly, nhưng **đọc** được nó là kỹ năng đáng giá: nó là sự thật cuối cùng về chương trình đang làm gì, cho thấy trình biên dịch tối ưu ra sao, vì sao một vòng lặp chậm, một hàm đệ quy cạn stack thế nào, và cuộc gọi hàm ở mức thấp trông như thế nào.
+
+Bài này dùng **x86-64** (Intel và AMD, kiến trúc của hầu hết máy tính và máy chủ), chạy trên gcc 13, Linux (WSL2). Trình tự: thanh ghi và quy ước gọi hàm; đọc assembly của một hàm nhỏ ở `-O0` so với `-O2`; **giải mã tay từng byte** mã máy; vòng lặp và nhảy có điều kiện; khung stack và đo độ sâu đệ quy tới khi cạn; `cmov` thay cho rẽ nhánh (nối với bài [CPU Pipeline & Branch Prediction](/docs/architecture/pipeline-branch-prediction)); chi phí của các mức tối ưu và của một lời gọi hàm; so sánh với ARM64 và RISC-V. Bài này dùng [Data Representation](/docs/architecture/data-representation) (bù hai, endianness) và nối với [Process vs Thread](/docs/os/process-thread) (stack của mỗi thread) và [Virtual Memory](/docs/os/virtual-memory) (vùng stack và guard page).
+
+## Thanh ghi và quy ước gọi hàm
+
+x86-64 có **16 thanh ghi đa dụng 64 bit**: `rax`, `rbx`, `rcx`, `rdx`, `rsi`, `rdi`, `rbp`, `rsp` và `r8` tới `r15`, cùng `rip` (con trỏ lệnh, địa chỉ lệnh kế tiếp) và thanh ghi **cờ** `rflags` (các cờ zero, sign, carry, overflow do `cmp` và phép tính đặt, để lệnh nhảy có điều kiện đọc). Mỗi thanh ghi 64 bit có tên cho phần thấp: `eax` (32 bit), `ax` (16 bit), `al` (8 bit). Thanh ghi nhanh gấp trăm lần RAM (xem thang độ trễ ở [Memory Hierarchy & Cache](/docs/architecture/memory-hierarchy)) nhưng chỉ có 16 cái, nên việc dùng chúng khéo là phần lớn của tối ưu hoá.
+
+Một **quy ước gọi hàm** (calling convention) là thoả thuận về việc **đối số truyền ở đâu, giá trị trả về ở đâu, và thanh ghi nào hàm được phép làm hỏng**. Trên Linux và macOS dùng **System V AMD64 ABI**:
+
+| Vai trò | Thanh ghi |
+|---|---|
+| Sáu đối số nguyên hoặc con trỏ đầu tiên | `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` (đối số thứ bảy trở đi để trên stack) |
+| Đối số số thực | `xmm0` tới `xmm7` |
+| Giá trị trả về | `rax` (số thực: `xmm0`) |
+| **Callee-saved** (hàm được gọi phải trả lại nguyên vẹn) | `rbx`, `rbp`, `r12` tới `r15` |
+| **Caller-saved** (hàm được gọi được dùng tự do) | `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8` tới `r11` |
+| Con trỏ stack | `rsp` |
+
+(Windows x64 dùng quy ước khác: `rcx`, `rdx`, `r8`, `r9`.) Vì có chuẩn này, mã do các trình biên dịch khác nhau, hay các ngôn ngữ khác nhau (C gọi Rust, Python gọi thư viện C qua `ctypes`) gọi được nhau. **System call** của Linux dùng một quy ước riêng nhưng giống: số hiệu của system call nằm trong `rax`, đối số trong `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9` (xem các system call ở [Process vs Thread](/docs/os/process-thread)).
+
+## Đọc assembly: cùng một hàm, hai mức tối ưu
+
+Dưới đây là bốn hàm C nhỏ, rồi script dịch chúng bằng `gcc -S -masm=intel` (cú pháp Intel dễ đọc hơn AT&T) ở `-O0` (không tối ưu, mã gần như dịch từng dòng) và `-O2`:
+
+```c
+// Vài hàm C nhỏ để xem trình biên dịch dịch ra assembly x86-64 như thế nào (gcc -S -masm=intel).
+long mul_add(long a, long b, long c) { return a * b + c; }                 // 3 tham số nguyên, một giá trị trả về
+
+long sum_array(const long *p, long n) {                                    // vòng lặp: thanh ghi, so sánh, nhảy có điều kiện
+    long s = 0;
+    for (long i = 0; i < n; i++) s += p[i];
+    return s;
+}
+
+long fact(long n) { return n <= 1 ? 1 : n * fact(n - 1); }                 // đệ quy: mỗi lần gọi một khung stack
+
+long clamp(long x, long lo, long hi) { if (x < lo) return lo; if (x > hi) return hi; return x; }   // hai nhánh
+```
+
+```bash
+#!/bin/bash
+# Chạy trong WSL2 (gcc 13, x86-64 Linux). In assembly Intel của vài hàm ở -O0 và -O2, mã máy thật, độ sâu stack, và chi phí theo mức tối ưu.
+D=$(dirname "$0")
+cd /tmp && rm -rf asmwork && mkdir asmwork && cd asmwork
+
+show() {   # show <mức> <hàm>: lấy phần thân hàm từ assembly, bỏ chỉ thị (.cfi, .size...) cho dễ đọc
+  gcc -$1 -S -masm=intel -fno-asynchronous-unwind-tables -fcf-protection=none -o "o$1.s" "$D/asm_demo.c"
+  awk -v f="$2" '$0 == f":" {p=1; next} p && /^\t\.size/ {exit} p' "o$1.s" | grep -vP '^\t\.' | sed 's/^\t/    /'
+}
+
+for fn in mul_add; do
+  for lv in O0 O2; do echo "== $fn ở -$lv =="; show $lv $fn; echo; done
+done
+echo "== sum_array ở -O0 (vòng lặp qua bộ nhớ) =="; show O0 sum_array; echo
+echo "== sum_array ở -O2 (giữ trong thanh ghi) =="; show O2 sum_array; echo
+echo "== fact (đệ quy) ở -O0 =="; show O0 fact; echo
+echo "== clamp ở -O2 (hai nhánh so sánh) =="; show O2 clamp; echo
+
+echo "== mã máy thật của mul_add -O2 (objdump -d -M intel): byte hex bên trái, lệnh bên phải =="
+gcc -O2 -fno-asynchronous-unwind-tables -fcf-protection=none -c -o asm_demo.o "$D/asm_demo.c"
+objdump -d -M intel --no-show-raw-insn asm_demo.o >/dev/null
+objdump -d -M intel asm_demo.o | awk '/<mul_add>:/ {p=1; next} p && /^$/ {exit} p' | sed 's/^ *//'
+echo
+echo "== độ sâu stack khi đệ quy mãi =="
+gcc -O0 -o stack_depth "$D/stack_depth.c" && ./stack_depth
+echo
+echo "== chi phí theo mức tối ưu (cùng mã C opt_cost.c) =="
+for lv in O0 O1 O2 O3; do
+  gcc -$lv -o opt_cost_$lv "$D/opt_cost.c"
+  echo "-- gcc -$lv"; ./opt_cost_$lv
+done
+```
+
+```text
+== mul_add ở -O0 ==
+    push	rbp
+    mov	rbp, rsp
+    mov	QWORD PTR -8[rbp], rdi
+    mov	QWORD PTR -16[rbp], rsi
+    mov	QWORD PTR -24[rbp], rdx
+    mov	rax, QWORD PTR -8[rbp]
+    imul	rax, QWORD PTR -16[rbp]
+    mov	rdx, rax
+    mov	rax, QWORD PTR -24[rbp]
+    add	rax, rdx
+    pop	rbp
+    ret
+
+== mul_add ở -O2 ==
+    imul	rdi, rsi
+    lea	rax, [rdi+rdx]
+    ret
+
+== sum_array ở -O0 (vòng lặp qua bộ nhớ) ==
+    push	rbp
+    mov	rbp, rsp
+    mov	QWORD PTR -24[rbp], rdi
+    mov	QWORD PTR -32[rbp], rsi
+    mov	QWORD PTR -16[rbp], 0
+    mov	QWORD PTR -8[rbp], 0
+    jmp	.L4
+.L5:
+    mov	rax, QWORD PTR -8[rbp]
+    lea	rdx, 0[0+rax*8]
+    mov	rax, QWORD PTR -24[rbp]
+    add	rax, rdx
+    mov	rax, QWORD PTR [rax]
+    add	QWORD PTR -16[rbp], rax
+    add	QWORD PTR -8[rbp], 1
+.L4:
+    mov	rax, QWORD PTR -8[rbp]
+    cmp	rax, QWORD PTR -32[rbp]
+    jl	.L5
+    mov	rax, QWORD PTR -16[rbp]
+    pop	rbp
+    ret
+
+== sum_array ở -O2 (giữ trong thanh ghi) ==
+    test	rsi, rsi
+    jle	.L6
+    lea	rdx, [rdi+rsi*8]
+    xor	eax, eax
+.L5:
+    add	rax, QWORD PTR [rdi]
+    add	rdi, 8
+    cmp	rdi, rdx
+    jne	.L5
+    ret
+.L6:
+    xor	eax, eax
+    ret
+
+== fact (đệ quy) ở -O0 ==
+    push	rbp
+    mov	rbp, rsp
+    sub	rsp, 16
+    mov	QWORD PTR -8[rbp], rdi
+    cmp	QWORD PTR -8[rbp], 1
+    jle	.L8
+    mov	rax, QWORD PTR -8[rbp]
+    sub	rax, 1
+    mov	rdi, rax
+    call	fact
+    imul	rax, QWORD PTR -8[rbp]
+    jmp	.L10
+.L8:
+    mov	eax, 1
+.L10:
+    leave
+    ret
+
+== clamp ở -O2 (hai nhánh so sánh) ==
+    cmp	rdi, rdx
+    mov	rax, rsi
+    cmovle	rdx, rdi
+    cmp	rdi, rsi
+    cmovge	rax, rdx
+    ret
+
+== mã máy thật của mul_add -O2 (objdump -d -M intel): byte hex bên trái, lệnh bên phải ==
+0:	48 0f af fe          	imul   rdi,rsi
+4:	48 8d 04 17          	lea    rax,[rdi+rdx*1]
+8:	c3                   	ret
+9:	0f 1f 80 00 00 00 00 	nop    DWORD PTR [rax+0x0]
+
+== độ sâu stack khi đệ quy mãi ==
+giới hạn stack (ulimit -s): 8192 KiB
+   độ sâu 1: &pad = 0x7ffcd6b49b30
+   độ sâu 2: &pad = 0x7ffcd6b49af0
+   độ sâu 3: &pad = 0x7ffcd6b49ab0
+   SIGSEGV ở độ sâu 130989 (stack cạn)
+
+== chi phí theo mức tối ưu (cùng mã C opt_cost.c) ==
+-- gcc -O0
+cộng 4096 số (32 KiB, nằm trong L1) 400000 lần:   2650 ms = 1.617 ns / phần tử   [kết quả kiểm tra 0]
+400 triệu lần gọi hàm add_one không inline:    273 ms = 0.682 ns / lần gọi   [x = 400000000]
+-- gcc -O1
+cộng 4096 số (32 KiB, nằm trong L1) 400000 lần:    364 ms = 0.222 ns / phần tử   [kết quả kiểm tra 0]
+400 triệu lần gọi hàm add_one không inline:    125 ms = 0.311 ns / lần gọi   [x = 400000000]
+-- gcc -O2
+cộng 4096 số (32 KiB, nằm trong L1) 400000 lần:    358 ms = 0.218 ns / phần tử   [kết quả kiểm tra 0]
+400 triệu lần gọi hàm add_one không inline:    126 ms = 0.315 ns / lần gọi   [x = 400000000]
+-- gcc -O3
+cộng 4096 số (32 KiB, nằm trong L1) 400000 lần:    181 ms = 0.111 ns / phần tử   [kết quả kiểm tra 0]
+400 triệu lần gọi hàm add_one không inline:    123 ms = 0.307 ns / lần gọi   [x = 400000000]
+```
+
+### `mul_add`: `a * b + c`
+
+Hàm `long mul_add(long a, long b, long c)` nhận ba đối số trong `rdi`, `rsi`, `rdx` (quy ước trên). Ở **`-O2`** chỉ có ba lệnh:
+
+```text
+imul rdi, rsi          ; rdi = a * b
+lea  rax, [rdi+rdx]    ; rax = rdi + c   (dùng lea làm phép cộng)
+ret                    ; trả về, giá trị nằm trong rax
+```
+
+`lea` (load effective address) vốn để tính **địa chỉ** `[cơ sở + chỉ số × tỉ lệ]` mà không đụng bộ nhớ; trình biên dịch mượn nó làm phép cộng ba toán hạng (không làm thay đổi cờ). Ở **`-O0`**, cùng hàm dài 12 lệnh: mở đầu `push rbp; mov rbp, rsp` dựng **khung stack**, rồi **cất ba đối số xuống bộ nhớ** (`mov QWORD PTR -8[rbp], rdi` ...), rồi đọc lại từ bộ nhớ để tính. Mức `-O0` giữ mọi biến cục bộ trong stack để trình gỡ lỗi (debugger) đọc được giá trị bất kỳ lúc nào; mức `-O2` giữ chúng trong thanh ghi.
+
+### Mã máy: giải mã tay từng byte
+
+Phần cuối của `asm_run.out` hiển thị mã máy thật của `mul_add` (-O2), bằng `objdump -d`:
+
+```text
+0:  48 0f af fe          imul  rdi, rsi
+4:  48 8d 04 17          lea   rax, [rdi+rdx*1]
+8:  c3                   ret
+```
+
+Cả hàm là **9 byte**. x86 có lệnh **độ dài thay đổi** (1 tới 15 byte), nên không đoán được ranh giới lệnh mà không giải mã từ đầu. Tách các byte của `imul rdi, rsi` (`48 0f af fe`):
+
+- `48`: tiền tố **REX.W** (`0100 1000`): "toán hạng 64 bit".
+- `0f af`: mã lệnh `IMUL r64, r/m64` (hai byte).
+- `fe`: byte **ModRM** `11 111 110`: `mod = 11` (cả hai toán hạng đều là thanh ghi), `reg = 111` (thanh ghi số 7, `rdi`), `r/m = 110` (thanh ghi số 6, `rsi`). Vậy là `imul rdi, rsi`. Đúng.
+
+Còn `lea rax, [rdi+rdx*1]` (`48 8d 04 17`): `48` là REX.W; `8d` là mã lệnh `LEA`; `04` là ModRM `00 000 100` (`reg = 000` là `rax`, `r/m = 100` nghĩa là **có byte SIB theo sau**); `17` là byte **SIB** `00 010 111` (tỉ lệ `2^0 = 1`, chỉ số `010 = rdx`, cơ sở `111 = rdi`). Vậy là `[rdi + rdx*1]`. Lệnh cuối `ret` là một byte `c3`. Chính cách mã hoá nhiều tầng (tiền tố, mã lệnh, ModRM, SIB, hằng số) khiến **giải mã lệnh x86 phức tạp**, và CPU hiện đại dịch chúng thành các **vi lệnh** (micro-ops) độ dài cố định bên trong; còn ARM64 và RISC-V có lệnh độ dài cố định (4 byte) nên giải mã song song đơn giản hơn.
+
+### Vòng lặp: `sum_array`
+
+Vòng lặp `for` của `sum_array` ở `-O0` hiện ra là một khối đầy truy cập bộ nhớ:
+
+```text
+.L5:  mov rax, [rbp-8]         ; đọc i từ stack
+      lea rdx, [rax*8]         ; i * 8
+      mov rax, [rbp-24]        ; đọc con trỏ p từ stack
+      add rax, rdx             ; địa chỉ p[i]
+      mov rax, [rax]           ; đọc p[i]
+      add [rbp-16], rax        ; s += p[i], cập nhật s TRONG BỘ NHỚ
+      add [rbp-8], 1           ; i++, cũng trong bộ nhớ
+.L4:  mov rax, [rbp-8]
+      cmp rax, [rbp-32]        ; so i với n
+      jl  .L5                  ; nhảy lại nếu i < n
+```
+
+Mỗi vòng có **ba lần ghi bộ nhớ** (`s`, `i` và đọc lại), chuỗi phụ thuộc đi qua bộ nhớ. Ở `-O2` cả vòng chỉ còn bốn lệnh, mọi thứ trong thanh ghi:
+
+```text
+.L5:  add rax, [rdi]           ; s += *p
+      add rdi, 8               ; p++
+      cmp rdi, rdx             ; so p với con trỏ cuối (rdx = p + n*8)
+      jne .L5
+```
+
+Trình biên dịch đã làm **giảm sức mạnh** (strength reduction): thay vì tính `p + i*8` mỗi vòng, nó tăng thẳng con trỏ và so với con trỏ cuối, bỏ luôn biến `i`. Đo bằng `opt_cost.c` (cộng 4.096 số `long` nằm trong L1, 400.000 lần):
+
+| Mức biên dịch | ns mỗi phần tử | So với `-O0` |
+|---|---|---|
+| `-O0` | **1,617** | 1,0x |
+| `-O1`, `-O2` | 0,222 và 0,218 | **7,4x nhanh hơn** |
+| `-O3` | **0,111** | 14,6x nhanh hơn (vector hoá: một lệnh cộng nhiều số) |
+
+Cùng một mã nguồn, **nhanh hơn 14 lần** chỉ bằng cờ biên dịch. Hai bài học: **luôn đo bản `-O2`** (đo bản debug cho kết quả vô nghĩa), và **mức tối ưu của trình biên dịch** là một phần của hiệu năng mà bạn không viết ra.
+
+Cơ chế nhảy có điều kiện đáng nhìn kỹ: `cmp rdi, rdx` (hay `test`) **đặt các cờ** dựa trên phép trừ (bỏ kết quả), rồi `jne` (jump if not equal), `jl` (jump if less), `jle`... **đọc cờ** để quyết định có nhảy không. Mọi `if`, `while`, `for` đều thành cặp "so sánh, rồi nhảy theo cờ", và đó chính là các **lệnh rẽ nhánh** mà bộ dự đoán ở bài trước đoán hướng.
+
+### Nhánh bị loại bỏ: `cmov`
+
+Hàm `clamp(x, lo, hi)` có hai `if`, nhưng ở `-O2` assembly **không có một lệnh nhảy nào**:
+
+```text
+cmp    rdi, rdx         ; so x với hi
+mov    rax, rsi         ; rax = lo
+cmovle rdx, rdi         ; nếu x <= hi thì rdx = x (còn không rdx giữ hi)
+cmp    rdi, rsi         ; so x với lo
+cmovge rax, rdx         ; nếu x >= lo thì rax = rdx (còn không rax giữ lo)
+ret
+```
+
+`cmov` (conditional move) **luôn thực thi** và chỉ quyết định có ghi kết quả vào thanh ghi hay không dựa trên cờ: không có rẽ nhánh nên **không có gì để đoán sai**. Đây là cách trình biên dịch tự thực hiện kỹ thuật "không rẽ nhánh" đã đo ở [CPU Pipeline & Branch Prediction](/docs/architecture/pipeline-branch-prediction) (nó chọn `cmov` khi hai nhánh đều rẻ và an toàn để tính cả hai). Để xem trình biên dịch có tự làm vậy cho một vòng lặp của bạn không, đọc assembly là cách duy nhất.
+
+## Stack và lời gọi hàm
+
+**Stack** là vùng bộ nhớ hoạt động theo kiểu vào sau ra trước, mà thanh ghi `rsp` luôn trỏ vào đỉnh; trên x86 stack **mọc xuống** (địa chỉ giảm dần khi đẩy thêm). Hai lệnh `call` và `ret` làm việc với nó:
+
+- `call f`: **đẩy địa chỉ lệnh kế tiếp** (địa chỉ trả về) lên stack rồi nhảy tới `f`.
+- `ret`: **lấy địa chỉ trả về** ra khỏi stack và nhảy tới đó.
+
+Mỗi lần gọi hàm thường dựng một **khung** (stack frame) cho các biến cục bộ và dữ liệu cất tạm. Mở đầu quen thuộc của hàm đệ quy `fact` ở `-O0`:
+
+```text
+push rbp                 ; cất rbp của hàm gọi
+mov  rbp, rsp            ; rbp trỏ vào đáy khung này
+sub  rsp, 16             ; chừa 16 byte cho biến cục bộ
+mov  [rbp-8], rdi        ; cất đối số n
+...
+call fact                ; gọi đệ quy: đẩy địa chỉ trả về, nhảy
+imul rax, [rbp-8]        ; n * kết quả
+leave                    ; mov rsp, rbp; pop rbp   (dỡ khung)
+ret
+```
+
+Mỗi lần đệ quy một khung mới nằm **dưới** khung cũ. Chương trình `stack_depth.c` đệ quy không dừng và đo hai thứ: khoảng cách giữa các khung và độ sâu tới khi stack cạn. Output:
+
+```text
+giới hạn stack (ulimit -s): 8192 KiB
+   độ sâu 1: &pad = 0x7ffcd6b49b30
+   độ sâu 2: &pad = 0x7ffcd6b49af0
+   độ sâu 3: &pad = 0x7ffcd6b49ab0
+   SIGSEGV ở độ sâu 130989 (stack cạn)
+```
+
+Địa chỉ giảm đúng **`0x40` = 64 byte** mỗi lần gọi (khung 64 byte: địa chỉ trả về, `rbp` cất, 16 byte biến cục bộ cộng căn lề...). Chia giới hạn stack mặc định `8 MiB = 8.388.608` cho 64 byte được 131.072: khớp với độ sâu đo được **130.989** (phần còn lại dành cho dữ liệu khởi động chương trình). Khi vượt, đỉnh stack chạm một **trang bảo vệ** (guard page) không được ánh xạ, CPU gây lỗi trang và kernel gửi `SIGSEGV`: hiện tượng "stack overflow". Vài hệ quả:
+
+- **Độ sâu đệ quy tối đa** là `kích thước stack / kích thước khung`: khoảng 130 nghìn ở đây; hàm có nhiều biến cục bộ cạn nhanh hơn. Đó là lý do Python giới hạn đệ quy ở 1.000 mặc định (xem [Big-O & Complexity](/docs/dsa/complexity)) và vì sao duyệt cây hay đồ thị sâu nên viết bằng vòng lặp ([Graph](/docs/dsa/graphs)).
+- **Mỗi thread có stack riêng** (mặc định 8 MiB trên Linux, 1 MiB trên Windows), được `mmap` lười (chỉ tốn RAM thật cho phần đã chạm), như đã nêu ở [Process vs Thread](/docs/os/process-thread).
+- **Lỗi tràn bộ đệm** trên stack (ghi vượt mảng cục bộ) có thể đè lên **địa chỉ trả về**; kẻ tấn công điều khiển được `ret` nhảy tới đâu. Phòng thủ: **stack canary** (một giá trị bí mật đặt trước địa chỉ trả về, kiểm tra trước `ret`), **NX** (không thực thi mã trong vùng stack), **ASLR** (địa chỉ ngẫu nhiên hoá, thấy ở `0x7ffc...` thay đổi mỗi lần chạy).
+
+### Chi phí của một lời gọi hàm
+
+Một lời gọi hàm gồm `call`, dựng khung, thân hàm, `ret`: nghe đắt, nhưng đo thật (400 triệu lần gọi hàm `add_one` bị cấm inline) cho **0,31 ns mỗi lần** ở `-O1` trở lên (dưới 2 chu kỳ ở xung nhịp vài GHz: các lệnh `call` và `ret` được dự đoán rất tốt và khung rỗng không tốn gì) và **0,68 ns** ở `-O0`. Vậy lời gọi hàm bản thân **rẻ**; cái đắt là việc nó **chặn trình biên dịch tối ưu xuyên qua ranh giới hàm** (không thể gộp vòng lặp, giữ biến trong thanh ghi, bỏ phép tính thừa). Vì vậy trình biên dịch **inline** các hàm nhỏ (chèn thân hàm vào chỗ gọi), và các hàm ngắn nên để trong cùng file (hoặc dùng `-flto`) để nó làm được điều đó.
+
+## Các họ ISA
+
+| | x86-64 (Intel, AMD) | ARM64 (AArch64) | RISC-V |
+|---|---|---|---|
+| Triết lý | CISC: lệnh phức tạp, nhiều chế độ địa chỉ | RISC: lệnh đơn giản | RISC, mở, mô-đun hoá |
+| Độ dài lệnh | **1 tới 15 byte** | cố định 4 byte | 4 byte (2 byte nếu dùng phần nén `C`) |
+| Thanh ghi đa dụng | 16 | 31 | 32 |
+| Phép tính truy cập bộ nhớ | được (`add rax, [rdi]`) | không: chỉ `load` và `store` đọc ghi bộ nhớ | không (load-store) |
+| Dùng ở | máy tính để bàn, máy chủ | điện thoại, Apple Silicon, máy chủ đám mây (Graviton) | nhúng, nghiên cứu, ngày càng nhiều chip |
+
+Điều quan trọng với người dùng ngôn ngữ cấp cao: **cùng một chương trình C biên dịch ra mã máy khác hẳn** cho mỗi ISA (nên một file thực thi x86 không chạy trên ARM, trừ khi có lớp **dịch** như Rosetta của Apple hay trình giả lập QEMU); còn các ngôn ngữ chạy trên máy ảo hoặc thông dịch (Java, Python, JavaScript) che sự khác biệt bằng cách đẩy nó vào runtime. Các nền tảng đám mây giờ cho chạy cả hai kiến trúc, nên **ảnh container có thể cần hai bản** (`linux/amd64`, `linux/arm64`).
+
+## Công cụ
+
+- `gcc -S -masm=intel -O2 file.c` ra file assembly; `gcc -c` rồi `objdump -d -M intel file.o` cho mã máy cạnh lệnh; `gdb` có `disassemble` và `x/10i $pc` để xem lệnh đang chạy.
+- **Compiler Explorer** (godbolt.org): gõ C, C++, Rust, Go và xem assembly ngay, đổi mức tối ưu và trình biên dịch; cách nhanh nhất để học những gì trình biên dịch làm.
+- `perf annotate` gắn số lần mẫu vào từng lệnh assembly, chỉ ra lệnh nào nóng (nối với bài [CPU Pipeline & Branch Prediction](/docs/architecture/pipeline-branch-prediction)).
+- Go: `go tool objdump`, `go build -gcflags=-S`; Rust: `cargo rustc --release -- --emit asm`; Java: `-XX:+PrintAssembly` (cần thư viện hsdis).
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Chương trình chạy chậm hơn hàng chục lần ở bản debug | biên dịch `-O0` (mọi biến nằm trong bộ nhớ) | luôn đo bản `-O2`/`-O3` hoặc `--release` |
+| `Segmentation fault` với đệ quy sâu | cạn stack (hết 8 MiB) | chuyển sang vòng lặp, giảm kích thước khung, tăng `ulimit -s` hoặc dùng `std::thread` với stack lớn |
+| Hàm nhỏ không được tối ưu xuyên qua | nằm ở file khác, trình biên dịch không inline được | đặt trong header (`inline`), hoặc `-flto` |
+| Tràn bộ đệm trên stack dẫn tới điều khiển luồng chương trình | ghi vượt mảng cục bộ đè địa chỉ trả về | biên dịch `-fstack-protector-strong`, dùng ngôn ngữ an toàn bộ nhớ, bật ASLR và NX |
+| Tệp thực thi không chạy trên máy khác ("Exec format error") | khác ISA (x86-64 so với ARM64) | biên dịch cho đúng ISA, hoặc dùng ảnh đa kiến trúc |
+| Gọi hàm C từ ngôn ngữ khác bị sai đối số hoặc crash | không khớp quy ước gọi hàm (ABI), kích thước kiểu | khai báo đúng prototype, kiểu rộng cố định (`int64_t`), kiểm tra ABI |
+
+## Lưu ý
+
+- ISA là hợp đồng phần mềm với phần cứng; x86-64 phổ biến nhất, ARM64 đang tăng nhanh, cùng mã C ra mã máy khác nhau cho từng ISA.
+- Quy ước gọi hàm System V: sáu đối số nguyên đầu trong `rdi, rsi, rdx, rcx, r8, r9`, trả về trong `rax`; hàm gọi và hàm được gọi phải thống nhất thanh ghi nào được giữ nguyên.
+- `-O0` giữ mọi biến trong bộ nhớ, `-O2` giữ trong thanh ghi; chênh lệch tốc độ có thể hơn mười lần, nên đo ở mức tối ưu thật.
+- Lệnh x86 có độ dài thay đổi (1 tới 15 byte) và mã hoá nhiều tầng (REX, mã lệnh, ModRM, SIB); đọc mã máy tay được nhưng không đoán được ranh giới lệnh.
+- `cmp`/`test` đặt cờ, `jcc` đọc cờ: mọi `if` và vòng lặp thành cặp lệnh này; `cmov` là cách trình biên dịch loại bỏ nhánh khó đoán.
+- Stack mọc xuống và có giới hạn (8 MiB mặc định ở Linux, mỗi thread một stack riêng); đệ quy sâu quá giới hạn gây `SIGSEGV`, độ sâu tối đa xấp xỉ kích thước stack chia kích thước khung.
+- Gọi hàm tự nó rẻ (dưới một nano giây); cái đắt là chặn tối ưu xuyên hàm, nên trình biên dịch inline hàm nhỏ.
+- Đọc assembly (bằng `gcc -S`, `objdump`, Compiler Explorer) là cách chắc chắn nhất để biết trình biên dịch đã làm gì với mã của bạn.

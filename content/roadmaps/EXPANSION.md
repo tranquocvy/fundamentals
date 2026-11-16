@@ -1,6 +1,6 @@
 # Kế hoạch mở rộng roadmap `cs-fundamentals`
 
-Ghi lại kết quả khảo sát ngày 2026-11-17: bốn chặng hiện có (DSA, OS, Networking, Databases) có đủ cho "CS Fundamentals" chưa, và nên bổ sung gì. Đây là ghi chú để làm dần; tick vào mục khi làm xong. **Trạng thái:** mục 6 (node thiếu trong bốn chặng hiện có) đã làm gần hết, trừ `sockets` của Networking. Các chặng mới (mục 3 và 4) **chưa làm**, đang chờ chủ repo chọn chặng nào.
+Ghi lại kết quả khảo sát ngày 2026-11-17: bốn chặng hiện có (DSA, OS, Networking, Databases) có đủ cho "CS Fundamentals" chưa, và nên bổ sung gì. Đây là ghi chú để làm dần; tick vào mục khi làm xong. **Trạng thái:** mục 6 (node thiếu trong bốn chặng hiện có) đã làm gần hết, trừ `sockets` của Networking. Chặng **Computer Architecture** (mục 3.1) đã làm đủ 4 bài; **Distributed Systems**, **Security** (mục 3.2, 3.3) và các chặng ở mục 4 **chưa làm**, đang chờ chủ repo chọn.
 
 Chủ repo chọn làm **tuần tự, từng chặng một**. Hoàn thành bài viết của bốn chặng hiện có trước (xem `HANDOFF.md`), rồi mới thêm chặng mới.
 
@@ -24,10 +24,10 @@ Xếp theo thứ tự nên làm. Node chỉ là gợi ý, chốt lại khi viế
 
 ### 3.1 Computer Architecture (đặt trước OS)
 
-- [ ] biểu diễn số và dữ liệu (số nguyên, bù hai, float, endianness)
-- [ ] ISA và assembly
-- [ ] pipeline và branch prediction
-- [ ] memory hierarchy và cache
+- [x] biểu diễn số và dữ liệu (số nguyên, bù hai, float, endianness) -> `architecture/data-representation`
+- [x] ISA và assembly -> `architecture/isa-assembly`
+- [x] pipeline và branch prediction -> `architecture/pipeline-branch-prediction`
+- [x] memory hierarchy và cache -> `architecture/memory-hierarchy`
 
 Vì sao: bài `os/virtual-memory` và `dsa/complexity` đều dựa vào cache và TLB mà chưa có bài nền giải thích. Nguồn gợi ý: Nand2Tetris, Patterson & Hennessy, CS:APP (Bryant & O'Hallaron).
 

@@ -15,7 +15,7 @@ content/
 
 Các môn khai báo ở `src/lib/subjects.ts`; môn nào có `ready: true` mới hiện nội dung. Môn chưa có bài hiện nhãn "soon". Màu accent của môn khai báo sẵn ở đó, và `src/app/global.css` cần hai dòng màu tương ứng khi tạo môn (CONTRIBUTING mục 4).
 
-Trạng thái hiện tại: bốn chặng của `cs-fundamentals` (**Operating Systems** 8 bài, **Computer Networks** 6 bài, **Data Structures & Algorithms** 8 bài, **Databases** 7 bài) đã viết theo chuẩn sâu bên dưới, đều `draft`. Chặng và node mới dự kiến nằm ở [roadmaps/EXPANSION.md](roadmaps/EXPANSION.md). Xem `content/roadmaps/cs-fundamentals.yaml` để biết node nào đã có `article`, đó là nguồn sự thật, đừng dựa vào danh sách trong file này.
+Trạng thái hiện tại: năm chặng của `cs-fundamentals` (**Computer Architecture** 4 bài, **Operating Systems** 8 bài, **Computer Networks** 6 bài, **Data Structures & Algorithms** 8 bài, **Databases** 7 bài) đã viết theo chuẩn sâu bên dưới, đều `draft`. Chặng và node mới dự kiến nằm ở [roadmaps/EXPANSION.md](roadmaps/EXPANSION.md). Xem `content/roadmaps/cs-fundamentals.yaml` để biết node nào đã có `article`, đó là nguồn sự thật, đừng dựa vào danh sách trong file này.
 
 ### Bản đồ từng môn (để biết bài nào nối với bài nào)
 
@@ -23,6 +23,7 @@ Môn không thể có file ghi chú riêng trong `content/docs/<môn>/` (xem c�
 
 | Môn | Thứ tự đọc | Liên kết chéo đã có |
 |---|---|---|
+| `architecture` | data-representation, isa-assembly, memory-hierarchy, pipeline-branch-prediction | data-representation dẫn tới dsa/strings, networking/network-layers và databases/relational-model (NUMERIC); isa-assembly dẫn về data-representation và tới architecture/pipeline-branch-prediction, os/process-thread, os/virtual-memory, dsa/graphs; memory-hierarchy dẫn tới dsa/arrays-linked-lists, dsa/trees, os/virtual-memory, os/file-systems, os/synchronization, databases/query-processing; pipeline-branch-prediction dẫn về memory-hierarchy và tới dsa/sorting, os/cpu-scheduling, os/process-thread. Thí nghiệm bằng C chạy trong WSL2 sau khi `apt-get install gcc`; `/tmp` của WSL bị xoá khi distro tắt nên biên dịch và chạy trong cùng một lần gọi |
 | `os` | process-thread, cpu-scheduling, synchronization, deadlock, virtual-memory, file-systems, io-devices, virtualization-containers | process-thread dẫn tới synchronization và virtual-memory; cpu-scheduling, virtual-memory và synchronization dẫn về process-thread; synchronization dẫn tới deadlock; file-systems dẫn tới virtual-memory và io-devices; io-devices dẫn tới cpu-scheduling, file-systems và process-thread; virtualization-containers dẫn tới process-thread, cpu-scheduling (cgroup), virtual-memory (OOM) và networking/ip-routing (veth) |
 | `dsa` | complexity, arrays-linked-lists, hash-tables, trees, sorting, graphs, dynamic-programming, strings | mỗi bài dẫn về bài trước: arrays-linked-lists về complexity; hash-tables về complexity và arrays-linked-lists; trees về complexity và arrays-linked-lists (và dẫn tới databases/indexing về sau); sorting dùng heap của trees; graphs dùng heap (trees), hàng đợi (arrays-linked-lists), bảng băm (hash-tables) và sort (sorting); dynamic-programming dẫn về complexity (Fibonacci) và graphs. Dẫn sang OS: trees tới os/cpu-scheduling (CFS), os/virtual-memory, os/file-systems; graphs tới os/deadlock; arrays-linked-lists tới os/process-thread và os/io-devices. Dẫn sang Networking: trees và graphs tới networking/ip-routing |
 | `databases` | relational-model, indexing, transactions, isolation-levels, normalization, storage-engines, query-processing | indexing dẫn về relational-model (EXPLAIN) và dsa/trees (B+ tree); transactions dẫn về os/file-systems (journaling), os/synchronization và os/deadlock, dsa/graphs (đồ thị chờ); isolation-levels dẫn về transactions (MVCC), os/deadlock và dsa/graphs; normalization dẫn về relational-model, indexing, transactions; storage-engines dẫn về indexing, transactions và dsa/trees; query-processing dẫn về relational-model, indexing, dsa/hash-tables, dsa/sorting và dsa/dynamic-programming; dsa/strings dẫn về hash-tables, trees, databases/indexing |
@@ -94,7 +95,7 @@ Khi cần ví dụ về giọng văn, độ chi tiết, cách đặt code và ou
 }
 ```
 
-Từ viết tắt thêm `"label": "TLB"`. Cách làm: viết xong cả chặng, quét mọi `<Term>` trong thư mục môn, so với khoá và alias trong glossary để ra danh sách thiếu, thêm một lượt, sắp lại ABC. Đừng lặp `def` cho thuật ngữ đã có. Các môn đang dùng `subject`: `os`, `networking`, `dsa`, `databases`.
+Từ viết tắt thêm `"label": "TLB"`. Cách làm: viết xong cả chặng, quét mọi `<Term>` trong thư mục môn, so với khoá và alias trong glossary để ra danh sách thiếu, thêm một lượt, sắp lại ABC. Đừng lặp `def` cho thuật ngữ đã có. Các môn đang dùng `subject`: `os`, `networking`, `dsa`, `databases`, `architecture`.
 
 ## 6. Môi trường thí nghiệm đã dùng (để bài sau cùng cách)
 
