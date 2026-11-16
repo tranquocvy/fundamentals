@@ -49,6 +49,7 @@ sections:
             url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
       - id: trees
         title: Tree & Binary Search Tree
+        article: dsa/trees
         description: Cấu trúc phân cấp, cân bằng cây, B-tree.
         requires: [arrays-linked-lists]
         resources:

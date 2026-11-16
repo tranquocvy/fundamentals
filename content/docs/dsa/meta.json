@@ -3,6 +3,7 @@
   "pages": [
     "complexity",
     "arrays-linked-lists",
-    "hash-tables"
+    "hash-tables",
+    "trees"
   ]
 }

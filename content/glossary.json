@@ -47,6 +47,14 @@
         "as"
       ]
     },
+    "b-tree": {
+      "def": "Cây tìm kiếm cân bằng mà mỗi nút chứa nhiều khoá (cỡ một trang đĩa) và mọi lá cùng độ sâu, nên rất thấp và ít lần đọc đĩa; nền của chỉ mục cơ sở dữ liệu.",
+      "subject": "dsa",
+      "aliases": [
+        "b+ tree",
+        "b tree"
+      ]
+    },
     "bandwidth-delay product": {
       "def": "Băng thông của đường truyền nhân RTT: lượng dữ liệu phải đang bay cùng lúc để lấp đầy đường truyền.",
       "subject": "networking",
@@ -66,6 +74,15 @@
       "aliases": [
         "big o",
         "o(n)"
+      ]
+    },
+    "binary search tree": {
+      "label": "BST",
+      "def": "Cây nhị phân mà khoá ở cây con trái luôn nhỏ hơn khoá của nút và khoá ở cây con phải luôn lớn hơn, nên tìm kiếm bỏ được cả một nhánh sau mỗi so sánh.",
+      "subject": "dsa",
+      "aliases": [
+        "bst",
+        "cây tìm kiếm nhị phân"
       ]
     },
     "ca": {
@@ -198,6 +215,13 @@
       "def": "Một gói tin bị chậm hoặc mất làm mọi dữ liệu xếp sau nó phải chờ, dù chúng đã tới nơi.",
       "subject": "networking"
     },
+    "heap": {
+      "def": "Cây nhị phân đầy từ trái, lưu trong mảng, mà khoá mỗi nút không lớn hơn khoá hai con (min-heap); gốc luôn là phần tử nhỏ nhất.",
+      "subject": "dsa",
+      "aliases": [
+        "binary heap"
+      ]
+    },
     "icmp": {
       "label": "ICMP",
       "def": "Internet Control Message Protocol: giao thức đi kèm IP để báo lỗi và chẩn đoán, như port unreachable, TTL hết hạn, và là nền của ping và traceroute.",
@@ -329,6 +353,13 @@
         "ports"
       ]
     },
+    "priority queue": {
+      "def": "Hàng đợi mà mỗi lần lấy ra trả về phần tử có độ ưu tiên cao nhất (hoặc khoá nhỏ nhất), thường cài bằng heap.",
+      "subject": "dsa",
+      "aliases": [
+        "hàng đợi ưu tiên"
+      ]
+    },
     "process": {
       "def": "Một chương trình đang chạy, có address space, tài nguyên và ít nhất một thread riêng.",
       "subject": "os",
@@ -440,6 +471,20 @@
       "label": "TLB",
       "def": "Translation Lookaside Buffer: cache nhỏ trong MMU lưu các ánh xạ trang ảo → khung vật lý vừa dùng để dịch địa chỉ nhanh.",
       "subject": "os"
+    },
+    "tree": {
+      "def": "Cấu trúc phân cấp gồm các nút nối bằng cạnh, có một nút gốc và không có vòng.",
+      "subject": "dsa",
+      "aliases": [
+        "cây"
+      ]
+    },
+    "trie": {
+      "def": "Cây mà mỗi cạnh gắn một ký tự, đường từ gốc tới một nút đánh dấu là một từ; tìm theo tiền tố tốn thời gian theo độ dài chuỗi, không phụ thuộc số từ.",
+      "subject": "dsa",
+      "aliases": [
+        "prefix tree"
+      ]
     },
     "ttl": {
       "label": "TTL",
