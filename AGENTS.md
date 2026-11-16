@@ -2,6 +2,8 @@
 
 **Trước khi viết bài hoặc sửa code, đọc [CONTRIBUTING.md](CONTRIBUTING.md).** File đó có quy ước viết, frontmatter, các bước thêm bài/môn, quy tắc thiết kế và checklist.
 
+Ngữ cảnh theo thư mục (chuẩn chất lượng bài, mẫu để bắt chước, quy trình, môi trường thí nghiệm): [content/AGENTS.md](content/AGENTS.md) cho bài viết và glossary, [content/roadmaps/AGENTS.md](content/roadmaps/AGENTS.md) cho roadmap. Đọc chúng khi làm việc trong các thư mục đó.
+
 Tóm tắt điều không được vi phạm:
 
 - Nội dung tiếng Việt, **giữ thuật ngữ tiếng Anh**. Không phải site luyện phỏng vấn.
