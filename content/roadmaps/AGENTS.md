@@ -2,6 +2,8 @@
 
 Mỗi file `<tên>.yaml` ở đây là một cây roadmap, tên file là URL (`cs-fundamentals.yaml` thành `/roadmaps/cs-fundamentals`). Đọc [CONTRIBUTING.md](../../CONTRIBUTING.md) mục 4b để có schema đầy đủ; file này giải thích **vì sao** thiết kế như vậy và **trang web sẽ vẽ ra sao**, để cây mới hay node mới khớp với phần còn lại.
 
+Kế hoạch bổ sung chặng và node cho `cs-fundamentals` (khảo sát so với OSSU, Teach Yourself CS, CS2023) nằm ở [EXPANSION.md](EXPANSION.md); đọc trước khi thêm chặng mới.
+
 ## 1. Hai cây hiện có
 
 | File | Mục đích | Chặng (section id) |

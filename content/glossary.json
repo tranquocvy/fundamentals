@@ -10,6 +10,13 @@
       "def": "Authenticated Encryption with Associated Data: kiểu mã hoá vừa giữ bí mật vừa xác thực dữ liệu trong một bước; sửa một bit của bản mã là bị từ chối. Ví dụ AES-GCM, ChaCha20-Poly1305.",
       "subject": "networking"
     },
+    "amortized analysis": {
+      "def": "Cách tính chi phí trung bình trên cả một chuỗi thao tác, để một thao tác thỉnh thoảng đắt không làm hỏng đánh giá của những thao tác còn lại.",
+      "subject": "dsa",
+      "aliases": [
+        "amortized"
+      ]
+    },
     "arp": {
       "label": "ARP",
       "def": "Address Resolution Protocol: giao thức hỏi cả mạng cục bộ bằng broadcast để đổi một địa chỉ IP thành địa chỉ MAC.",
@@ -47,6 +54,15 @@
       "label": "BGP",
       "def": "Border Gateway Protocol: giao thức định tuyến giữa các autonomous system, trao đổi prefix nào tới được qua đường nào theo chính sách của từng AS.",
       "subject": "networking"
+    },
+    "big-o": {
+      "label": "Big-O",
+      "def": "Ký hiệu cận trên cho tốc độ tăng của chi phí (thời gian hoặc bộ nhớ) theo kích thước đầu vào, bỏ qua hằng số và số hạng nhỏ.",
+      "subject": "dsa",
+      "aliases": [
+        "big o",
+        "o(n)"
+      ]
     },
     "ca": {
       "label": "CA",
@@ -192,6 +208,13 @@
     "livelock": {
       "def": "Các thread vẫn chạy và liên tục phản ứng với nhau nhưng không bên nào tiến triển; khác deadlock ở chỗ không ai bị block.",
       "subject": "os"
+    },
+    "locality of reference": {
+      "def": "Xu hướng chương trình truy cập lại cùng vùng nhớ hoặc vùng nhớ liền kề trong thời gian ngắn, điều mà cache khai thác để chạy nhanh.",
+      "subject": "dsa",
+      "aliases": [
+        "locality"
+      ]
     },
     "longest prefix match": {
       "def": "Quy tắc router chọn trong bảng định tuyến dòng khớp địa chỉ đích có prefix dài nhất, tức tuyến cụ thể nhất.",

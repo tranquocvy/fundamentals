@@ -26,6 +26,7 @@ sections:
     nodes:
       - id: complexity
         title: Big-O & Complexity
+        article: dsa/complexity
         description: Đo thời gian và bộ nhớ theo kích thước đầu vào.
         resources:
           - title: Jeff Erickson — Algorithms (sách miễn phí)
