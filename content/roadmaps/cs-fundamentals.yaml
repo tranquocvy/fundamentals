@@ -188,6 +188,7 @@ sections:
             url: https://15445.courses.cs.cmu.edu/
       - id: indexing
         title: Indexing
+        article: databases/indexing
         description: B-tree index giúp truy vấn nhanh và cái giá khi ghi.
         requires: [relational-model, trees]
         resources:

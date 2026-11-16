@@ -258,6 +258,14 @@
       "def": "Internet Control Message Protocol: giao thức đi kèm IP để báo lỗi và chẩn đoán, như port unreachable, TTL hết hạn, và là nền của ping và traceroute.",
       "subject": "networking"
     },
+    "index": {
+      "def": "Cấu trúc phụ (thường là B+ tree) lưu khoá cùng địa chỉ dòng để tìm dòng nhanh, đổi lại tốn chỗ và làm ghi chậm hơn.",
+      "subject": "databases",
+      "aliases": [
+        "chỉ mục",
+        "indexing"
+      ]
+    },
     "inode": {
       "def": "Cấu trúc trên đĩa chứa mọi thông tin về một file trừ tên: kích thước, quyền, thời điểm và vị trí các block dữ liệu.",
       "subject": "os"
