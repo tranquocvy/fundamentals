@@ -6,6 +6,7 @@
     "transactions",
     "isolation-levels",
     "normalization",
-    "storage-engines"
+    "storage-engines",
+    "query-processing"
   ]
 }

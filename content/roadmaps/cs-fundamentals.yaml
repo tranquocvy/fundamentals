@@ -228,3 +228,12 @@ sections:
         resources:
           - title: "Designing Data-Intensive Applications — Chapter 3: Storage and Retrieval"
             url: https://dataintensive.net/
+      - id: query-processing
+        title: Query Processing & Optimizer
+        article: databases/query-processing
+        description: Thuật toán join, mô hình executor và cách planner chọn kế hoạch bằng chi phí và thống kê.
+        requires: [indexing]
+        optional: true
+        resources:
+          - title: "PostgreSQL — Planner/Optimizer"
+            url: https://www.postgresql.org/docs/current/planner-optimizer.html

@@ -1,0 +1,493 @@
+---
+title: Query Processing & Optimizer
+description: Ba thuật toán join tự cài (nested loop, hash, merge), executor kiểu Volcano và thực thi theo lô, planner chọn thứ tự join bằng chi phí và thống kê, đo trên PostgreSQL gồm một ước lượng sai 49 lần được sửa bằng extended statistics.
+status: draft
+tags: [databases, query-processing, optimizer]
+authors: [tranquocvy]
+references:
+  - title: "Selinger et al. — Access Path Selection in a Relational Database Management System (1979)"
+    kind: paper
+    note: "bài báo của System R: tối ưu hoá theo chi phí và quy hoạch động trên thứ tự join"
+  - title: "Graefe — Volcano: An Extensible and Parallel Query Evaluation System (1994)"
+    kind: paper
+    note: mô hình iterator open, next, close của các toán tử
+  - title: "Boncz, Zukowski, Nes — MonetDB/X100: Hyper-Pipelining Query Execution (CIDR 2005)"
+    kind: paper
+    note: thực thi theo vector (vectorized) và vì sao nhanh hơn từng dòng
+  - title: "Leis et al. — How Good Are Query Optimizers, Really? (VLDB 2015)"
+    url: https://www.vldb.org/pvldb/vol9/p204-leis.pdf
+    kind: paper
+    note: ước lượng số dòng sai là nguyên nhân chính của kế hoạch tệ
+  - title: "PostgreSQL docs — Planner/Optimizer (Chapter 51.5)"
+    url: https://www.postgresql.org/docs/current/planner-optimizer.html
+    kind: web
+    note: sinh đường truy cập và đường join, chọn kế hoạch rẻ nhất
+  - title: "PostgreSQL docs — Planner Statistics (Chapter 14.2)"
+    url: https://www.postgresql.org/docs/current/planner-stats.html
+    kind: web
+    note: pg_statistic, histogram, most common values
+  - title: "PostgreSQL docs — Multivariate Statistics Examples"
+    url: https://www.postgresql.org/docs/current/multivariate-statistics-examples.html
+    kind: web
+    note: functional dependencies và vì sao giả định độc lập sai
+  - title: "CMU 15-445/645 Database Systems — Query Execution; Query Planning and Optimization lectures"
+    url: https://15445.courses.cs.cmu.edu/
+    kind: video
+    note: các mô hình thực thi, cost model, tìm kiếm thứ tự join
+---
+
+## Ý chính
+
+Ở bài [Relational Model & SQL](/docs/databases/relational-model) ta thấy một câu `SELECT` đi qua parser, planner rồi executor. Bài này mở hộp hai bước cuối: **executor chạy một kế hoạch bằng những thuật toán nào** (đặc biệt các thuật toán `JOIN`, phần đắt nhất), và **planner chọn kế hoạch nào trong hàng nghìn tỉ khả năng**. Câu trả lời cho câu thứ hai là: nó **ước lượng chi phí** của từng kế hoạch dựa trên **thống kê** về dữ liệu, rồi chọn cái rẻ nhất. Mọi thứ phụ thuộc vào độ chính xác của ước lượng đó, và khi nó sai, một câu truy vấn nhanh có thể thành chậm gấp hàng trăm lần mà không có lỗi nào được báo.
+
+Trình tự: ba thuật toán join tự cài và đo số phép so sánh; mô hình executor **Volcano** (mỗi toán tử một `next()`) tự cài, vì sao `LIMIT` dừng sớm được, và so với thực thi theo lô; planner tìm thứ tự join thế nào và cái giá của thứ tự tồi (đo trên PostgreSQL); và **thống kê**, nguyên nhân gốc của kế hoạch tồi (kèm một ước lượng sai 49 lần và cách sửa). Code Python 3.13, SQL trên **PostgreSQL 16.15**. Bài này dùng [bảng băm](/docs/dsa/hash-tables) (hash join), [sắp xếp](/docs/dsa/sorting) (merge join), và cách đọc `EXPLAIN` của bài Relational Model và [Indexing](/docs/databases/indexing).
+
+## Ba thuật toán join
+
+Join nối hai bảng `R` và `S` theo điều kiện `R.k = S.k`. Có ba họ thuật toán, mỗi họ thắng ở một hoàn cảnh:
+
+- **Nested loop join**: với **mỗi** dòng của bảng ngoài, quét bảng trong để tìm dòng khớp. Đơn giản nhất, `O(|R| × |S|)`. Nhưng nếu bảng trong có **chỉ mục** trên cột join thì mỗi lần "quét" chỉ là một lần tra cây: `O(|R| × log |S|)`, tuyệt vời khi bảng ngoài nhỏ.
+- **Hash join**: **build** một bảng băm trên bảng nhỏ, rồi **probe**: với mỗi dòng bảng lớn, tra bảng băm. `O(|R| + |S|)`, chỉ dùng được cho điều kiện **bằng** (`=`), và cần bộ nhớ chứa bảng băm (nếu không vừa thì chia thành nhiều lô ghi tạm ra đĩa).
+- **Sort-merge join**: sắp xếp cả hai bảng theo khoá join rồi duyệt song song hai con trỏ như bước trộn của merge sort. `O(|R| log |R| + |S| log |S|)`, hoặc chỉ `O(|R| + |S|)` nếu hai bảng **đã có thứ tự** (ví dụ qua chỉ mục). Dùng được cho cả điều kiện khoảng, và cho ra kết quả **đã sắp xếp** theo khoá (có ích cho `ORDER BY` hay bước join sau).
+
+Dưới đây là cả ba, mỗi cái đếm số phép so sánh khoá, kiểm tra kết quả trùng nhau trên dữ liệu có khoá lặp, rồi đo trên kích thước tăng dần:
+
+```python
+# Ba thuật toán join tự cài: nested loop, hash join, sort-merge join. Đếm số so sánh khoá và đo thời gian.
+import random, time
+
+def nested_loop_join(R, S, rk, sk):
+    out, cmp = [], 0
+    for r in R:                                   # bảng ngoài
+        for s in S:                               # quét lại TOÀN BỘ bảng trong cho mỗi dòng ngoài
+            cmp += 1
+            if r[rk] == s[sk]: out.append((r, s))
+    return out, cmp
+
+def hash_join(R, S, rk, sk):
+    out, cmp = [], 0
+    table = {}                                    # pha build: băm bảng nhỏ
+    for r in R: table.setdefault(r[rk], []).append(r)
+    for s in S:                                   # pha probe: mỗi dòng của bảng lớn tra bảng băm
+        cmp += 1
+        for r in table.get(s[sk], ()): out.append((r, s))
+    return out, cmp
+
+def merge_join(R, S, rk, sk):
+    out, cmp = [], 0
+    R, S = sorted(R, key=lambda x: x[rk]), sorted(S, key=lambda x: x[sk])   # pha sắp xếp (bỏ qua nếu đã có thứ tự, ví dụ nhờ chỉ mục)
+    i = j = 0
+    while i < len(R) and j < len(S):
+        cmp += 1
+        a, b = R[i][rk], S[j][sk]
+        if a < b: i += 1
+        elif a > b: j += 1
+        else:                                     # gặp nhóm khoá bằng nhau: ghép chéo cả nhóm
+            j2 = j
+            while j2 < len(S) and S[j2][sk] == a:
+                out.append((R[i], S[j2])); j2 += 1
+            i += 1                                # i tăng; j giữ nguyên để dòng R tiếp theo (cùng khoá) ghép lại nhóm
+    return out, cmp
+
+def canon(res): return sorted((r[0], s[0]) for r, s in res)
+
+random.seed(4)
+print("độ chính xác: ba thuật toán cho cùng kết quả trên dữ liệu có khoá trùng lặp")
+R = [(i, random.randrange(50)) for i in range(300)]       # (id, khoá)
+S = [(i, random.randrange(50)) for i in range(400)]
+a, _ = nested_loop_join(R, S, 1, 1); b, _ = hash_join(R, S, 1, 1); c, _ = merge_join(R, S, 1, 1)
+assert canon(a) == canon(b) == canon(c)
+print(f"   {len(a)} cặp khớp, cả ba thuật toán trùng nhau")
+
+print()
+print(f"{'|R|':>7} {'|S|':>7} | {'nested loop':>24} | {'hash join':>22} | {'merge join':>22}")
+print(f"{'':>7} {'':>7} | {'so sánh':>12} {'ms':>11} | {'so sánh':>10} {'ms':>11} | {'so sánh':>10} {'ms':>11}")
+for nr, ns in ((500, 2000), (1000, 4000), (2000, 8000), (4000, 16000)):
+    R = [(i, random.randrange(nr * 4)) for i in range(nr)]
+    S = [(i, random.randrange(nr * 4)) for i in range(ns)]
+    row = []
+    for fn in (nested_loop_join, hash_join, merge_join):
+        t = time.perf_counter(); res, cmp = fn(R, S, 1, 1); dt = time.perf_counter() - t
+        row.append((cmp, dt * 1000, len(res)))
+    assert row[0][2] == row[1][2] == row[2][2]
+    print(f"{nr:>7} {ns:>7} | {row[0][0]:>12,} {row[0][1]:>11.1f} | {row[1][0]:>10,} {row[1][1]:>11.2f} | {row[2][0]:>10,} {row[2][1]:>11.2f}")
+```
+
+```text
+độ chính xác: ba thuật toán cho cùng kết quả trên dữ liệu có khoá trùng lặp
+   2320 cặp khớp, cả ba thuật toán trùng nhau
+
+    |R|     |S| |              nested loop |              hash join |             merge join
+                |      so sánh          ms |    so sánh          ms |    so sánh          ms
+    500    2000 |    1,000,000        30.8 |      2,000        0.20 |      2,491        0.58
+   1000    4000 |    4,000,000       122.0 |      4,000        0.98 |      4,999        1.60
+   2000    8000 |   16,000,000       485.2 |      8,000        0.81 |      9,991        2.74
+   4000   16000 |   64,000,000      2043.3 |     16,000        2.16 |     19,985        5.94
+```
+
+Dòng đầu: trên dữ liệu có khoá trùng lặp (một khoá nhiều dòng), cả ba thuật toán cho đúng cùng 2.320 cặp, nên chúng chỉ khác nhau về **chi phí**. Bảng đo cho thấy khác biệt khủng khiếp:
+
+- **Nested loop** làm đúng `|R| × |S|` phép so sánh: từ 1.000.000 lên **64.000.000** khi mỗi bảng lớn lên 8 lần, thời gian từ 31 ms lên **2.043 ms**. Tăng theo bình phương.
+- **Hash join** làm đúng `|S|` phép tra (một lần probe cho mỗi dòng bảng lớn): 2.000 tới 16.000, thời gian chỉ **0,2 tới 2,2 ms**. Chênh nhau khoảng **một nghìn lần** ở kích thước lớn nhất.
+- **Merge join** làm ít hơn tổng kích thước hai bảng một chút (`|R| + |S|` lần so sánh ở pha trộn: 2.491 đến 19.985), nhưng **chưa tính pha sắp xếp** (tốn `n log n`), nên thời gian (0,6 tới 5,9 ms) cao hơn hash join. Nếu dữ liệu đã có thứ tự sẵn, pha sắp xếp biến mất và merge join trở thành lựa chọn rẻ nhất.
+
+| | Nested loop | Hash join | Merge join |
+|---|---|---|---|
+| Độ phức tạp | `O(R × S)`, hoặc `O(R log S)` với chỉ mục | `O(R + S)` | `O(R log R + S log S)`, hoặc `O(R + S)` nếu đã có thứ tự |
+| Điều kiện | mọi điều kiện | chỉ bằng (`=`) | bằng, khoảng |
+| Bộ nhớ | gần như không | bảng băm của bảng nhỏ (có thể tràn ra đĩa) | sắp xếp (có thể tràn ra đĩa) |
+| Tốt khi | bảng ngoài nhỏ và bảng trong có chỉ mục | một bên nhỏ vừa bộ nhớ, không có thứ tự sẵn | hai bên đã có thứ tự, hoặc cần kết quả có thứ tự |
+| Tên nút trong `EXPLAIN` PostgreSQL | `Nested Loop` | `Hash Join` (kèm nút `Hash`) | `Merge Join` (kèm `Sort`) |
+
+Planner chọn giữa ba cách tuỳ **kích thước ước lượng** của hai bên, chỉ mục sẵn có, và thứ tự mong muốn của kết quả; ở bài Relational Model, cùng một câu truy vấn được chạy bằng hash join rồi bằng nested loop kèm nút `Memoize` khi ta cấm hash join, với chi phí và thời gian rất khác nhau. Khi bảng băm không vừa `work_mem`, hash join chuyển sang chia thành nhiều lô ghi ra đĩa (xem `Batches: 2` trong một kế hoạch bên dưới).
+
+## Executor: mô hình Volcano
+
+Kế hoạch là một **cây** các toán tử (scan, filter, join, aggregate, sort, limit). Cách chạy cổ điển nhất là mô hình **Volcano** (Graefe, 1994): mọi toán tử có cùng giao diện với ba hàm `open()`, `next()`, `close()`. Gọi `next()` trên gốc cây; mỗi toán tử, khi cần một dòng, lại gọi `next()` trên con của nó. Dòng chảy **kéo từ trên xuống** (pull), mỗi lần đúng **một dòng**. Ưu điểm là cực kỳ gọn và ghép được tuỳ ý. Dưới đây là một executor Volcano tự cài, chạy một truy vấn có `LIMIT`:
+
+```python
+# Executor kiểu Volcano (iterator): mỗi toán tử có next() trả về MỘT dòng; các toán tử lồng nhau thành cây kế hoạch.
+# So với thực thi theo lô (vectorized): mỗi lần xử lý cả khối dòng.
+import time, random
+
+class Scan:
+    def __init__(self, rows): self.rows = rows
+    def open(self): self.i = 0
+    def next(self):
+        if self.i >= len(self.rows): return None
+        r = self.rows[self.i]; self.i += 1; return r
+class Filter:
+    def __init__(self, child, pred): self.child, self.pred = child, pred
+    def open(self): self.child.open()
+    def next(self):
+        while (r := self.child.next()) is not None:
+            if self.pred(r): return r
+        return None
+class Project:
+    def __init__(self, child, fn): self.child, self.fn = child, fn
+    def open(self): self.child.open()
+    def next(self):
+        r = self.child.next(); return None if r is None else self.fn(r)
+class HashJoin:
+    def __init__(self, build, probe, bk, pk): self.build, self.probe, self.bk, self.pk = build, probe, bk, pk
+    def open(self):
+        self.table = {}; self.build.open()
+        while (r := self.build.next()) is not None: self.table.setdefault(r[self.bk], []).append(r)
+        self.probe.open(); self.pending = []
+    def next(self):
+        while not self.pending:
+            s = self.probe.next()
+            if s is None: return None
+            self.pending = [r + s for r in self.table.get(s[self.pk], [])][::-1]
+        return self.pending.pop()
+class Limit:
+    def __init__(self, child, n): self.child, self.n = child, n
+    def open(self): self.child.open(); self.k = 0
+    def next(self):
+        if self.k >= self.n: return None
+        r = self.child.next()
+        if r is not None: self.k += 1
+        return r
+
+def run(plan):
+    plan.open(); out = []
+    while (r := plan.next()) is not None: out.append(r)
+    return out
+
+random.seed(1)
+customers = [(i, f"khach{i}", ["Hà Nội", "Huế", "Đà Nẵng"][i % 3]) for i in range(2000)]
+orders = [(j, random.randrange(2000), random.randrange(1, 1000)) for j in range(100_000)]
+
+# SELECT c.name, o.amount FROM customers c JOIN orders o ON c.id = o.cid WHERE c.city = 'Huế' AND o.amount > 900 LIMIT 5
+plan = Limit(Project(HashJoin(Filter(Scan(customers), lambda c: c[2] == "Huế"),
+                              Filter(Scan(orders), lambda o: o[2] > 900), 0, 1),
+                     lambda r: (r[1], r[5])), 5)
+print("cây kế hoạch:  Limit(5) <- Project(name, amount) <- HashJoin(c.id = o.cid)")
+print("                                                       |- build: Filter(city = 'Huế') <- Scan(customers)")
+print("                                                       |- probe: Filter(amount > 900) <- Scan(orders)")
+t = time.perf_counter(); rows = run(plan); dt = time.perf_counter() - t
+print("kết quả:", rows, f"({dt * 1000:.2f} ms)")
+print("   Limit dừng sau 5 dòng: các toán tử bên dưới KHÔNG chạy hết 100.000 dòng, vì mỗi next() chỉ kéo thêm khi cần (pipeline kéo)")
+
+# đo số lần gọi next() với và không có Limit
+class Counter:
+    n = 0
+class CScan(Scan):
+    def next(self):
+        Counter.n += 1; return super().next()
+Counter.n = 0
+run(Limit(Filter(CScan(orders), lambda o: o[2] > 900), 5)); with_limit = Counter.n
+Counter.n = 0
+run(Filter(CScan(orders), lambda o: o[2] > 900)); without = Counter.n
+print(f"số dòng bảng orders đã được kéo lên: có LIMIT 5 = {with_limit:,}; không LIMIT = {without:,}")
+
+# Volcano (từng dòng) và theo lô (cả khối) trên cùng một việc: lọc rồi cộng
+data = [random.randrange(1000) for _ in range(1_000_000)]
+t = time.perf_counter()
+src = Scan(data); flt = Filter(src, lambda x: x > 900); flt.open(); total = 0
+while (r := flt.next()) is not None: total += r
+dt_row = time.perf_counter() - t
+t = time.perf_counter(); total_b = sum(x for x in data if x > 900); dt_batch = time.perf_counter() - t
+t = time.perf_counter()
+BATCH = 4096; total_c = 0
+for i in range(0, len(data), BATCH):
+    chunk = data[i:i + BATCH]
+    total_c += sum(filter((900).__lt__, chunk))
+dt_vec = time.perf_counter() - t
+assert total == total_b == total_c
+print()
+print(f"lọc 1.000.000 số rồi cộng, cùng kết quả {total:,}:")
+print(f"   từng dòng qua next() (Volcano)         : {dt_row * 1000:8.1f} ms")
+print(f"   vòng lặp gộp một hàm                  : {dt_batch * 1000:8.1f} ms")
+print(f"   theo lô 4096 dòng, hàm dựng sẵn chạy trong C: {dt_vec * 1000:8.1f} ms  ({dt_row / dt_vec:.1f}x nhanh hơn Volcano)")
+```
+
+```text
+cây kế hoạch:  Limit(5) <- Project(name, amount) <- HashJoin(c.id = o.cid)
+                                                       |- build: Filter(city = 'Huế') <- Scan(customers)
+                                                       |- probe: Filter(amount > 900) <- Scan(orders)
+kết quả: [('khach58', 915), ('khach1993', 904), ('khach649', 994), ('khach1231', 994), ('khach694', 964)] (0.34 ms)
+   Limit dừng sau 5 dòng: các toán tử bên dưới KHÔNG chạy hết 100.000 dòng, vì mỗi next() chỉ kéo thêm khi cần (pipeline kéo)
+số dòng bảng orders đã được kéo lên: có LIMIT 5 = 34; không LIMIT = 100,001
+
+lọc 1.000.000 số rồi cộng, cùng kết quả 93,830,215:
+   từng dòng qua next() (Volcano)         :    116.7 ms
+   vòng lặp gộp một hàm                  :     16.9 ms
+   theo lô 4096 dòng, hàm dựng sẵn chạy trong C:     28.0 ms  (4.2x nhanh hơn Volcano)
+```
+
+Điểm đẹp nhất của mô hình kéo: **`Limit(5)` dừng sau 5 dòng**, và vì mỗi toán tử bên dưới chỉ kéo thêm dòng khi được hỏi, chúng không bao giờ xử lý hết 100.000 dòng. Số đo: bảng `orders` bị kéo **34** dòng khi có `LIMIT 5`, so với **100.001** dòng khi không có. Cả truy vấn mất 0,34 ms. Đây là lý do `SELECT ... LIMIT 10` trên một bảng khổng lồ vẫn nhanh nếu kế hoạch cho phép dòng đầu ra đến sớm (không có bước sắp xếp hay gom nhóm chặn ở giữa, vì những toán tử đó phải kéo **toàn bộ** đầu vào mới trả được dòng đầu tiên).
+
+### Cái giá của "từng dòng một"
+
+Mỗi dòng đi qua mỗi toán tử là **một lời gọi hàm gián tiếp**. Với hàng chục triệu dòng, chi phí gọi hàm, kiểm tra điều kiện và nhảy giữa các toán tử vượt xa chi phí tính toán thật. Phần cuối của output đo cùng một việc (lọc rồi cộng 1.000.000 số) bằng ba cách: qua chuỗi `next()` kiểu Volcano mất **116,7 ms**; vòng lặp gộp trong một hàm mất 16,9 ms; xử lý theo **lô** 4.096 dòng gọi hàm dựng sẵn mất **28,0 ms**, nhanh hơn Volcano **4,2 lần** (trong Python, phần "chạy trong C" của lô là phần ăn tiền; trong C++ hay Rust lô ăn tiền vì khác lý do). Các hệ thống phân tích hiện đại (DuckDB, ClickHouse, Velox, và các engine kiểu MonetDB/X100) vì vậy chạy theo **vector**: mỗi `next()` trả về **cả khối vài nghìn giá trị** của một cột, nên chi phí gọi hàm chia đều cho cả khối, vòng lặp bên trong gọn và tận dụng cache và lệnh SIMD của CPU. Một hướng khác là **biên dịch** truy vấn thành mã máy (JIT, như PostgreSQL với LLVM hay HyPer) để bỏ hẳn lời gọi giữa các toán tử.
+
+| Mô hình | Đơn vị xử lý | Ưu | Nhược | Dùng ở |
+|---|---|---|---|---|
+| Volcano (iterator) | một dòng | đơn giản, `LIMIT` dừng sớm, ghép tự do | chi phí gọi hàm trên mỗi dòng, khó dùng SIMD | PostgreSQL, MySQL, SQLite (hướng truyền thống) |
+| Vectorized | khối vài nghìn giá trị | chi phí gọi chia đều, thân thiện cache và SIMD | phức tạp hơn một chút, `LIMIT` kém mịn hơn | DuckDB, ClickHouse, Velox |
+| Biên dịch (JIT) | cả pipeline thành một vòng lặp | không còn lời gọi giữa toán tử | tốn thời gian biên dịch, khó gỡ lỗi | HyPer, Umbra, PostgreSQL JIT (một phần) |
+
+## Optimizer: chọn thứ tự join
+
+Cho truy vấn nối `n` bảng, có rất nhiều cách xếp thứ tự (và hình dạng cây) join. Số thứ tự tăng cực nhanh:
+
+```text
+ số bảng n    thứ tự left-deep n!    thứ tự bushy (2(n-1))!/(n-1)!
+         2                      2                                2
+         3                      6                               12
+         4                     24                              120
+         6                    720                           30,240
+         8                 40,320                       17,297,280
+        10              3,628,800                   17,643,225,600
+        12            479,001,600               28,158,588,057,600
+```
+
+Với 10 bảng đã có **3,6 triệu** thứ tự dạng "cây lệch trái" (left-deep: luôn nối kết quả tạm với một bảng gốc) và **17,6 tỉ** nếu cho phép mọi hình dạng cây (bushy). Planner không thử hết mà dùng **quy hoạch động trên tập con** (ý tưởng của System R, 1979, xem phần [Dynamic Programming](/docs/dsa/dynamic-programming)): với mỗi tập con các bảng, giữ lại cách nối rẻ nhất, rồi xây tập lớn hơn từ các tập nhỏ. Độ phức tạp vẫn mũ (cỡ `3^n` với cây bushy), nên PostgreSQL chuyển sang **thuật toán di truyền** (GEQO) khi có từ 12 bảng trở lên, đánh đổi tối ưu lấy thời gian lập kế hoạch.
+
+Mỗi kế hoạch ứng viên được chấm bằng một **cost model**: một con số đơn vị tuỳ ý cộng chi phí đọc trang tuần tự, đọc trang ngẫu nhiên (đắt hơn), CPU cho mỗi dòng, mỗi lần so sánh. Đầu vào của cost model là **số dòng** mỗi bước trả về (cardinality), mà planner **ước lượng** từ thống kê. Hãy xem thứ tự join ảnh hưởng ra sao. Truy vấn: tổng số lượng "sách" mua bởi khách ở Huế, nối bốn bảng (`custs` 20.000 dòng, `prods` 1.000, `ords` 200.000, `lines` 1.000.000). Lần một để planner tự chọn; lần hai ép thứ tự tồi bằng `join_collapse_limit = 1` và viết `FROM` theo thứ tự nối hai bảng lớn nhất trước:
+
+```sql
+\pset null '∅'
+SET max_parallel_workers_per_gather = 0;      -- kế hoạch một tiến trình cho dễ đọc
+DROP TABLE IF EXISTS lines, ords, custs, prods, addr CASCADE;
+SELECT setseed(0.5);
+CREATE TABLE custs AS SELECT g AS id, (ARRAY['Hà Nội','Đà Nẵng','Huế','Cần Thơ','Hải Phòng'])[1 + g % 5] AS city FROM generate_series(1, 20000) g;
+CREATE TABLE prods AS SELECT g AS id, (ARRAY['sách','điện thoại','áo','giày','đồ chơi'])[1 + g % 5] AS category FROM generate_series(1, 1000) g;
+CREATE TABLE ords  AS SELECT g AS id, 1 + (random() * 19999)::int AS cust_id FROM generate_series(1, 200000) g;
+CREATE TABLE lines AS SELECT g AS id, 1 + (random() * 199999)::int AS order_id, 1 + (random() * 999)::int AS prod_id, 1 + (g % 5) AS qty
+                      FROM generate_series(1, 1000000) g;
+ALTER TABLE custs ADD PRIMARY KEY (id); ALTER TABLE prods ADD PRIMARY KEY (id); ALTER TABLE ords ADD PRIMARY KEY (id); ALTER TABLE lines ADD PRIMARY KEY (id);
+CREATE INDEX ON ords (cust_id); CREATE INDEX ON lines (order_id); CREATE INDEX ON lines (prod_id);
+VACUUM ANALYZE custs; VACUUM ANALYZE prods; VACUUM ANALYZE ords; VACUUM ANALYZE lines;
+
+\echo '== truy vấn: tổng số lượng "sách" mua bởi khách ở Huế =='
+\echo '-- 1. planner tự chọn thứ tự join'
+EXPLAIN (ANALYZE, TIMING OFF, COSTS ON, SUMMARY ON)
+SELECT sum(l.qty) FROM custs c JOIN ords o ON o.cust_id = c.id JOIN lines l ON l.order_id = o.id JOIN prods p ON p.id = l.prod_id
+WHERE c.city = 'Huế' AND p.category = 'sách';
+
+\echo ''
+\echo '-- 2. ép thứ tự tệ: nối hai bảng lớn nhất (lines, ords) trước, lọc sau cùng'
+SET join_collapse_limit = 1; SET enable_nestloop = off;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS ON, SUMMARY ON)
+SELECT sum(l.qty) FROM lines l JOIN ords o ON o.id = l.order_id JOIN custs c ON c.id = o.cust_id JOIN prods p ON p.id = l.prod_id
+WHERE c.city = 'Huế' AND p.category = 'sách';
+RESET join_collapse_limit; RESET enable_nestloop;
+
+\echo ''
+\echo '== thống kê của planner: pg_stats cho cột city =='
+SELECT attname, n_distinct, most_common_vals::text, most_common_freqs::text FROM pg_stats WHERE tablename = 'custs' AND attname = 'city';
+\echo '-- ước lượng số dòng cho điều kiện city = ''Huế'' (20.000 / 5 = 4.000):'
+EXPLAIN (COSTS ON, SUMMARY OFF) SELECT * FROM custs WHERE city = 'Huế';
+
+\echo ''
+\echo '== ước lượng SAI khi hai cột tương quan (planner giả định độc lập) =='
+CREATE TABLE addr AS
+SELECT g AS id, 'tp' || (g % 50) AS city, 'tp' || (g % 50) || '-' || (g % 500) AS zip FROM generate_series(1, 1000000) g;
+-- zip xác định city (zip = tpK-M thì city = tpK): mọi dòng có zip này đều có city này
+ANALYZE addr;
+\echo '-- thực tế: city = tp7 AND zip = tp7-7 cho 2.000 dòng; planner nhân hai độ chọn lọc độc lập nên ước lượng quá thấp'
+EXPLAIN (ANALYZE, TIMING OFF, COSTS ON, SUMMARY OFF) SELECT * FROM addr WHERE city = 'tp7' AND zip = 'tp7-7';
+CREATE STATISTICS addr_dep (dependencies) ON city, zip FROM addr;
+ANALYZE addr;
+\echo '-- sau CREATE STATISTICS (dependencies): planner biết city phụ thuộc zip'
+EXPLAIN (ANALYZE, TIMING OFF, COSTS ON, SUMMARY OFF) SELECT * FROM addr WHERE city = 'tp7' AND zip = 'tp7-7';
+RESET max_parallel_workers_per_gather;
+```
+
+```text
+ setseed 
+---------
+ 
+(1 row)
+
+== truy vấn: tổng số lượng "sách" mua bởi khách ở Huế ==
+-- 1. planner tự chọn thứ tự join
+                                                     QUERY PLAN                                                      
+---------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=23680.24..23680.25 rows=1 width=8) (actual rows=1 loops=1)
+   ->  Hash Join  (cost=4354.11..23580.24 rows=40000 width=4) (actual rows=39527 loops=1)
+         Hash Cond: (l.order_id = o.id)
+         ->  Hash Join  (cost=21.00..18097.12 rows=200000 width=8) (actual rows=199761 loops=1)
+               Hash Cond: (l.prod_id = p.id)
+               ->  Seq Scan on lines l  (cost=0.00..15440.00 rows=1000000 width=12) (actual rows=1000000 loops=1)
+               ->  Hash  (cost=18.50..18.50 rows=200 width=4) (actual rows=200 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 16kB
+                     ->  Seq Scan on prods p  (cost=0.00..18.50 rows=200 width=4) (actual rows=200 loops=1)
+                           Filter: (category = 'sách'::text)
+                           Rows Removed by Filter: 800
+         ->  Hash  (cost=3833.11..3833.11 rows=40000 width=4) (actual rows=39895 loops=1)
+               Buckets: 65536  Batches: 1  Memory Usage: 1915kB
+               ->  Hash Join  (cost=412.00..3833.11 rows=40000 width=4) (actual rows=39895 loops=1)
+                     Hash Cond: (o.cust_id = c.id)
+                     ->  Seq Scan on ords o  (cost=0.00..2896.00 rows=200000 width=8) (actual rows=200000 loops=1)
+                     ->  Hash  (cost=362.00..362.00 rows=4000 width=4) (actual rows=4000 loops=1)
+                           Buckets: 4096  Batches: 1  Memory Usage: 173kB
+                           ->  Seq Scan on custs c  (cost=0.00..362.00 rows=4000 width=4) (actual rows=4000 loops=1)
+                                 Filter: (city = 'Huế'::text)
+                                 Rows Removed by Filter: 16000
+ Planning Time: 0.346 ms
+ Execution Time: 79.905 ms
+(23 rows)
+
+
+-- 2. ép thứ tự tệ: nối hai bảng lớn nhất (lines, ords) trước, lọc sau cùng
+                                                       QUERY PLAN                                                        
+-------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=38476.84..38476.85 rows=1 width=8) (actual rows=1 loops=1)
+   ->  Hash Join  (cost=6611.00..38376.84 rows=40000 width=4) (actual rows=39527 loops=1)
+         Hash Cond: (l.prod_id = p.id)
+         ->  Hash Join  (cost=6590.00..37828.61 rows=200000 width=8) (actual rows=199158 loops=1)
+               Hash Cond: (o.cust_id = c.id)
+               ->  Hash Join  (cost=6178.00..34791.06 rows=1000000 width=12) (actual rows=1000000 loops=1)
+                     Hash Cond: (l.order_id = o.id)
+                     ->  Seq Scan on lines l  (cost=0.00..15440.00 rows=1000000 width=12) (actual rows=1000000 loops=1)
+                     ->  Hash  (cost=2896.00..2896.00 rows=200000 width=8) (actual rows=200000 loops=1)
+                           Buckets: 262144  Batches: 2  Memory Usage: 5966kB
+                           ->  Seq Scan on ords o  (cost=0.00..2896.00 rows=200000 width=8) (actual rows=200000 loops=1)
+               ->  Hash  (cost=362.00..362.00 rows=4000 width=4) (actual rows=4000 loops=1)
+                     Buckets: 4096  Batches: 1  Memory Usage: 173kB
+                     ->  Seq Scan on custs c  (cost=0.00..362.00 rows=4000 width=4) (actual rows=4000 loops=1)
+                           Filter: (city = 'Huế'::text)
+                           Rows Removed by Filter: 16000
+         ->  Hash  (cost=18.50..18.50 rows=200 width=4) (actual rows=200 loops=1)
+               Buckets: 1024  Batches: 1  Memory Usage: 16kB
+               ->  Seq Scan on prods p  (cost=0.00..18.50 rows=200 width=4) (actual rows=200 loops=1)
+                     Filter: (category = 'sách'::text)
+                     Rows Removed by Filter: 800
+ Planning Time: 0.191 ms
+ Execution Time: 222.618 ms
+(23 rows)
+
+
+== thống kê của planner: pg_stats cho cột city ==
+ attname | n_distinct |                most_common_vals                |   most_common_freqs   
+---------+------------+------------------------------------------------+-----------------------
+ city    |          5 | {"Cần Thơ",Huế,"Hà Nội","Hải Phòng","Đà Nẵng"} | {0.2,0.2,0.2,0.2,0.2}
+(1 row)
+
+-- ước lượng số dòng cho điều kiện city = 'Huế' (20.000 / 5 = 4.000):
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Seq Scan on custs  (cost=0.00..362.00 rows=4000 width=14)
+   Filter: (city = 'Huế'::text)
+(2 rows)
+
+
+== ước lượng SAI khi hai cột tương quan (planner giả định độc lập) ==
+-- thực tế: city = tp7 AND zip = tp7-7 cho 2.000 dòng; planner nhân hai độ chọn lọc độc lập nên ước lượng quá thấp
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
+ Seq Scan on addr  (cost=0.00..21208.00 rows=41 width=16) (actual rows=2000 loops=1)
+   Filter: ((city = 'tp7'::text) AND (zip = 'tp7-7'::text))
+   Rows Removed by Filter: 998000
+(3 rows)
+
+-- sau CREATE STATISTICS (dependencies): planner biết city phụ thuộc zip
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Seq Scan on addr  (cost=0.00..21208.00 rows=1992 width=16) (actual rows=2000 loops=1)
+   Filter: ((city = 'tp7'::text) AND (zip = 'tp7-7'::text))
+   Rows Removed by Filter: 998000
+(3 rows)
+```
+
+**Kế hoạch tự chọn** (phần 1): lọc `prods` còn 200 dòng và `custs` còn 4.000 dòng **trước**, nối các bảng nhỏ đã lọc với bảng lớn: dòng trung gian lớn nhất chỉ **200.000**; chi phí ước lượng **23.680**, thời gian thật **79,9 ms**.
+
+**Kế hoạch ép thứ tự tệ** (phần 2): nối `lines` (1.000.000 dòng) với `ords` (200.000 dòng) **trước**, ra **1.000.000 dòng trung gian**, rồi mới nối `custs` và `prods` để lọc. Chi phí **38.477** (gấp 1,6 lần), thời gian thật **222,6 ms** (gấp **2,8 lần**), và có `Batches: 2` ở nút `Hash` vì bảng băm của 200.000 dòng không còn vừa bộ nhớ làm việc. **Cùng truy vấn, cùng kết quả (39.527 dòng), nhưng thứ tự nối quyết định lượng công việc**. Nguyên tắc: **lọc sớm, nối bảng nhỏ trước, giữ kết quả trung gian bé**. Lần này planner làm đúng, nhưng chỉ vì **ước lượng của nó đúng**. Khi ước lượng sai, nó có thể chọn chính kế hoạch tệ ở trên.
+
+## Thống kê: gốc rễ của kế hoạch tồi
+
+Cost model chỉ tốt bằng **số dòng ước lượng**, mà số dòng này đến từ thống kê do lệnh `ANALYZE` thu thập (mẫu khoảng 30.000 dòng trên mỗi bảng với cấu hình mặc định): số giá trị khác nhau (`n_distinct`), **các giá trị phổ biến nhất và tần suất** (`most_common_vals`, `most_common_freqs`), và **histogram** chia phần còn lại thành các khoảng đều số dòng. Phần giữa output của `qp_pg.sql` cho thấy với cột `city` (5 giá trị, mỗi giá trị đúng 20%): `n_distinct = 5`, cả 5 giá trị đều là "phổ biến" với tần suất 0,2, nên điều kiện `city = 'Huế'` được ước lượng `20.000 × 0,2 = 4.000` dòng, đúng như kế hoạch (`rows=4000`) và đúng thực tế.
+
+### Giả định độc lập và khi nó sai
+
+Với nhiều điều kiện, planner **nhân độ chọn lọc** của từng điều kiện, giả định các cột **độc lập**. Điều đó sai khi các cột liên quan chặt (thành phố và mã bưu điện, hãng xe và mẫu xe). Bảng `addr` 1.000.000 dòng có `zip` xác định `city` (mã `tp7-7` chỉ ở thành phố `tp7`), nên điều kiện `city = 'tp7' AND zip = 'tp7-7'` chọn đúng **2.000 dòng**: điều kiện `city` thừa. Nhưng planner nhân hai độ chọn lọc `1/50 × 1/500` và ước lượng **41 dòng**: thấp hơn **49 lần**.
+
+Kế hoạch ở đây (chỉ là một lần quét) chưa gây hại. Nhưng ước lượng thấp 49 lần ở một nút **giữa cây join** thường khiến planner chọn **nested loop** (vì "chỉ 41 dòng") thay vì hash join, rồi thực tế chạy vòng lặp cho 2.000 dòng, hoặc nhiều triệu khi sai nhiều hơn nữa. Bài báo "How Good Are Query Optimizers, Really?" chỉ ra rằng **ước lượng số dòng sai là nguyên nhân chính** của kế hoạch tệ trong các hệ hiện đại, hơn cả cost model hay thuật toán tìm kiếm.
+
+PostgreSQL cho khai báo cho nó biết quan hệ giữa các cột bằng **extended statistics**: `CREATE STATISTICS addr_dep (dependencies) ON city, zip FROM addr` (rồi `ANALYZE`). Sau đó cùng truy vấn ước lượng **1.992 dòng**, gần như đúng 2.000. Có ba loại: `dependencies` (cột A xác định cột B), `ndistinct` (số tổ hợp khác nhau, cho `GROUP BY` nhiều cột), `mcv` (các tổ hợp giá trị phổ biến nhất).
+
+## Đọc kế hoạch như một kỹ sư
+
+1. **So `rows` ước lượng với `actual rows`** ở từng nút, bắt đầu từ nút lá. Lệch cỡ mười lần trở lên là nguyên nhân khả dĩ của mọi vấn đề phía trên.
+2. **Tìm nút ăn thời gian và `loops`**: một nút `Nested Loop` có nút con chạy `loops=200000` lần là dấu hiệu cần để ý.
+3. **Xem kiểu join** có hợp lý không: `Nested Loop` trên hai bảng lớn không có chỉ mục là tai hoạ; `Hash Join` có `Batches > 1` nghĩa là tràn ra đĩa (tăng `work_mem`).
+4. **Xem thứ tự lọc**: điều kiện lọc mạnh phải được áp dụng càng sớm càng tốt (dưới các join).
+5. **Kiểm tra thống kê**: `ANALYZE` đã chạy gần đây chưa; cột lệch phân bố có histogram và MCV đủ không (`ALTER TABLE ... ALTER COLUMN ... SET STATISTICS`); cột tương quan có extended statistics không.
+
+## Trong hệ thống thật
+
+- **PostgreSQL**: cost-based, quy hoạch động tới `geqo_threshold` (12 bảng) rồi GEQO; có nested loop (kèm `Memoize` từ bản 14), hash join, merge join; **truy vấn song song** bằng nút `Gather`; JIT biên dịch qua LLVM cho các biểu thức nặng.
+- **MySQL**: nhiều năm chỉ có nested loop (kèm khối đệm); **hash join mới có từ 8.0.18**.
+- **SQLite**: chủ yếu nested loop, bù bằng việc **tự tạo chỉ mục tạm** (automatic index) khi thấy lợi.
+- **Hệ phân tán** (Spark, Presto và Trino, BigQuery): thêm một chiều chi phí là **mạng**: **broadcast join** (gửi bảng nhỏ tới mọi nút) khi một bên nhỏ, **shuffle hash/sort-merge join** (băm lại cả hai bảng theo khoá rồi nối cục bộ) khi cả hai lớn.
+- **Gợi ý (hint)** và **kế hoạch cố định**: Oracle và SQL Server cho gợi ý buộc thứ tự join hay kiểu join; PostgreSQL cố ý không có hint (dùng `SET enable_*` và các lệnh tương tự để thử), nhưng có các extension. Dùng hint là chữa triệu chứng: nguyên nhân gốc thường là thống kê.
+
+## Quan sát và chẩn đoán
+
+- `EXPLAIN (ANALYZE, BUFFERS)` là công cụ chính; `auto_explain` ghi tự động kế hoạch của các truy vấn chậm vào log.
+- `pg_stats` (thống kê từng cột), `pg_stats_ext` (extended statistics), `pg_stat_user_tables.last_analyze` và `last_autoanalyze`.
+- Bật tắt từng loại join để thử (`SET enable_hashjoin = off;`) chỉ để **so sánh**, không dùng ở production.
+- `default_statistics_target` (mặc định 100) tăng độ chi tiết của histogram; tăng cho từng cột lệch phân bố thay vì toàn hệ thống.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Truy vấn chậm đột ngột sau khi bảng đổi nhiều | thống kê cũ làm ước lượng sai | `ANALYZE`, kiểm tra autovacuum và autoanalyze |
+| `rows` ước lượng thấp hơn thật cả chục lần ở nhiều điều kiện | giả định độc lập, cột tương quan | `CREATE STATISTICS (dependencies, mcv)` |
+| Nested loop chạy hàng triệu vòng | ước lượng nút ngoài quá thấp | sửa thống kê, thử `SET enable_nestloop = off` để so sánh |
+| `Hash Join` có `Batches` lớn | `work_mem` quá nhỏ cho bảng băm | tăng `work_mem` cho phiên đó, hoặc lọc sớm hơn |
+| Cùng truy vấn nhanh với tham số này, chậm với tham số khác | kế hoạch chung cho prepared statement không hợp mọi giá trị | `plan_cache_mode`, viết lại hoặc tách truy vấn |
+| Truy vấn nối nhiều bảng chọn kế hoạch tệ | quá nhiều bảng làm GEQO ngẫu nhiên, hoặc thống kê sai | giảm số bảng bằng CTE hay bảng tạm, tăng `join_collapse_limit` có kiểm soát |
+
+## Lưu ý
+
+- Ba thuật toán join: nested loop (tốt khi bảng ngoài nhỏ và bảng trong có chỉ mục), hash join (một bên nhỏ, chỉ điều kiện bằng), merge join (đã có thứ tự). Chênh lệch giữa chọn đúng và sai có thể lên tới ba bậc độ lớn.
+- Mô hình Volcano kéo từng dòng cho phép `LIMIT` dừng sớm, nhưng toán tử chặn (sắp xếp, gom nhóm) phải kéo hết đầu vào trước khi trả dòng đầu tiên.
+- Thực thi theo vector hoặc biên dịch nhanh hơn từng dòng nhiều lần cho khối lượng phân tích; đó là lý do các engine phân tích hiện đại không dùng Volcano thuần.
+- Planner chọn kế hoạch theo **chi phí ước lượng**; ước lượng đến từ thống kê, nên thống kê cũ hoặc giả định sai (độc lập) làm hỏng kế hoạch mà không báo lỗi.
+- Thứ tự join quyết định lượng dòng trung gian: lọc sớm và nối bảng nhỏ trước; một thứ tự tồi làm truy vấn chậm gấp vài lần trong thí nghiệm trên, và hơn nhiều trong thực tế.
+- Giả định độc lập là nguồn sai số lớn; với các cột liên quan chặt, dùng extended statistics.
+- `EXPLAIN ANALYZE` chạy thật câu lệnh; so `rows` ước lượng với `actual rows` trước khi nghĩ đến chỉ mục hay hint.
+- Đừng "sửa" kế hoạch tệ bằng hint hay tắt từng loại join trong ứng dụng; tìm nguyên nhân (thống kê, chỉ mục, cách viết truy vấn) rồi sửa gốc.
