@@ -26,12 +26,14 @@ sections:
     nodes:
       - id: complexity
         title: Big-O & Complexity
+        article: dsa/complexity
         description: Đo thời gian và bộ nhớ theo kích thước đầu vào.
         resources:
           - title: Jeff Erickson — Algorithms (sách miễn phí)
             url: https://jeffe.cs.illinois.edu/teaching/algorithms/
       - id: arrays-linked-lists
         title: Array & Linked List
+        article: dsa/arrays-linked-lists
         description: Hai cách xếp dữ liệu tuần tự và cái giá của mỗi cách.
         requires: [complexity]
         resources:
@@ -39,6 +41,7 @@ sections:
             url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
       - id: hash-tables
         title: Hash Table
+        article: dsa/hash-tables
         description: Tra cứu trung bình O(1) nhờ hàm băm, và chuyện va chạm.
         requires: [arrays-linked-lists]
         resources:
@@ -46,6 +49,7 @@ sections:
             url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
       - id: trees
         title: Tree & Binary Search Tree
+        article: dsa/trees
         description: Cấu trúc phân cấp, cân bằng cây, B-tree.
         requires: [arrays-linked-lists]
         resources:
@@ -53,6 +57,7 @@ sections:
             url: https://opendatastructures.org/ods-python/6_Binary_Trees.html
       - id: sorting
         title: Sorting
+        article: dsa/sorting
         description: Merge sort, quicksort, giới hạn dưới O(n log n).
         requires: [complexity]
         resources:
@@ -60,6 +65,7 @@ sections:
             url: https://jeffe.cs.illinois.edu/teaching/algorithms/
       - id: graphs
         title: Graph
+        article: dsa/graphs
         description: BFS, DFS, đường đi ngắn nhất, sắp xếp topo.
         requires: [trees]
         resources:
@@ -67,12 +73,60 @@ sections:
             url: https://jeffe.cs.illinois.edu/teaching/algorithms/
       - id: dynamic-programming
         title: Dynamic Programming
+        article: dsa/dynamic-programming
         description: Chia bài toán thành bài con chồng lấp và ghi nhớ kết quả.
         requires: [sorting]
         optional: true
         resources:
           - title: "Jeff Erickson — Algorithms (sách miễn phí)"
             url: https://jeffe.cs.illinois.edu/teaching/algorithms/
+      - id: strings
+        title: Strings
+        article: dsa/strings
+        description: Chuỗi trong bộ nhớ với Unicode, tìm chuỗi con, suffix array và regex.
+        requires: [hash-tables]
+        optional: true
+        resources:
+          - title: "Sedgewick & Wayne — Algorithms, Chapter 5: Strings"
+            url: https://algs4.cs.princeton.edu/50strings/
+
+  - id: architecture
+    title: Computer Architecture
+    subject: architecture
+    outcome: Giải thích được máy tính biểu diễn số ra sao, CPU chạy lệnh thế nào và vì sao thứ tự truy cập bộ nhớ quyết định tốc độ.
+    description: Từ bit và lệnh máy tới pipeline và cache, những thứ bên dưới mọi chương trình.
+    nodes:
+      - id: data-representation
+        title: Data Representation
+        article: architecture/data-representation
+        description: Số nguyên bù hai, số thực IEEE 754, endianness và vì sao số học máy tính hay "sai".
+        resources:
+          - title: "Nand to Tetris — Boolean arithmetic and the ALU"
+            url: https://www.nand2tetris.org/
+      - id: isa-assembly
+        title: ISA & Assembly
+        article: architecture/isa-assembly
+        description: Tập lệnh, thanh ghi, stack frame và cách đọc mã assembly do trình biên dịch sinh ra.
+        requires: [data-representation]
+        resources:
+          - title: "Compiler Explorer — xem assembly của code C"
+            url: https://godbolt.org/
+      - id: pipeline-branch-prediction
+        title: CPU Pipeline & Branch Prediction
+        article: architecture/pipeline-branch-prediction
+        description: Pipeline, hazard, dự đoán rẽ nhánh và vì sao vòng lặp trên dữ liệu đã sắp xếp nhanh hơn.
+        requires: [isa-assembly]
+        resources:
+          - title: "Agner Fog — Optimizing software in C++ and microarchitecture manuals"
+            url: https://www.agner.org/optimize/
+      - id: memory-hierarchy
+        title: Memory Hierarchy & Cache
+        article: architecture/memory-hierarchy
+        description: Thang độ trễ từ L1 tới RAM, cache line, locality và cách thứ tự truy cập đổi tốc độ hàng chục lần.
+        requires: [isa-assembly]
+        resources:
+          - title: "Drepper — What Every Programmer Should Know About Memory"
+            url: https://people.freebsd.org/~lstewart/articles/cpumemory.pdf
 
   - id: os
     title: Operating Systems
@@ -119,6 +173,15 @@ sections:
         resources:
           - title: "OSTEP — Chapter 36: I/O Devices"
             url: https://pages.cs.wisc.edu/~remzi/OSTEP/file-devices.pdf
+      - id: virtualization-containers
+        title: Virtualization & Containers
+        article: os/virtualization-containers
+        description: Máy ảo, namespace và cgroup, những khối xây nên container.
+        requires: [process-thread]
+        optional: true
+        resources:
+          - title: "Linux man-pages — namespaces(7)"
+            url: https://man7.org/linux/man-pages/man7/namespaces.7.html
 
   - id: networking
     title: Computer Networks
@@ -165,6 +228,15 @@ sections:
         resources:
           - title: RFC 8446 — TLS 1.3
             url: https://www.rfc-editor.org/rfc/rfc8446
+      - id: sockets
+        title: Socket API & I/O Models
+        article: networking/sockets
+        description: Vòng đời socket TCP, dòng byte, backpressure, hàng đợi accept và epoll.
+        requires: [tcp-vs-udp]
+        optional: true
+        resources:
+          - title: "Beej's Guide to Network Programming"
+            url: https://beej.us/guide/bgnet/
 
   - id: databases
     title: Databases
@@ -174,12 +246,14 @@ sections:
     nodes:
       - id: relational-model
         title: Relational Model & SQL
+        article: databases/relational-model
         description: Bảng, khoá, join và ngôn ngữ truy vấn SQL.
         resources:
           - title: CMU 15-445 Database Systems
             url: https://15445.courses.cs.cmu.edu/
       - id: indexing
         title: Indexing
+        article: databases/indexing
         description: B-tree index giúp truy vấn nhanh và cái giá khi ghi.
         requires: [relational-model, trees]
         resources:
@@ -187,6 +261,7 @@ sections:
             url: https://use-the-index-luke.com/
       - id: transactions
         title: Transactions & ACID
+        article: databases/transactions
         description: Nhóm thao tác thành một khối "tất cả hoặc không".
         requires: [relational-model, synchronization]
         resources:
@@ -194,6 +269,7 @@ sections:
             url: https://www.postgresql.org/docs/current/tutorial-transactions.html
       - id: isolation-levels
         title: Isolation Levels
+        article: databases/isolation-levels
         description: Dirty read, phantom read và các mức cô lập.
         requires: [transactions]
         resources:
@@ -201,9 +277,28 @@ sections:
             url: https://www.postgresql.org/docs/current/transaction-iso.html
       - id: normalization
         title: Normalization
+        article: databases/normalization
         description: Thiết kế bảng tránh dư thừa và bất thường khi cập nhật.
         requires: [relational-model]
         optional: true
         resources:
           - title: "Wikipedia — Database normalization"
             url: https://en.wikipedia.org/wiki/Database_normalization
+      - id: storage-engines
+        title: Storage Engines (B-tree vs LSM-tree)
+        article: databases/storage-engines
+        description: Hai họ cấu trúc lưu trữ trên đĩa và cái giá của chúng khi đọc, ghi và chiếm chỗ.
+        requires: [indexing]
+        optional: true
+        resources:
+          - title: "Designing Data-Intensive Applications — Chapter 3: Storage and Retrieval"
+            url: https://dataintensive.net/
+      - id: query-processing
+        title: Query Processing & Optimizer
+        article: databases/query-processing
+        description: Thuật toán join, mô hình executor và cách planner chọn kế hoạch bằng chi phí và thống kê.
+        requires: [indexing]
+        optional: true
+        resources:
+          - title: "PostgreSQL — Planner/Optimizer"
+            url: https://www.postgresql.org/docs/current/planner-optimizer.html

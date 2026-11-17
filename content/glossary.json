@@ -10,10 +10,21 @@
       "def": "Authenticated Encryption with Associated Data: kiểu mã hoá vừa giữ bí mật vừa xác thực dữ liệu trong một bước; sửa một bit của bản mã là bị từ chối. Ví dụ AES-GCM, ChaCha20-Poly1305.",
       "subject": "networking"
     },
+    "amortized analysis": {
+      "def": "Cách tính chi phí trung bình trên cả một chuỗi thao tác, để một thao tác thỉnh thoảng đắt không làm hỏng đánh giá của những thao tác còn lại.",
+      "subject": "dsa",
+      "aliases": [
+        "amortized"
+      ]
+    },
     "arp": {
       "label": "ARP",
       "def": "Address Resolution Protocol: giao thức hỏi cả mạng cục bộ bằng broadcast để đổi một địa chỉ IP thành địa chỉ MAC.",
       "subject": "networking"
+    },
+    "array": {
+      "def": "Khối bộ nhớ liền nhau gồm các ô cùng cỡ; phần tử thứ i nằm ở địa chỉ đầu cộng i nhân cỡ ô nên truy cập theo chỉ số tốn O(1).",
+      "subject": "dsa"
     },
     "atomic operation": {
       "def": "Thao tác chạy trọn vẹn như một bước duy nhất: không thread nào thấy được trạng thái giữa chừng của nó.",
@@ -36,6 +47,14 @@
         "as"
       ]
     },
+    "b-tree": {
+      "def": "Cây tìm kiếm cân bằng mà mỗi nút chứa nhiều khoá (cỡ một trang đĩa) và mọi lá cùng độ sâu, nên rất thấp và ít lần đọc đĩa; nền của chỉ mục cơ sở dữ liệu.",
+      "subject": "dsa",
+      "aliases": [
+        "b+ tree",
+        "b tree"
+      ]
+    },
     "bandwidth-delay product": {
       "def": "Băng thông của đường truyền nhân RTT: lượng dữ liệu phải đang bay cùng lúc để lấp đầy đường truyền.",
       "subject": "networking",
@@ -48,6 +67,24 @@
       "def": "Border Gateway Protocol: giao thức định tuyến giữa các autonomous system, trao đổi prefix nào tới được qua đường nào theo chính sách của từng AS.",
       "subject": "networking"
     },
+    "big-o": {
+      "label": "Big-O",
+      "def": "Ký hiệu cận trên cho tốc độ tăng của chi phí (thời gian hoặc bộ nhớ) theo kích thước đầu vào, bỏ qua hằng số và số hạng nhỏ.",
+      "subject": "dsa",
+      "aliases": [
+        "big o",
+        "o(n)"
+      ]
+    },
+    "binary search tree": {
+      "label": "BST",
+      "def": "Cây nhị phân mà khoá ở cây con trái luôn nhỏ hơn khoá của nút và khoá ở cây con phải luôn lớn hơn, nên tìm kiếm bỏ được cả một nhánh sau mỗi so sánh.",
+      "subject": "dsa",
+      "aliases": [
+        "bst",
+        "cây tìm kiếm nhị phân"
+      ]
+    },
     "ca": {
       "label": "CA",
       "def": "Certificate Authority: tổ chức được trình duyệt và hệ điều hành tin cậy sẵn, ký chứng chỉ để xác nhận một khoá công khai thuộc về một tên miền.",
@@ -55,6 +92,10 @@
       "aliases": [
         "certificate authority"
       ]
+    },
+    "cache line": {
+      "def": "Đơn vị CPU đọc từ RAM vào cache một lần, thường 64 byte; đọc một byte kéo theo cả dòng 64 byte quanh nó.",
+      "subject": "dsa"
     },
     "cidr": {
       "label": "CIDR",
@@ -97,6 +138,14 @@
       "def": "Đoạn mã truy cập dữ liệu chung, không được để hai thread chạy cùng lúc.",
       "subject": "os"
     },
+    "dag": {
+      "label": "DAG",
+      "def": "Đồ thị có hướng không có chu trình (directed acyclic graph); mô hình chuẩn cho quan hệ phụ thuộc và có thể sắp xếp topo.",
+      "subject": "dsa",
+      "aliases": [
+        "directed acyclic graph"
+      ]
+    },
     "deadlock": {
       "def": "Nhóm thread chờ nhau theo vòng tròn, mỗi thread giữ một tài nguyên và chờ tài nguyên thread khác đang giữ, nên không ai chạy tiếp được.",
       "subject": "os"
@@ -127,6 +176,22 @@
       "def": "DNS over HTTPS: gửi message DNS nhị phân trong HTTPS, nên được mã hoá và lẫn vào lưu lượng web.",
       "subject": "networking"
     },
+    "dynamic array": {
+      "def": "Mảng giữ sức chứa lớn hơn số phần tử đang dùng và cấp lại mảng lớn hơn khi đầy, nhờ vậy thêm vào cuối tốn O(1) amortized.",
+      "subject": "dsa",
+      "aliases": [
+        "vector",
+        "arraylist"
+      ]
+    },
+    "dynamic programming": {
+      "def": "Kỹ thuật giải bài toán bằng cách tách thành các bài con chồng lấp, giải mỗi bài con một lần và lưu lại kết quả để dùng lại.",
+      "subject": "dsa",
+      "aliases": [
+        "quy hoạch động",
+        "dp"
+      ]
+    },
     "encapsulation": {
       "def": "Mỗi tầng mạng bọc dữ liệu của tầng trên vào bên trong gói của mình và thêm header riêng; bên nhận bóc ngược từng lớp.",
       "subject": "networking"
@@ -138,9 +203,25 @@
         "fd"
       ]
     },
+    "foreign key": {
+      "label": "FK",
+      "def": "Cột của bảng này tham chiếu khoá chính của bảng khác, buộc mọi giá trị phải tồn tại ở bảng được tham chiếu.",
+      "subject": "databases",
+      "aliases": [
+        "khoá ngoại"
+      ]
+    },
     "forward secrecy": {
       "def": "Tính chất mà lộ khoá riêng của server về sau vẫn không giải mã được các phiên đã ghi lại trước đó, vì khoá phiên sinh từ trao đổi khoá tạm thời.",
       "subject": "networking"
+    },
+    "functional dependency": {
+      "label": "FD",
+      "def": "Ràng buộc X xác định Y: hai dòng có cùng giá trị X thì phải có cùng giá trị Y; nền tảng của các dạng chuẩn.",
+      "subject": "databases",
+      "aliases": [
+        "phụ thuộc hàm"
+      ]
     },
     "futex": {
       "def": "Fast userspace mutex: system call của Linux cho thread ngủ chờ trên một ô nhớ và đánh thức thread đang chờ ở đó; nền để cài mutex chỉ vào kernel khi có tranh chấp.",
@@ -153,14 +234,45 @@
         "glue"
       ]
     },
+    "graph": {
+      "def": "Tập đỉnh cùng tập cạnh nối các cặp đỉnh; mô hình cho mọi quan hệ như mạng, bản đồ, phụ thuộc.",
+      "subject": "dsa",
+      "aliases": [
+        "đồ thị"
+      ]
+    },
+    "hash table": {
+      "def": "Cấu trúc ánh xạ khoá sang giá trị: hàm băm biến khoá thành chỉ số trong một mảng, nhờ vậy tra cứu, thêm, xoá tốn O(1) kỳ vọng.",
+      "subject": "dsa",
+      "aliases": [
+        "bảng băm",
+        "hash map",
+        "dictionary"
+      ]
+    },
     "head-of-line blocking": {
       "def": "Một gói tin bị chậm hoặc mất làm mọi dữ liệu xếp sau nó phải chờ, dù chúng đã tới nơi.",
       "subject": "networking"
+    },
+    "heap": {
+      "def": "Cây nhị phân đầy từ trái, lưu trong mảng, mà khoá mỗi nút không lớn hơn khoá hai con (min-heap); gốc luôn là phần tử nhỏ nhất.",
+      "subject": "dsa",
+      "aliases": [
+        "binary heap"
+      ]
     },
     "icmp": {
       "label": "ICMP",
       "def": "Internet Control Message Protocol: giao thức đi kèm IP để báo lỗi và chẩn đoán, như port unreachable, TTL hết hạn, và là nền của ping và traceroute.",
       "subject": "networking"
+    },
+    "index": {
+      "def": "Cấu trúc phụ (thường là B+ tree) lưu khoá cùng địa chỉ dòng để tìm dòng nhanh, đổi lại tốn chỗ và làm ghi chậm hơn.",
+      "subject": "databases",
+      "aliases": [
+        "chỉ mục",
+        "indexing"
+      ]
     },
     "inode": {
       "def": "Cấu trúc trên đĩa chứa mọi thông tin về một file trừ tên: kích thước, quyền, thời điểm và vị trí các block dữ liệu.",
@@ -178,6 +290,14 @@
       "def": "Inter-Process Communication: các cơ chế do kernel cung cấp để process trao đổi dữ liệu, như pipe, socket, shared memory.",
       "subject": "os"
     },
+    "isolation level": {
+      "def": "Mức đảm bảo về việc các giao dịch chạy đồng thời thấy nhau ra sao, từ READ UNCOMMITTED tới SERIALIZABLE; mức thấp hơn nhanh hơn nhưng cho phép nhiều anomaly hơn.",
+      "subject": "databases",
+      "aliases": [
+        "mức cô lập",
+        "isolation"
+      ]
+    },
     "journal": {
       "def": "Vùng trên đĩa nơi file system ghi trước ý định sẽ sửa gì, để sau khi sập có thể phát lại hoặc bỏ qua trọn vẹn từng cập nhật.",
       "subject": "os",
@@ -189,13 +309,40 @@
       "def": "Chế độ đặc quyền của CPU, nơi kernel chạy và được dùng mọi lệnh; ngược với user mode của chương trình thường.",
       "subject": "os"
     },
+    "linked list": {
+      "def": "Chuỗi các nút nằm rải rác trong bộ nhớ, mỗi nút giữ giá trị và con trỏ tới nút kế (và nút trước nếu là danh sách đôi).",
+      "subject": "dsa",
+      "aliases": [
+        "danh sách liên kết"
+      ]
+    },
     "livelock": {
       "def": "Các thread vẫn chạy và liên tục phản ứng với nhau nhưng không bên nào tiến triển; khác deadlock ở chỗ không ai bị block.",
       "subject": "os"
     },
+    "locality of reference": {
+      "def": "Xu hướng chương trình truy cập lại cùng vùng nhớ hoặc vùng nhớ liền kề trong thời gian ngắn, điều mà cache khai thác để chạy nhanh.",
+      "subject": "dsa",
+      "aliases": [
+        "locality"
+      ]
+    },
     "longest prefix match": {
       "def": "Quy tắc router chọn trong bảng định tuyến dòng khớp địa chỉ đích có prefix dài nhất, tức tuyến cụ thể nhất.",
       "subject": "networking"
+    },
+    "lost update": {
+      "def": "Anomaly trong đó hai giao dịch cùng đọc, cùng tính lại rồi cùng ghi một giá trị, và ghi sau đè mất kết quả của ghi trước.",
+      "subject": "databases"
+    },
+    "lsm-tree": {
+      "def": "Log-structured merge tree: cấu trúc lưu trữ ghi vào memtable rồi xả thành các file sắp xếp bất biến (SSTable) và gộp chúng ở nền, đổi ghi tuần tự lấy việc đọc phải xem nhiều file.",
+      "subject": "databases",
+      "aliases": [
+        "lsm",
+        "lsm tree",
+        "sstable"
+      ]
     },
     "mac address": {
       "label": "MAC address",
@@ -224,6 +371,11 @@
         "mutual exclusion lock"
       ]
     },
+    "mvcc": {
+      "label": "MVCC",
+      "def": "Multi-version concurrency control: thay vì sửa tại chỗ, mỗi cập nhật tạo phiên bản mới và mỗi giao dịch đọc từ một ảnh chụp nhất quán, nên người đọc không chặn người ghi.",
+      "subject": "databases"
+    },
     "nagle": {
       "label": "Nagle",
       "def": "Thuật toán của TCP giữ lại các đoạn nhỏ cho tới khi có ACK của dữ liệu trước hoặc đủ một MSS, để giảm số gói nhỏ; tắt bằng TCP_NODELAY.",
@@ -239,6 +391,18 @@
       "aliases": [
         "napt"
       ]
+    },
+    "normalization": {
+      "def": "Quá trình tách bảng theo phụ thuộc hàm để mỗi sự thật chỉ được lưu một lần, tránh dị thường cập nhật, chèn và xoá.",
+      "subject": "databases",
+      "aliases": [
+        "chuẩn hoá"
+      ]
+    },
+    "null": {
+      "label": "NULL",
+      "def": "Giá trị đặc biệt của SQL nghĩa là không biết hoặc không áp dụng; so sánh với NULL cho kết quả UNKNOWN chứ không phải đúng hay sai.",
+      "subject": "databases"
     },
     "page": {
       "def": "Khối bộ nhớ ảo có kích thước cố định (thường 4 KB), đơn vị OS dùng để ánh xạ và chuyển dữ liệu giữa RAM và đĩa.",
@@ -274,11 +438,42 @@
         "ports"
       ]
     },
+    "primary key": {
+      "label": "PK",
+      "def": "Tập cột xác định duy nhất mỗi dòng của bảng; không được NULL và không được trùng.",
+      "subject": "databases",
+      "aliases": [
+        "khoá chính"
+      ]
+    },
+    "priority queue": {
+      "def": "Hàng đợi mà mỗi lần lấy ra trả về phần tử có độ ưu tiên cao nhất (hoặc khoá nhỏ nhất), thường cài bằng heap.",
+      "subject": "dsa",
+      "aliases": [
+        "hàng đợi ưu tiên"
+      ]
+    },
     "process": {
       "def": "Một chương trình đang chạy, có address space, tài nguyên và ít nhất một thread riêng.",
       "subject": "os",
       "aliases": [
         "processes"
+      ]
+    },
+    "query planner": {
+      "def": "Thành phần của cơ sở dữ liệu chọn kế hoạch thực thi có chi phí ước lượng thấp nhất cho một câu truy vấn, dựa trên thống kê của bảng.",
+      "subject": "databases",
+      "aliases": [
+        "planner",
+        "optimizer",
+        "query optimizer"
+      ]
+    },
+    "queue": {
+      "def": "Cấu trúc vào trước ra trước (FIFO): thêm ở một đầu, lấy ở đầu kia.",
+      "subject": "dsa",
+      "aliases": [
+        "hàng đợi"
       ]
     },
     "quic": {
@@ -295,6 +490,13 @@
       "subject": "networking",
       "aliases": [
         "resolver"
+      ]
+    },
+    "relational model": {
+      "def": "Mô hình dữ liệu coi dữ liệu là các quan hệ (bảng) và truy vấn bằng ngôn ngữ khai báo, không phụ thuộc cách lưu bên dưới.",
+      "subject": "databases",
+      "aliases": [
+        "mô hình quan hệ"
       ]
     },
     "response time": {
@@ -322,10 +524,30 @@
         "semaphores"
       ]
     },
+    "snapshot isolation": {
+      "label": "SI",
+      "def": "Mức cô lập trong đó mỗi giao dịch thấy một ảnh chụp nhất quán lấy lúc bắt đầu; hai giao dịch ghi cùng một dòng thì người đến sau bị huỷ, nhưng vẫn có thể bị write skew.",
+      "subject": "databases",
+      "aliases": [
+        "si"
+      ]
+    },
     "sni": {
       "label": "SNI",
       "def": "Server Name Indication: extension trong ClientHello của TLS cho server biết tên miền client muốn vào, để chọn đúng chứng chỉ khi nhiều site chung một IP; ở dạng rõ nên lộ tên site.",
       "subject": "networking"
+    },
+    "stable sort": {
+      "def": "Thuật toán sắp xếp giữ nguyên thứ tự ban đầu của các phần tử có khoá bằng nhau.",
+      "subject": "dsa",
+      "aliases": [
+        "ổn định",
+        "stable"
+      ]
+    },
+    "stack": {
+      "def": "Cấu trúc vào sau ra trước (LIFO): chỉ thêm và lấy ở một đầu.",
+      "subject": "dsa"
     },
     "starvation": {
       "def": "Một thread hoặc job mãi không được cấp tài nguyên vì luôn có thứ khác được ưu tiên hơn, dù hệ thống vẫn chạy.",
@@ -375,6 +597,27 @@
       "def": "Translation Lookaside Buffer: cache nhỏ trong MMU lưu các ánh xạ trang ảo → khung vật lý vừa dùng để dịch địa chỉ nhanh.",
       "subject": "os"
     },
+    "transaction": {
+      "def": "Nhóm một chuỗi thao tác trên cơ sở dữ liệu thành một khối mà hệ thống đảm bảo ACID: tất cả hoặc không gì cả, và đã commit thì bền.",
+      "subject": "databases",
+      "aliases": [
+        "giao dịch"
+      ]
+    },
+    "tree": {
+      "def": "Cấu trúc phân cấp gồm các nút nối bằng cạnh, có một nút gốc và không có vòng.",
+      "subject": "dsa",
+      "aliases": [
+        "cây"
+      ]
+    },
+    "trie": {
+      "def": "Cây mà mỗi cạnh gắn một ký tự, đường từ gốc tới một nút đánh dấu là một từ; tìm theo tiền tố tốn thời gian theo độ dài chuỗi, không phụ thuộc số từ.",
+      "subject": "dsa",
+      "aliases": [
+        "prefix tree"
+      ]
+    },
     "ttl": {
       "label": "TTL",
       "def": "Time To Live: trong DNS là số giây một bản ghi được phép nằm trong cache trước khi phải hỏi lại.",
@@ -392,6 +635,32 @@
     "virtual memory": {
       "def": "Cơ chế OS và phần cứng dịch địa chỉ ảo của process sang địa chỉ vật lý, cho mỗi process một address space riêng.",
       "subject": "os"
+    },
+    "window function": {
+      "def": "Hàm SQL tính trên một cửa sổ các dòng liên quan (rank, tổng chạy, lag) mà vẫn giữ nguyên số dòng, khác với hàm tổng hợp gom nhóm.",
+      "subject": "databases",
+      "aliases": [
+        "hàm cửa sổ"
+      ]
+    },
+    "write amplification": {
+      "def": "Tỉ số giữa số byte thực sự ghi xuống đĩa và số byte dữ liệu người dùng ghi; lớn nghĩa là tốn băng thông và làm mòn SSD.",
+      "subject": "databases",
+      "aliases": [
+        "khuếch đại ghi"
+      ]
+    },
+    "write skew": {
+      "def": "Anomaly trong đó hai giao dịch đọc cùng một điều kiện rồi ghi hai dòng khác nhau, mỗi bên đúng khi nhìn riêng nhưng cùng vi phạm một bất biến.",
+      "subject": "databases"
+    },
+    "write-ahead log": {
+      "label": "WAL",
+      "def": "Nhật ký ghi nối đuôi mọi thay đổi và được ghi xuống đĩa trước khi dữ liệu thật bị sửa, để khôi phục sau sự cố bằng redo và undo.",
+      "subject": "databases",
+      "aliases": [
+        "wal"
+      ]
     },
     "zombie process": {
       "def": "Process đã kết thúc nhưng kernel còn giữ mã thoát của nó vì process cha chưa gọi wait().",

@@ -1,0 +1,19 @@
+---
+title: Databases
+description: Mô hình quan hệ và SQL, chỉ mục, transaction và ACID, các mức cô lập, chuẩn hoá.
+tags: [databases]
+---
+
+Phần này ghi chú cách một cơ sở dữ liệu lưu dữ liệu, tìm dữ liệu nhanh và giữ dữ liệu đúng khi nhiều người cùng ghi. Mọi thí nghiệm chạy trên PostgreSQL 16 thật (bảng một triệu dòng, hai phiên xen kẽ, `pg_waldump`, `pageinspect`), cộng các phiên bản tự cài bằng Python (đại số quan hệ, B+ tree, kho dữ liệu có write-ahead log, khoá hai pha, phụ thuộc hàm, LSM-tree với Bloom filter), để thấy cơ chế bên dưới chứ không chỉ biết lệnh. Đọc theo thứ tự dưới đây vì bài sau dựa vào bài trước.
+
+| Bài | Trả lời câu hỏi |
+|---|---|
+| [Relational Model & SQL](/docs/databases/relational-model) | Quan hệ, khoá, ràng buộc là gì? Đại số quan hệ nằm dưới SQL ra sao? Vì sao `SELECT` không chạy theo thứ tự viết, `NULL` làm logic thành ba giá trị, và planner chọn kế hoạch thế nào? |
+| [Indexing](/docs/databases/indexing) | Dữ liệu nằm trong trang ra sao và chỉ mục B+ tree thấp tới mức nào? Composite, covering index, hash, GIN, BRIN dùng khi nào, chi phí ghi là bao nhiêu, và vì sao planner đôi khi bỏ qua chỉ mục? |
+| [Transactions & ACID](/docs/databases/transactions) | ACID thực hiện thế nào? Write-ahead log khôi phục sau sự cố ra sao, `fsync` và group commit tốn gì, MVCC và bloat là gì, và deadlock xảy ra thế nào? |
+| [Isolation Levels](/docs/databases/isolation-levels) | Dirty read, non-repeatable read, phantom, lost update, write skew khác nhau ra sao? Mức nào chặn được gì trên PostgreSQL, và viết vòng thử lại thế nào? |
+| [Normalization](/docs/databases/normalization) | Vì sao bảng gom gây dị thường, phụ thuộc hàm và các dạng chuẩn xác định thiết kế bảng ra sao, tách bảng sao cho không mất thông tin, và khi nào nên phi chuẩn hoá? |
+| [Storage Engines (B-tree vs LSM-tree)](/docs/databases/storage-engines) | B-tree và LSM-tree đánh đổi ra sao? Write, read và space amplification là gì, Bloom filter và compaction hoạt động thế nào, và khi nào chọn họ nào? |
+| [Query Processing & Optimizer](/docs/databases/query-processing) | Ba thuật toán join khác nhau ra sao? Executor kiểu Volcano chạy một kế hoạch thế nào, vì sao `LIMIT` dừng sớm, và planner chọn thứ tự join bằng chi phí và thống kê ra sao? |
+
+Cấu trúc cây ở [Tree](/docs/dsa/trees) là nền của chỉ mục, khoá và deadlock ở chặng [Operating Systems](/docs/os/synchronization) là nền của khoá giao dịch, và đồ thị ở [Graph](/docs/dsa/graphs) dùng lại khi phát hiện deadlock. Chặng này nằm trong [roadmap CS Fundamentals](/roadmaps/cs-fundamentals).

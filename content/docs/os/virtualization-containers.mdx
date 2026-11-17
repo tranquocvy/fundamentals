@@ -1,0 +1,431 @@
+---
+title: Virtualization & Containers
+description: Máy ảo và container khác nhau ở đâu, namespace làm tiến trình thấy một thế giới riêng, cgroup giới hạn bộ nhớ, CPU và số tiến trình, tự dựng một container tối giản không cần Docker và đo chi phí khởi động, chạy thật trên kernel Linux 6.6.
+status: draft
+tags: [os, virtualization, containers, namespaces, cgroups]
+authors: [tranquocvy]
+references:
+  - title: "Linux man-pages — namespaces(7)"
+    url: https://man7.org/linux/man-pages/man7/namespaces.7.html
+    kind: web
+    note: danh sách các loại namespace, cờ clone, unshare, setns
+  - title: "Linux man-pages — cgroups(7)"
+    url: https://man7.org/linux/man-pages/man7/cgroups.7.html
+    kind: web
+    note: cgroup v1 so với v2, controller, quy tắc phân cấp
+  - title: "Linux kernel documentation — Control Group v2"
+    url: https://docs.kernel.org/admin-guide/cgroup-v2.html
+    kind: web
+    note: memory.max, cpu.max, pids.max, memory.events, cpu.stat
+  - title: "Linux man-pages — unshare(2), pid_namespaces(7), mount_namespaces(7)"
+    url: https://man7.org/linux/man-pages/man2/unshare.2.html
+    kind: web
+    note: system call tách namespace, quy tắc riêng của PID và mount namespace
+  - title: "Agache et al. — Firecracker: Lightweight Virtualization for Serverless Applications (NSDI 2020)"
+    url: https://www.usenix.org/system/files/nsdi20-paper-agache.pdf
+    kind: paper
+    note: microVM dựa trên KVM, thời gian khởi động và đánh đổi bảo mật
+  - title: "Popek & Goldberg — Formal Requirements for Virtualizable Third Generation Architectures (1974)"
+    kind: paper
+    note: điều kiện để một kiến trúc ảo hoá được bằng trap-and-emulate
+  - title: "Open Container Initiative — Runtime Specification"
+    url: https://github.com/opencontainers/runtime-spec
+    kind: web
+    note: "một container được mô tả bằng gì: rootfs, namespace, cgroup, capability"
+  - title: "Arpaci-Dusseau — Operating Systems: Three Easy Pieces, Part I: Virtualization (Introduction)"
+    url: https://pages.cs.wisc.edu/~remzi/OSTEP/
+    kind: book
+    note: ảo hoá CPU và bộ nhớ ở mức process, nền để hiểu ảo hoá ở mức cả máy
+---
+
+## Ý chính
+
+Ở các bài trước của chặng này, hệ điều hành tạo cho mỗi chương trình **ảo giác** rằng nó có CPU riêng ([Process vs Thread](/docs/os/process-thread), [CPU Scheduling](/docs/os/cpu-scheduling)) và bộ nhớ riêng ([Virtual Memory](/docs/os/virtual-memory)). Ý tưởng đó có thể đi xa hơn một bậc: tạo ảo giác về **cả một máy** hoặc **cả một hệ điều hành**. Hai cách làm khác hẳn nhau, và người ta hay gộp chúng vào chung một chữ "ảo hoá" nên hay hiểu nhầm:
+
+- **Máy ảo** (virtual machine) giả lập **phần cứng**. Mỗi máy ảo chạy **kernel riêng** trên phần cứng ảo do một **hypervisor** cấp. Ranh giới cô lập là giao diện phần cứng.
+- **Container** không giả lập gì cả. Nó chỉ là một **tiến trình Linux bình thường**, nhưng kernel cho nó nhìn thế giới qua **namespace** riêng (nó tưởng mình là PID 1, có hostname, mạng và hệ thống file riêng) và giới hạn tài nguyên của nó bằng **cgroup**. Mọi container trên một máy **dùng chung một kernel**. Ranh giới cô lập là các system call của kernel.
+
+Khác biệt ấy kéo theo mọi thứ còn lại: container khởi động trong mili giây còn máy ảo mất cỡ giây, container nhẹ hơn nhiều, nhưng cũng kém cô lập hơn vì một lỗ hổng của kernel chung ảnh hưởng tất cả. Bài này **mở hộp** thay vì dùng Docker như một hộp đen: tự gọi các system call tạo namespace, tự dựng một container tối giản từ vài chương trình và một thư mục, tự giới hạn bộ nhớ, CPU và số tiến trình bằng cgroup v2 rồi xem kernel giết hay làm chậm tiến trình, và đo chi phí khởi động. Mọi thí nghiệm chạy trên **Linux kernel 6.6 (WSL2)** với quyền root, bằng Python 3.12 và các công cụ `unshare`, `ip`, output là output thật.
+
+## Hai cách ảo hoá
+
+| | Máy ảo | Container |
+|---|---|---|
+| Ảo hoá cái gì | phần cứng (CPU, bộ nhớ, đĩa, card mạng) | các tài nguyên của OS (PID, mạng, hệ thống file, hostname) |
+| Kernel | **mỗi máy một kernel riêng** (có thể khác OS) | **dùng chung** kernel của máy chủ (cùng OS) |
+| Ranh giới cô lập | giao diện phần cứng, nhỏ và hẹp | bề mặt system call của kernel, rộng |
+| Khởi động | cỡ giây (khởi động cả OS) | cỡ mili giây (chỉ tạo một tiến trình) |
+| Chi phí bộ nhớ | mỗi máy mang cả một kernel và bộ nhớ đệm riêng | gần như không |
+| Mật độ | vài chục máy ảo mỗi máy chủ | hàng trăm đến nghìn container mỗi máy chủ |
+| Cô lập an toàn | mạnh (lỗ hổng phải thoát khỏi hypervisor) | yếu hơn (một lỗi kernel là thoát) |
+
+### Máy ảo hoạt động thế nào
+
+Một hypervisor cần chạy hệ điều hành khách như thể nó sở hữu phần cứng. Mọi lệnh thường (cộng, nhảy) chạy thẳng trên CPU thật. Chỉ những lệnh **nhạy cảm** (đụng vào trạng thái hệ thống: bảng trang, ngắt, thiết bị) mới gây trở ngại: hệ điều hành khách tưởng nó chạy ở chế độ kernel, mà thật ra nó không được phép. Cách kinh điển (Popek và Goldberg, 1974) là **trap-and-emulate**: chạy khách ở chế độ thấp quyền, mỗi lệnh nhạy cảm gây một **bẫy** (trap) vào hypervisor, hypervisor mô phỏng hiệu ứng rồi trả quyền cho khách. Kiến trúc x86 cổ có lệnh nhạy cảm không gây bẫy nên khó ảo hoá, dẫn tới hai lời giải: dịch lại mã nhị phân (VMware thời đầu) hoặc **para-virtualization** (sửa hệ điều hành khách để chủ động gọi hypervisor, như Xen). Từ khoảng năm 2006, CPU có **hỗ trợ phần cứng** (Intel VT-x, AMD-V): thêm một chế độ chạy riêng cho khách (non-root mode), nên lệnh nhạy cảm tự động chuyển về hypervisor mà không cần mẹo. **Nested paging** (EPT của Intel, NPT của AMD) cho phần cứng tự dịch hai tầng địa chỉ (ảo của khách sang vật lý của khách, rồi sang vật lý thật), nên không phải bẫy ở mỗi lần khách sửa bảng trang (xem [Virtual Memory](/docs/os/virtual-memory), TLB miss ở đây đắt hơn vì phải duyệt hai bảng trang). Thiết bị được ảo hoá bằng giao diện chuẩn **virtio** (ổ đĩa, card mạng ảo hiệu quả cho khách biết mình là máy ảo).
+
+Trong Linux, **KVM** biến chính kernel thành một hypervisor (mỗi máy ảo là một tiến trình QEMU, mỗi CPU ảo là một luồng); các nền tảng đám mây công cộng chạy trên nền này. **Firecracker** (AWS Lambda và Fargate) là một VMM tối giản trên KVM tạo "microVM" chỉ gồm vài thiết bị ảo, khởi động cỡ 125 ms theo bài báo của họ, để có độ cô lập của máy ảo với chi phí gần container. Bản thân môi trường thí nghiệm của bài này cũng là một máy ảo: **WSL2 là một máy ảo Linux nhẹ** (kernel `6.6.87.2-microsoft-standard-WSL2`) chạy trên Windows.
+
+## Namespace: mỗi tiến trình thấy một thế giới riêng
+
+**Namespace** là cơ chế kernel bọc một loại tài nguyên toàn cục để các tiến trình trong cùng namespace thấy **một bản riêng**. Có tám loại:
+
+| Namespace | Cô lập | Tác dụng thấy được |
+|---|---|---|
+| `mnt` | cây hệ thống file và điểm mount | tiến trình thấy cây thư mục riêng |
+| `pid` | số hiệu tiến trình | tiến trình đầu tiên là PID 1; không thấy tiến trình bên ngoài |
+| `net` | thiết bị mạng, địa chỉ, bảng định tuyến, cổng | mạng riêng, cổng 80 riêng |
+| `uts` | hostname và domain name | hostname riêng |
+| `ipc` | System V IPC, hàng đợi POSIX | bộ nhớ chia sẻ riêng |
+| `user` | ánh xạ UID và GID | root trong container là người thường bên ngoài |
+| `cgroup` | gốc nhìn thấy của cây cgroup | container thấy cgroup của nó là gốc |
+| `time` | đồng hồ boot và monotonic | độ lệch thời gian riêng |
+
+Mỗi tiến trình thuộc đúng một namespace mỗi loại, nhìn thấy qua các liên kết `/proc/<pid>/ns/*` mà **inode** là định danh. Ba system call chính: `clone` (tạo tiến trình trong namespace mới, bằng cờ `CLONE_NEW*`), `unshare` (tiến trình hiện tại tách ra namespace mới), `setns` (nhảy vào namespace đã có, thứ `nsenter` và `docker exec` dùng).
+
+### Dùng công cụ `unshare`
+
+Script sau chạy sáu thí nghiệm bằng công cụ `unshare` của util-linux và `ip`:
+
+```bash
+#!/bin/bash
+# Namespace bằng công cụ unshare, chạy với quyền root trong WSL2 (kernel 6.6).
+echo "== 1. mỗi tiến trình thuộc một bộ namespace; số trong ngoặc là inode định danh namespace =="
+echo "máy chủ  : $(for n in pid net mnt uts ipc; do printf '%s=%s ' $n "$(readlink /proc/self/ns/$n | sed 's/.*\[\(.*\)\]/\1/')"; done)"
+echo "trong ns : $(unshare --pid --net --mount --uts --ipc --fork --mount-proc bash -c 'for n in pid net mnt uts ipc; do printf "%s=%s " $n "$(readlink /proc/self/ns/$n | sed "s/.*\[\(.*\)\]/\1/")"; done')"
+
+echo
+echo "== 2. PID namespace: trong ns, tiến trình đầu tiên là PID 1 và chỉ thấy tiến trình của ns =="
+echo "máy chủ thấy $(COLUMNS=100 ps -e --no-headers | wc -l) tiến trình"
+unshare --pid --fork --mount-proc bash -c 'echo "trong ns: bash có PID $$, ps thấy:"; COLUMNS=100 ps -e -o pid,comm --no-headers | sed "s/^/   /"'
+
+echo
+echo "== 3. UTS namespace: đổi hostname trong ns không ảnh hưởng máy chủ =="
+echo "hostname máy chủ trước : $(hostname)"
+unshare --uts bash -c 'hostname container-demo; echo "hostname trong ns      : $(hostname)"'
+echo "hostname máy chủ sau   : $(hostname)"
+
+echo
+echo "== 4. Mount namespace: mount trong ns không lộ ra ngoài =="
+mkdir -p /tmp/nsmnt
+unshare --mount bash -c 'mount -t tmpfs -o size=1m tmpfs /tmp/nsmnt && echo hello > /tmp/nsmnt/f && echo "trong ns thấy: $(ls /tmp/nsmnt)  ($(findmnt -n -o FSTYPE /tmp/nsmnt))"'
+echo "ngoài ns thấy : [$(ls /tmp/nsmnt)]  (thư mục rỗng, tmpfs không tồn tại ngoài ns)"
+
+echo
+echo "== 5. Network namespace: mạng riêng chỉ có lo, rồi nối với máy chủ bằng cặp veth =="
+echo "-- ns mới (chưa cấu hình):"
+unshare --net bash -c 'ip -br link | sed "s/^/   /"'
+ip netns del demo 2>/dev/null; ip netns add demo
+ip link add veth-host type veth peer name veth-ns
+ip link set veth-ns netns demo
+ip addr add 10.77.0.1/24 dev veth-host; ip link set veth-host up
+ip netns exec demo ip addr add 10.77.0.2/24 dev veth-ns
+ip netns exec demo ip link set veth-ns up; ip netns exec demo ip link set lo up
+echo "-- trong ns demo sau khi cấu hình:"
+ip netns exec demo ip -br -4 addr | sed 's/^/   /'
+echo "-- ping từ máy chủ (10.77.0.1) sang ns (10.77.0.2):"
+ping -c 2 -W 1 10.77.0.2 | grep -E "bytes from|packets" | sed 's/^/   /'
+echo "-- ns không thấy mạng của máy chủ (chỉ thấy veth-ns và lo); bảng định tuyến trong ns:"
+ip netns exec demo ip route | sed 's/^/   /'
+ip netns del demo; ip link del veth-host 2>/dev/null
+
+echo
+echo "== 6. Container tối giản = namespace + đổi gốc (chroot) vào một rootfs nhỏ tự dựng =="
+R=/tmp/miniroot; rm -rf $R; mkdir -p $R/bin $R/lib/x86_64-linux-gnu $R/lib64 $R/proc $R/etc $R/dev; mknod -m 666 $R/dev/null c 1 3
+for b in bash ls cat ps mount hostname head tr; do cp "$(command -v $b)" $R/bin/ 2>/dev/null; done
+for b in $R/bin/*; do ldd $b 2>/dev/null | grep -o '/[^ ]*' | while read l; do mkdir -p $R$(dirname $l); cp -n "$l" $R$l 2>/dev/null; done; done
+echo "mini container rootfs" > $R/etc/motd
+echo "rootfs dựng tay: $(du -sh $R | cut -f1), $(ls $R/bin | wc -l) chương trình"
+unshare --pid --fork --mount --uts --ipc --net chroot $R /bin/bash -c '
+  mount -t proc proc /proc 2>/dev/null
+  echo "trong container: PID của bash = $$"
+  echo "thư mục gốc chỉ có: $(ls /)"
+  echo "/etc/motd: $(cat /etc/motd)"
+  echo "/etc/passwd của máy chủ: $(cat /etc/passwd 2>&1 | head -1)"
+  echo "tiến trình thấy được: $(ps -e -o pid,comm --no-headers 2>/dev/null | tr "\n" ";")"
+'
+rm -rf $R
+```
+
+```text
+your 100x1 screen size is bogus. expect trouble
+your 100x1 screen size is bogus. expect trouble
+h namespace ==
+máy chủ  : pid=4026532223 net=4026531840 mnt=4026532220 uts=4026532222 ipc=4026532208 
+trong ns : pid=4026532230 net=4026532231 mnt=4026532227 uts=4026532228 ipc=4026532229 
+
+== 2. PID namespace: trong ns, tiến trình đầu tiên là PID 1 và chỉ thấy tiến trình của ns ==
+máy chủ thấy 56 tiến trình
+trong ns: bash có PID 1, ps thấy:
+         1 bash
+         2 ps
+         3 sed
+
+== 3. UTS namespace: đổi hostname trong ns không ảnh hưởng máy chủ ==
+hostname máy chủ trước : Ubuntu
+hostname trong ns      : container-demo
+hostname máy chủ sau   : Ubuntu
+
+== 4. Mount namespace: mount trong ns không lộ ra ngoài ==
+trong ns thấy: f  (tmpfs)
+ngoài ns thấy : []  (thư mục rỗng, tmpfs không tồn tại ngoài ns)
+
+== 5. Network namespace: mạng riêng chỉ có lo, rồi nối với máy chủ bằng cặp veth ==
+-- ns mới (chưa cấu hình):
+   lo               DOWN           00:00:00:00:00:00 <LOOPBACK> 
+-- trong ns demo sau khi cấu hình:
+   lo               UNKNOWN        127.0.0.1/8 
+   veth-ns@if8      UP             10.77.0.2/24 
+-- ping từ máy chủ (10.77.0.1) sang ns (10.77.0.2):
+   64 bytes from 10.77.0.2: icmp_seq=1 ttl=64 time=0.027 ms
+   64 bytes from 10.77.0.2: icmp_seq=2 ttl=64 time=0.096 ms
+   2 packets transmitted, 2 received, 0% packet loss, time 1022ms
+-- ns không thấy mạng của máy chủ (chỉ thấy veth-ns và lo); bảng định tuyến trong ns:
+   10.77.0.0/24 dev veth-ns proto kernel scope link src 10.77.0.2 
+
+== 6. Container tối giản = namespace + đổi gốc (chroot) vào một rootfs nhỏ tự dựng ==
+rootfs dựng tay: 9.3M, 8 chương trình
+trong container: PID của bash = 1
+thư mục gốc chỉ có: bin
+dev
+etc
+lib
+lib64
+proc
+/etc/motd: mini container rootfs
+/etc/passwd của máy chủ: cat: /etc/passwd: No such file or directory
+tiến trình thấy được:       1 bash;      8 bash;      9 ps;     10 tr;
+```
+
+Đọc từng phần:
+
+1. **Định danh**: máy chủ và tiến trình trong `unshare` có **inode khác nhau ở cả năm loại** (`pid=4026532223` so với `4026532232`...). Hai tiến trình cùng inode là cùng namespace.
+2. **PID ns**: bên trong, `bash` có **PID 1** và `ps` chỉ thấy ba tiến trình (`bash`, `ps`, `sed`) trong khi máy chủ có hàng chục. `--mount-proc` là cần thiết vì `ps` đọc `/proc`: nếu dùng `/proc` của máy chủ trong ns mới, nó vẫn liệt kê tiến trình của máy chủ. Tiến trình PID 1 trong một PID ns có vai trò đặc biệt: khi nó thoát, kernel giết mọi tiến trình còn lại trong ns; và nó phải nhặt xác các tiến trình mồ côi (xem [Process vs Thread](/docs/os/process-thread) về zombie).
+3. **UTS ns**: đổi hostname thành `container-demo` trong ns, hostname của máy chủ vẫn là `Ubuntu` trước và sau.
+4. **Mount ns**: `mount -t tmpfs` bên trong ns tạo ra thư mục có file `f`; ngoài ns, thư mục đó **rỗng** vì điểm mount chỉ tồn tại trong ns. Đây là nền để mỗi container có cây thư mục riêng mà không đổi máy chủ.
+5. **Net ns**: ns mới chỉ có một giao diện `lo` đang tắt, **không thấy** card mạng của máy chủ. Nối nó với máy chủ bằng một cặp **veth** (hai đầu của một "cáp ảo": một đầu ở máy chủ, một đầu trong ns); gán `10.77.0.1/24` và `10.77.0.2/24`; `ping` từ máy chủ sang ns thành công (0% mất gói, vài chục micro giây). Đây chính là cách Docker nối container ra ngoài (qua một bridge `docker0` và NAT), xem [IP & Routing](/docs/networking/ip-routing).
+6. **Container tối giản**: một thư mục `rootfs` dựng tay (9,3 MB, tám chương trình và thư viện của chúng, một thiết bị `/dev/null`), rồi chạy `bash` trong **năm namespace và `chroot`** vào thư mục đó. Bên trong: `bash` có PID 1; thư mục gốc chỉ thấy `bin dev etc lib lib64 proc`; file `/etc/motd` do ta đặt hiện ra; **`/etc/passwd` của máy chủ không tồn tại**; `ps` chỉ thấy bốn tiến trình. Đây là **một container hoàn chỉnh về bản chất** trong vài dòng shell, không có Docker, không có daemon. Chưa có giới hạn tài nguyên (sẽ làm ở phần cgroup) và chưa an toàn (xem phần cuối).
+
+### Gọi thẳng system call từ Python
+
+Để thấy không có phép màu, cùng ý tưởng bằng một system call `unshare(2)` từ Python 3.12:
+
+```python
+# Một "container" là một tiến trình Linux bình thường mà kernel cho nhìn thế giới qua các namespace riêng.
+# Gọi thẳng system call unshare(2) từ Python 3.12 (os.unshare), không cần công cụ ngoài. Chạy với quyền root.
+import os, socket, sys
+sys.stdout.reconfigure(line_buffering=True)               # os._exit không xả bộ đệm, nên in từng dòng ngay
+
+def ns(kind): return os.readlink(f"/proc/self/ns/{kind}")
+
+print("cờ clone/unshare:", {k: hex(getattr(os, k)) for k in ("CLONE_NEWUTS", "CLONE_NEWPID", "CLONE_NEWNS", "CLONE_NEWNET", "CLONE_NEWIPC")})
+print(f"[cha ] PID {os.getpid():>5}  uts={ns('uts')}  pid={ns('pid')}  hostname={socket.gethostname()!r}")
+
+child = os.fork()
+if child == 0:
+    os.unshare(os.CLONE_NEWUTS | os.CLONE_NEWPID | os.CLONE_NEWNS)       # tách ba namespace bằng MỘT system call
+    socket.sethostname("py-container")
+    print(f"[con ] PID {os.getpid():>5}  uts={ns('uts')}  pid={ns('pid')}  hostname={socket.gethostname()!r}")
+    print("       (pid ns của chính tiến trình con VẪN là ns cũ: PID ns mới chỉ áp dụng cho các tiến trình con sinh ra SAU unshare)")
+    grandchild = os.fork()                                              # tiến trình con đầu tiên sinh ra trong PID ns mới
+    if grandchild == 0:
+        print(f"[cháu] getpid() = {os.getpid()}  (là PID 1 trong ns mới)  hostname={socket.gethostname()!r}")
+        os._exit(0)
+    os.waitpid(grandchild, 0)
+    os._exit(0)
+os.waitpid(child, 0)
+print(f"[cha ] sau khi con thoát: hostname={socket.gethostname()!r} (không đổi), uts={ns('uts')} (không đổi)")
+```
+
+```text
+cờ clone/unshare: {'CLONE_NEWUTS': '0x4000000', 'CLONE_NEWPID': '0x20000000', 'CLONE_NEWNS': '0x20000', 'CLONE_NEWNET': '0x40000000', 'CLONE_NEWIPC': '0x8000000'}
+[cha ] PID   499  uts=uts:[4026532221]  pid=pid:[4026532222]  hostname='Ubuntu'
+[con ] PID   506  uts=uts:[4026532230]  pid=pid:[4026532222]  hostname='py-container'
+       (pid ns của chính tiến trình con VẪN là ns cũ: PID ns mới chỉ áp dụng cho các tiến trình con sinh ra SAU unshare)
+[cháu] getpid() = 1  (là PID 1 trong ns mới)  hostname='py-container'
+[cha ] sau khi con thoát: hostname='Ubuntu' (không đổi), uts=uts:[4026532221] (không đổi)
+```
+
+Tiến trình **con** gọi `os.unshare` với ba cờ (`CLONE_NEWUTS`, `CLONE_NEWPID`, `CLONE_NEWNS`): inode `uts` đổi từ `4026532221` sang `4026532230` và hostname thành `py-container`. **PID namespace có một quy tắc riêng**: nó không áp dụng cho chính tiến trình gọi (inode `pid` của con vẫn là `4026532222`, ns cũ) mà **chỉ cho các con sinh ra sau đó**. Vì vậy ta `fork` thêm một lần, và tiến trình **cháu** thấy `getpid() = 1`: nó là tiến trình đầu tiên của ns mới. Tiến trình cha, ở lại ns cũ, thấy hostname vẫn là `Ubuntu`. (Mẹo nhỏ trong code: `os._exit` không xả bộ đệm stdout, nên phải bật `line_buffering`; khi quên, các dòng in của tiến trình con biến mất khi đầu ra là một đường ống.)
+
+## cgroup: giới hạn tài nguyên
+
+Namespace cho tiến trình **thấy** ít đi; **cgroup** (control group) giới hạn nó **dùng** bao nhiêu. Trong cgroup v2, kernel dựng một **cây thư mục** ảo tại `/sys/fs/cgroup`: mỗi thư mục là một nhóm; ghi PID vào file `cgroup.procs` là cho tiến trình vào nhóm; ghi số vào các file như `memory.max`, `cpu.max`, `pids.max` là đặt giới hạn. Con của nhóm kế thừa giới hạn của cha. Mỗi loại tài nguyên là một **controller** (`cpu`, `memory`, `io`, `pids`...) phải được bật cho cây con qua `cgroup.subtree_control`. Đây chính là thứ [CPU Scheduling](/docs/os/cpu-scheduling) nhắc tới khi nói scheduler chia CPU giữa các nhóm trước rồi mới tới từng task.
+
+Script sau tạo ba cgroup và thử vượt giới hạn từng loại:
+
+```python
+# cgroup v2: giới hạn bộ nhớ, CPU và số tiến trình cho một nhóm tiến trình. Chạy với quyền root trong WSL2.
+import os, subprocess, sys, time, signal
+
+ROOT = "/sys/fs/cgroup"
+def rd(path): return open(path).read().strip()
+def wr(path, v): open(path, "w").write(str(v))
+
+def enable_controllers():
+    want = "+cpu +memory +pids"
+    try: wr(f"{ROOT}/cgroup.subtree_control", want)
+    except OSError as e: print("   (không bật được controller ở gốc:", e, ")")
+
+def new_cg(name, **limits):
+    path = f"{ROOT}/{name}"
+    if os.path.exists(path): os.rmdir(path)
+    os.mkdir(path)
+    for k, v in limits.items(): wr(f"{path}/{k}", v)
+    return path
+
+def run_in(cg, code, timeout=20):
+    """Chạy một đoạn Python trong cgroup: tiến trình con tự ghi PID vào cgroup.procs rồi mới chạy."""
+    def join(): wr(f"{cg}/cgroup.procs", os.getpid())
+    p = subprocess.Popen([sys.executable, "-c", code], preexec_fn=join)
+    t0 = time.time()
+    try: rc = p.wait(timeout)
+    except subprocess.TimeoutExpired: p.kill(); rc = p.wait()
+    return rc, time.time() - t0
+
+def stat(cg, f):
+    return {l.split()[0]: int(l.split()[1]) for l in rd(f"{cg}/{f}").splitlines()}
+
+print("controller khả dụng:", rd(f"{ROOT}/cgroup.controllers"))
+enable_controllers()
+print("controller bật cho cgroup con:", rd(f"{ROOT}/cgroup.subtree_control"))
+
+print()
+print("== 1. memory.max = 64 MiB: một tiến trình cố cấp phát 300 MiB sẽ bị OOM-kill chỉ riêng trong cgroup ==")
+cg = new_cg("demo_mem", **{"memory.max": 64 * 1024 * 1024, "memory.swap.max": 0})
+rc, dt = run_in(cg, "b = []\nfor i in range(300):\n    b.append(bytearray(1024*1024)); b[-1][::4096] = b'x' * len(b[-1][::4096])\nprint('đã cấp 300 MiB')")
+ev = stat(cg, "memory.events")
+print(f"   mã thoát = {rc} ({'bị SIGKILL' if rc == -signal.SIGKILL else 'bình thường'}), memory.events: {ev}")
+print(f"   memory.peak = {int(rd(cg + '/memory.peak')) / 2**20:.0f} MiB (giới hạn 64 MiB); máy chủ vẫn còn {int(open('/proc/meminfo').read().split()[4]) // 1024} MiB trống")
+os.rmdir(cg)
+
+print()
+print("== 2. cpu.max = '20000 100000' (20 ms mỗi chu kỳ 100 ms = 20% một lõi): vòng lặp bận chỉ được dùng 20% ==")
+cg = new_cg("demo_cpu", **{"cpu.max": "20000 100000"})
+code = "import time\nt=time.time()\nwhile time.time()-t < 3: pass"
+rc, dt = run_in(cg, code)
+st = stat(cg, "cpu.stat")
+print(f"   chạy 3 giây thật, đã dùng CPU: {st['usage_usec'] / 1e6:.2f} giây = {st['usage_usec'] / 1e6 / dt:.0%} của một lõi (giới hạn 20%)")
+print(f"   nr_throttled = {st['nr_throttled']} lần bị chặn, throttled_usec = {st['throttled_usec'] / 1e6:.2f} giây phải chờ")
+os.rmdir(cg)
+cg = new_cg("demo_cpu_free")
+rc, dt = run_in(cg, code)
+st = stat(cg, "cpu.stat")
+print(f"   (đối chứng, không giới hạn: dùng {st['usage_usec'] / 1e6:.2f} giây CPU trong {dt:.2f} giây thật = {st['usage_usec'] / 1e6 / dt:.0%})")
+os.rmdir(cg)
+
+print()
+print("== 3. pids.max = 20: một chương trình cố sinh nhiều tiến trình con bị chặn ở 20 ==")
+cg = new_cg("demo_pids", **{"pids.max": 20})
+code = ("import os, time\nkids=[]\nfails=0\nfor i in range(100):\n"
+        "    try:\n        p=os.fork()\n    except OSError:\n        fails+=1; continue\n"
+        "    if p==0:\n        time.sleep(2); os._exit(0)\n    kids.append(p)\n"
+        "print('fork thành công', len(kids), 'lần, thất bại', fails, 'lần')\n"
+        "for p in kids: os.waitpid(p, 0)")
+rc, dt = run_in(cg, code)
+print(f"   pids.events: {stat(cg, 'pids.events')}")
+os.rmdir(cg)
+```
+
+```text
+fork thành công 19 lần, thất bại 81 lần
+controller khả dụng: cpuset cpu io memory hugetlb pids rdma
+controller bật cho cgroup con: cpu memory pids
+
+== 1. memory.max = 64 MiB: một tiến trình cố cấp phát 300 MiB sẽ bị OOM-kill chỉ riêng trong cgroup ==
+   mã thoát = -9 (bị SIGKILL), memory.events: {'low': 0, 'high': 0, 'max': 35, 'oom': 1, 'oom_kill': 1, 'oom_group_kill': 0}
+   memory.peak = 64 MiB (giới hạn 64 MiB); máy chủ vẫn còn 6877 MiB trống
+
+== 2. cpu.max = '20000 100000' (20 ms mỗi chu kỳ 100 ms = 20% một lõi): vòng lặp bận chỉ được dùng 20% ==
+   chạy 3 giây thật, đã dùng CPU: 0.63 giây = 20% của một lõi (giới hạn 20%)
+   nr_throttled = 31 lần bị chặn, throttled_usec = 2.46 giây phải chờ
+   (đối chứng, không giới hạn: dùng 3.02 giây CPU trong 3.04 giây thật = 99%)
+
+== 3. pids.max = 20: một chương trình cố sinh nhiều tiến trình con bị chặn ở 20 ==
+   pids.events: {'max': 81}
+```
+
+1. **`memory.max = 64 MiB`**: tiến trình xin 300 MiB bị kernel **giết bằng SIGKILL** (mã thoát `-9`). `memory.events` ghi `max: 35` (35 lần chạm giới hạn, kernel phải thu hồi hoặc chặn) rồi `oom: 1, oom_kill: 1`. `memory.peak` đúng 64 MiB; còn máy chủ vẫn còn gần **6.877 MiB trống**: OOM killer ở đây **chỉ nhìn vào cgroup**, không đụng tiến trình ngoài. Đó là lý do khi một pod Kubernetes vượt giới hạn bộ nhớ, riêng nó bị giết và hiện `OOMKilled` (xem [Virtual Memory](/docs/os/virtual-memory) về OOM killer của cả hệ thống).
+2. **`cpu.max = "20000 100000"`**: quota 20 ms CPU mỗi chu kỳ 100 ms. Vòng lặp bận chạy 3 giây thật chỉ dùng **0,63 giây CPU, tức 20% một lõi**, bị chặn (`nr_throttled`) **31 lần**, chờ tổng 2,46 giây (`throttled_usec`). Đối chứng không giới hạn dùng 3,02 giây CPU trong 3,04 giây thật (99%). Chú ý đây là **giới hạn cứng** (quota), khác với `cpu.weight` (trọng số **tương đối** khi tranh chấp, xem CPU Scheduling): quota chặn cả khi máy rỗi. Đó là nguồn của một tình trạng quen thuộc trong Kubernetes: ứng dụng bị **CPU throttling** (độ trễ đuôi tăng) dù mức dùng trung bình thấp hơn giới hạn, vì quota bị dùng hết trong mỗi chu kỳ 100 ms.
+3. **`pids.max = 20`**: chương trình cố `fork` 100 lần chỉ thành công **19 lần** (cộng tiến trình chủ là 20) và **thất bại 81 lần** (`pids.events: max 81`). Đây là phòng thủ trước **fork bomb**: một container hỏng không làm cạn bảng tiến trình của cả máy.
+
+Mô hình phân cấp có một luật đáng nhớ (v2): chỉ cgroup **lá** mới chứa tiến trình (no internal process constraint), controller phải được bật từ trên xuống. Ngoài ba loại trên còn `io` (băng thông và IOPS của đĩa), `cpuset` (gán lõi và nút bộ nhớ NUMA), `memory.high` (ngưỡng **mềm**: vượt thì bị chậm lại để thu hồi chứ chưa bị giết, nên hay dùng cho container nặng bộ nhớ).
+
+## Chi phí khởi động
+
+Đo tạo một tiến trình trong namespace tốn bao nhiêu, so với chạy `/bin/true` thông thường (300 lần mỗi mức):
+
+```python
+# Khởi động một "container" tốn bao nhiêu? So với chạy chương trình thường (cả hai chỉ chạy /bin/true).
+import subprocess, time, os, shutil
+
+R = "/tmp/startroot"
+shutil.rmtree(R, ignore_errors=True); os.makedirs(R + "/bin"); os.makedirs(R + "/lib/x86_64-linux-gnu"); os.makedirs(R + "/lib64")
+subprocess.run(["cp", "/bin/true", R + "/bin/true"], check=True)
+for l in subprocess.run(["ldd", "/bin/true"], capture_output=True, text=True).stdout.split():
+    if l.startswith("/") and os.path.exists(l):
+        os.makedirs(R + os.path.dirname(l), exist_ok=True); shutil.copy(l, R + l)
+
+def bench(argv, n=300):
+    t = time.perf_counter()
+    for _ in range(n): subprocess.run(argv, check=True)
+    return (time.perf_counter() - t) / n * 1000
+
+plain = bench(["/bin/true"])
+ns_all = bench(["unshare", "--pid", "--fork", "--mount", "--uts", "--ipc", "--net", "/bin/true"])
+ns_root = bench(["unshare", "--pid", "--fork", "--mount", "--uts", "--ipc", "--net", "chroot", R, "/bin/true"])
+print(f"chạy /bin/true bình thường                                 : {plain:6.2f} ms")
+print(f"trong 5 namespace (pid, mount, uts, ipc, net)              : {ns_all:6.2f} ms  (+{ns_all - plain:.2f} ms)")
+print(f"trong 5 namespace + đổi gốc sang rootfs riêng (chroot)     : {ns_root:6.2f} ms  (+{ns_root - plain:.2f} ms)")
+shutil.rmtree(R, ignore_errors=True)
+```
+
+```text
+chạy /bin/true bình thường                                 :   0.33 ms
+trong 5 namespace (pid, mount, uts, ipc, net)              :   1.40 ms  (+1.07 ms)
+trong 5 namespace + đổi gốc sang rootfs riêng (chroot)     :   1.79 ms  (+1.46 ms)
+```
+
+Chạy một chương trình thường mất 0,33 ms (chủ yếu là chi phí `fork` và `exec`). **Thêm năm namespace** tốn thêm khoảng **1,1 ms**, và thêm cả đổi gốc sang một rootfs riêng thêm khoảng **0,4 ms** nữa, tổng cộng **1,8 ms** từ lệnh gọi đến khi chương trình đầu tiên chạy. Container thật (Docker) lâu hơn nhiều, nhưng phần lớn là việc khác: giải nén lớp image, cấu hình mạng bridge, gọi daemon, gắn volume. **Phần "cô lập" của kernel là gần như miễn phí**; nên container có thể sinh ra theo từng request (serverless). Máy ảo phải khởi động cả kernel và thiết bị: cỡ giây cho máy ảo thường, cỡ 125 ms cho microVM như Firecracker (theo số liệu trong bài báo của họ, không do bài này đo).
+
+## Từ "container tối giản" tới Docker và Kubernetes
+
+Thí nghiệm trên là lõi của mọi container, nhưng còn thiếu nhiều thứ để dùng được ở sản xuất:
+
+- **Image và lớp**: một container cần cả một rootfs, thường vài chục tới vài trăm MB. Docker lưu dưới dạng các **lớp chỉ đọc xếp chồng** (dùng `overlayfs`, một hệ thống file hợp nhất nhiều thư mục) cộng một lớp ghi riêng; nhiều container chung các lớp nền nên tiết kiệm đĩa và tải về.
+- **Mạng**: mỗi container một net ns, nối bằng cặp veth vào một **bridge** trên máy chủ, ra ngoài qua **NAT** (Docker) hoặc qua overlay/CNI (Kubernetes); cổng được ánh xạ bằng quy tắc `iptables`/`nftables`.
+- **An toàn**: **capabilities** (chia nhỏ quyền root thành vài chục quyền riêng; container thường bỏ gần hết), **seccomp** (bộ lọc system call; Docker mặc định chặn khoảng bốn mươi system call trong số hơn 300), **AppArmor/SELinux** (kiểm soát truy cập bắt buộc), và **user namespace** (root trong container là UID thường bên ngoài, nền của rootless container).
+- **Runtime chuẩn**: đặc tả của OCI (Open Container Initiative) mô tả một container bằng một file cấu hình (rootfs, namespace, cgroup, capability); **runc** là cài đặt tham chiếu, được **containerd** và **CRI-O** gọi; Docker và Kubernetes chỉ là tầng điều phối bên trên.
+- **Kubernetes**: một **pod** là các container **chung một net ns và một cgroup cha**, nên chúng nói chuyện qua `localhost`; `requests` của container thành `cpu.weight` (chia theo tỉ lệ khi tranh chấp), `limits` thành `cpu.max` và `memory.max`: chính các file bạn vừa ghi.
+
+### Giới hạn của cô lập bằng namespace
+
+Vì mọi container dùng chung **một kernel**, ranh giới cô lập chỉ vững bằng chính kernel: một lỗ hổng leo thang đặc quyền trong kernel (hoặc một container chạy `--privileged`, hoặc mount socket của Docker) cho phép thoát ra máy chủ. Vì vậy môi trường **đa người thuê không tin nhau** (đám mây công cộng cho người lạ chạy mã) thường đặt container **bên trong một máy ảo** (Kata Containers, Firecracker) hoặc chặn bề mặt tấn công bằng một kernel ở không gian người dùng (gVisor). Chọn container để **đóng gói và triển khai** thì yên tâm; chọn container như **hàng rào bảo mật** thì phải có thêm các lớp trên.
+
+## Quan sát và chẩn đoán
+
+- `lsns` liệt kê mọi namespace và tiến trình sở hữu; `ls -l /proc/<pid>/ns/` cho định danh của một tiến trình; `readlink` để so hai tiến trình có cùng namespace không.
+- `nsenter -t <pid> -n ip addr` chạy lệnh **bên trong** net ns của một tiến trình (cách gỡ lỗi mạng container không cần cài công cụ vào container); cờ `-m -p -u -i` cho các ns khác.
+- `cat /proc/<pid>/cgroup` cho biết tiến trình ở cgroup nào; `systemd-cgls` vẽ cây; `systemd-cgtop` hiện tài nguyên theo nhóm.
+- Với cgroup: đọc `memory.current` và `memory.peak` (dùng bao nhiêu), `memory.events` (đã chạm giới hạn, OOM chưa), `cpu.stat` (`nr_throttled`, `throttled_usec`), `pids.current` và `pids.events`. `docker stats` và các số cAdvisor/Prometheus của Kubernetes đọc đúng các file này.
+- `dmesg | grep -i "killed process"` hoặc `journalctl -k` để thấy OOM killer báo cgroup nào, tiến trình nào bị giết.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Container bị giết, `OOMKilled`, mã thoát 137 | vượt `memory.max` (137 = 128 + SIGKILL 9) | tăng giới hạn, tìm rò rỉ bộ nhớ; xem `memory.events` và `memory.peak` |
+| Độ trễ đuôi tăng dù CPU trung bình thấp | CPU throttling vì quota `cpu.max` bị dùng hết mỗi chu kỳ | tăng hoặc bỏ limit CPU (giữ requests), kiểm tra `nr_throttled` trong `cpu.stat` |
+| `fork: Resource temporarily unavailable` trong container | chạm `pids.max` | tăng giới hạn, hoặc sửa ứng dụng sinh quá nhiều tiến trình |
+| Đổi hostname hay mount trong container không thấy ở máy chủ (và ngược lại) | namespace tách biệt, đúng như thiết kế | dùng `nsenter` để vào cùng namespace |
+| Tiến trình zombie tích tụ trong container | tiến trình PID 1 của container không nhặt xác con | dùng init nhỏ (`tini`, `docker run --init`) làm PID 1 |
+| Container "thấy" tổng RAM và số lõi của máy chủ, không phải giới hạn | công cụ đọc `/proc/meminfo` hay `nproc` (không biết cgroup) | dùng runtime biết cgroup (JVM từ bản 10 đọc `memory.max` và `cpu.max`); với Go đặt `GOMAXPROCS` (hoặc dùng thư viện `automaxprocs`) |
+| Container thoát được ra máy chủ | chạy `--privileged`, mount socket Docker, hay lỗi kernel | bỏ quyền, dùng rootless, thêm lớp máy ảo cho tải không tin cậy |
+
+## Lưu ý
+
+- Container **không phải máy ảo**: nó là tiến trình Linux có namespace và cgroup, dùng chung kernel với máy chủ. Hệ quả: khởi động tính bằng mili giây, nhưng cô lập yếu hơn máy ảo.
+- Namespace quyết định tiến trình **thấy gì**; cgroup quyết định nó **dùng được bao nhiêu**. Thiếu một trong hai thì chưa thành container.
+- PID namespace chỉ áp dụng cho các tiến trình con sinh sau `unshare`; PID 1 của một PID ns có trách nhiệm nhặt xác con và nếu nó chết thì cả ns bị giết.
+- Giới hạn bộ nhớ là **cứng**: vượt là bị giết (`OOMKilled`, mã 137). Giới hạn CPU dạng quota là **cứng theo chu kỳ**: vượt là bị chặn (throttling), gây độ trễ đuôi dù mức dùng trung bình thấp; `cpu.weight` mới là chia tương đối khi tranh chấp.
+- Công cụ đọc `nproc`, `/proc/meminfo` hay `free` trong container thấy cả máy chủ, không thấy cgroup; ứng dụng phải biết cgroup để đặt kích thước pool, heap.
+- Container không phải hàng rào bảo mật tuyệt đối vì chung kernel; tải không đáng tin cần thêm máy ảo (Kata, Firecracker) hoặc gVisor, và bỏ capability, seccomp, user namespace, không chạy `--privileged`.
+- Docker, containerd, Kubernetes là tầng điều phối trên các system call này; hiểu `unshare`, `clone`, cgroup file cho phép gỡ lỗi khi các tầng trên che mất điều gì đó.
+- Môi trường thử trong bài này (WSL2) bản thân là một máy ảo; một container chạy trong đó là container trong máy ảo, nên mọi con số đo về chi phí là của cả chồng.

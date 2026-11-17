@@ -1,0 +1,9 @@
+{
+  "title": "Computer Architecture",
+  "pages": [
+    "data-representation",
+    "isa-assembly",
+    "memory-hierarchy",
+    "pipeline-branch-prediction"
+  ]
+}

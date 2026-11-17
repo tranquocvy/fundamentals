@@ -7,9 +7,11 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { parse as parseYaml } from 'yaml';
 import { ROADMAP_DIR, allNodes, listRoadmapSlugs, nodeIdsFromYaml, readRoadmapFile, validateRoadmap, warnRoadmap } from './roadmap-core.mjs';
 
 const ROOT = join('content', 'docs');
+const REFERENCE_KINDS = new Set(['book', 'web', 'paper', 'video']);   // phải khớp articleSchema trong src/lib/source.ts
 const errors = [];
 const err = (file, msg) => errors.push(`${relative('.', file)}: ${msg}`);
 
@@ -33,6 +35,15 @@ function checkMdx(file, isArticle) {
   const src = readFileSync(file, 'utf8');
   const fm = src.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? '';
   if (/TODO/.test(fm)) err(file, 'frontmatter còn "TODO", hãy điền nốt.');
+  // frontmatter phải là YAML hợp lệ (lỗi hay gặp: giá trị chứa ": " mà không đặt trong ngoặc kép), và references[].kind đúng tập cho phép
+  try {
+    const data = parseYaml(fm) ?? {};
+    for (const r of data.references ?? []) {
+      if (!REFERENCE_KINDS.has(r?.kind)) err(file, `references: kind "${r?.kind}" không hợp lệ (chỉ ${[...REFERENCE_KINDS].join(', ')}).`);
+    }
+  } catch (e) {
+    err(file, `frontmatter không phải YAML hợp lệ: ${String(e.message).split(/\r?\n/)[0]} (giá trị có ": " bên trong cần đặt trong ngoặc kép).`);
+  }
   if (isArticle && !/^references:\s*\r?\n\s+-/m.test(fm)) err(file, 'bài cần ít nhất 1 mục trong references.');
 
   // bỏ code block và inline code để không bắt nhầm ví dụ như `<Term>x</Term>`

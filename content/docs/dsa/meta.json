@@ -1,0 +1,13 @@
+{
+  "title": "Data Structures & Algorithms",
+  "pages": [
+    "complexity",
+    "arrays-linked-lists",
+    "hash-tables",
+    "trees",
+    "sorting",
+    "graphs",
+    "dynamic-programming",
+    "strings"
+  ]
+}

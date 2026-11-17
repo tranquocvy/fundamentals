@@ -1,0 +1,16 @@
+---
+title: Computer Architecture
+description: Biểu diễn dữ liệu, assembly, pipeline, dự đoán rẽ nhánh và cache.
+tags: [architecture]
+---
+
+Phần này ghi chú những gì nằm dưới mọi chương trình: máy tính biểu diễn số và dữ liệu thế nào, CPU chạy lệnh ra sao, và vì sao thứ tự truy cập bộ nhớ quyết định tốc độ. Các bài đo trực tiếp trên phần cứng thật (một CPU Intel i7-12700H trong WSL2) bằng C và Python, vì đây là môn mà con số trả lời tốt hơn lời mô tả. Đọc theo thứ tự dưới đây; bài về bộ nhớ nối thẳng sang [Virtual Memory](/docs/os/virtual-memory) và [Array & Linked List](/docs/dsa/arrays-linked-lists).
+
+| Bài | Trả lời câu hỏi |
+|---|---|
+| [Data Representation](/docs/architecture/data-representation) | Số nguyên bù hai tràn thế nào, endianness là gì, và số thực IEEE 754 lưu 0.1 ra sao mà 0.1 + 0.2 khác 0.3? Khi nào mất chính xác, cộng nhiều số thực thế nào cho đúng, và vì sao không dùng float cho tiền? |
+| [ISA & Assembly](/docs/architecture/isa-assembly) | Thanh ghi và quy ước gọi hàm là gì? Assembly của gcc ở -O0 và -O2 khác nhau ra sao, mã máy giải mã tay thế nào, stack cạn ở độ sâu nào, và cmov thay nhánh ra sao? |
+| [Memory Hierarchy & Cache](/docs/architecture/memory-hierarchy) | Một lần đọc RAM chậm hơn L1 bao nhiêu lần? Cache line, ánh xạ địa chỉ và locality là gì? Vì sao đổi thứ tự hai vòng lặp có thể nhanh gấp 5 đến 11 lần, và nhân ma trận chia khối đạt gì? |
+| [CPU Pipeline & Branch Prediction](/docs/architecture/pipeline-branch-prediction) | Pipeline và thực thi không theo thứ tự làm CPU chạy nhiều lệnh mỗi chu kỳ ra sao? Độ trễ khác thông lượng thế nào, một lần đoán sai rẽ nhánh tốn bao nhiêu, và bộ dự đoán nhớ được mẫu dài đến đâu? |
+
+Cả bốn node của chặng đã có bài viết, theo thứ tự của [roadmap CS Fundamentals](/roadmaps/cs-fundamentals): Data Representation, ISA & Assembly, rồi pipeline và bộ nhớ.

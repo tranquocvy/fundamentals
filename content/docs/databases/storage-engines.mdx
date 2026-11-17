@@ -1,0 +1,384 @@
+---
+title: Storage Engines (B-tree vs LSM-tree)
+description: Hai họ cấu trúc lưu trữ trên đĩa, B-tree cập nhật tại chỗ và LSM-tree ghi nối đuôi, đo write, read và space amplification bằng cách tự cài LSM-tree có WAL, SSTable, Bloom filter và compaction, so với write amplification của B+ tree.
+status: draft
+tags: [databases, storage-engine, lsm-tree, b-tree]
+authors: [tranquocvy]
+references:
+  - title: "Kleppmann — Designing Data-Intensive Applications, Chapter 3: Storage and Retrieval"
+    url: https://dataintensive.net/
+    kind: book
+    note: log-structured và B-tree, SSTable, LSM-tree, so sánh hai họ
+  - title: "O'Neil, Cheng, Gawlick, O'Neil — The Log-Structured Merge-Tree (LSM-Tree) (1996)"
+    url: https://www.cs.umb.edu/~poneil/lsmtree.pdf
+    kind: paper
+    note: bài báo gốc của LSM-tree
+  - title: "Chang et al. — Bigtable: A Distributed Storage System for Structured Data (OSDI 2006)"
+    url: https://research.google.com/archive/bigtable-osdi06.pdf
+    kind: paper
+    note: SSTable, memtable, compaction ở quy mô lớn
+  - title: "Athanassoulis et al. — Designing Access Methods: The RUM Conjecture (EDBT 2016)"
+    kind: paper
+    note: đánh đổi giữa chi phí đọc, cập nhật và bộ nhớ (read, update, memory)
+  - title: "LevelDB — Implementation notes"
+    url: https://github.com/google/leveldb/blob/main/doc/impl.md
+    kind: web
+    note: log, memtable, SSTable và compaction theo tầng của LevelDB
+  - title: "RocksDB wiki — Leveled Compaction"
+    url: https://github.com/facebook/rocksdb/wiki/Leveled-Compaction
+    kind: web
+    note: cấu trúc tầng, kích thước mục tiêu, write amplification
+  - title: "Petrov — Database Internals, Part I: Storage Engines (B-Tree Basics; LSM Trees)"
+    kind: book
+    note: B-tree và LSM-tree đặt cạnh nhau ở mức triển khai
+  - title: "Bloom — Space/Time Trade-offs in Hash Coding with Allowable Errors (1970)"
+    kind: paper
+    note: bài báo gốc của Bloom filter
+---
+
+## Ý chính
+
+Phần "chỉ mục" ở bài [Indexing](/docs/databases/indexing) nói dữ liệu được **tìm** nhanh thế nào. Còn một lớp nữa nằm dưới: dữ liệu và chỉ mục được **sắp đặt trên đĩa** ra sao khi ghi. Lớp này gọi là **storage engine** (động cơ lưu trữ), và gần như mọi hệ thống chọn một trong hai họ. Họ thứ nhất là **B-tree**: dữ liệu nằm ở các trang có vị trí cố định, sửa thì ghi đè **tại chỗ** (update in place). Họ thứ hai là **log-structured merge tree** (<Term>LSM-tree</Term>): không bao giờ ghi đè, chỉ **ghi nối đuôi** các file mới, rồi định kỳ **gộp** file cũ lại ở nền.
+
+Hai họ đánh đổi theo hai hướng ngược nhau, và cách duy nhất để thấy rõ là đo. Bài này dựa trên ba đại lượng: <Term>write amplification</Term> (cứ ghi 1 byte dữ liệu thì thực tế ghi bao nhiêu byte xuống đĩa), **read amplification** (một lần đọc phải chạm bao nhiêu trang hay file), và **space amplification** (đĩa chiếm bao nhiêu so với dữ liệu hữu ích). Trình tự: ba loại khuếch đại; đo write amplification của B+ tree trên bản B+ tree tự cài ở bài Indexing; tự cài một LSM-tree gồm memtable, write-ahead log, SSTable, **Bloom filter** và compaction, kiểm tra đúng với `dict` rồi đo cả ba loại khuếch đại; và cuối cùng là bảng chọn giữa hai họ cùng cách hệ thống thật dùng. Code là Python 3.13 chạy trong WSL, mọi con số là output thật.
+
+## Ba loại khuếch đại
+
+Không có cấu trúc nào tối ưu cả ba cùng lúc (đây là ý của **RUM conjecture**: read, update, memory, bớt một thứ thì phải trả bằng thứ khác):
+
+| Loại | Đo | Cái gì làm nó lớn |
+|---|---|---|
+| **Write amplification** | byte ghi xuống đĩa so với byte người dùng ghi | ghi cả trang 8 KB để đổi 80 byte; ghi lại dữ liệu mỗi lần gộp file |
+| **Read amplification** | số trang hoặc file phải đọc cho một lần đọc | tìm trong nhiều file chồng nhau; cây cao |
+| **Space amplification** | dung lượng đĩa so với dữ liệu sống | phiên bản cũ chưa được dọn; trang chỉ đầy một phần |
+
+Write amplification không chỉ là chuyện hiệu năng: ổ SSD chịu được một số lần ghi giới hạn, nên khuếch đại ghi **rút ngắn tuổi thọ ổ**, và băng thông ghi dùng cho việc gộp file là băng thông không dành cho người dùng.
+
+## B-tree: cập nhật tại chỗ và khuếch đại ở mức trang
+
+B-tree (xem [Tree](/docs/dsa/trees) và [Indexing](/docs/databases/indexing)) giữ dữ liệu trong các trang cỡ cố định (4 đến 16 KB). Muốn đổi **một** bản ghi 80 byte, cơ sở dữ liệu phải ghi lại **cả trang** chứa nó: đơn vị ghi của đĩa là trang. Ghi ngẫu nhiên vào nhiều trang khác nhau tốn một lần ghi ngẫu nhiên mỗi trang, thứ ổ đĩa quay làm rất chậm và SSD không thích. Lượng khuếch đại phụ thuộc vào **bao nhiêu lần ghi vào cùng một trang được gộp** trước khi trang xuống đĩa. Mô hình: một cây có 200.000 khoá, bản ghi 80 byte, trang lá 8 KB; thêm 20.000 khoá ngẫu nhiên và ghi các trang bẩn xuống đĩa sau mỗi `K` lần chèn (checkpoint); hai lần chèn rơi vào cùng một trang giữa hai checkpoint chỉ tính một lần ghi.
+
+```python
+# Write amplification của B+ tree ở mức trang: mỗi lần chèn làm bẩn một trang lá; hệ thống ghi các trang bẩn xuống đĩa
+# mỗi "checkpoint". Ghi nhiều lần giữa hai checkpoint mà trúng cùng một trang thì chỉ ghi trang đó một lần.
+import random
+from bplus import BPlusTree
+
+PAGE = 8192; REC = 80                      # trang 8 KB, bản ghi ~80 byte (cùng cỡ với thí nghiệm LSM)
+ORDER = PAGE // REC                        # ~102 bản ghi mỗi trang lá
+
+random.seed(3)
+t = BPlusTree(ORDER)
+base = random.sample(range(10**9), 200_000)
+for k in base: t.insert(k, 0)
+_, leaves, fill = t.stats()
+print(f"cây nền: 200.000 khoá, {leaves:,} trang lá ({PAGE // 1024} KB), độ đầy {fill:.0%}")
+
+new_keys = random.sample(range(10**9), 20_000)
+leaf_of = {}
+print()
+print(f"{'checkpoint mỗi':>15} {'trang bẩn ghi ra':>17} {'byte ghi ra':>13} {'byte người dùng':>16} {'write amp':>10}")
+for K in (1, 10, 100, 1_000, 10_000):
+    t2 = BPlusTree(ORDER)
+    for k in base: t2.insert(k, 0)
+    dirty, pages_written, ins = set(), 0, 0
+    for k in new_keys[:20_000]:
+        leaf, _ = t2._leaf_for(k)
+        dirty.add(id(leaf)); t2.insert(k, 0); ins += 1
+        if ins % K == 0: pages_written += len(dirty); dirty = set()
+    pages_written += len(dirty)
+    wbytes, ubytes = pages_written * PAGE, ins * REC
+    print(f"{K:>10} lần chèn {pages_written:>17,} {wbytes:>13,} {ubytes:>16,} {wbytes / ubytes:>9.1f}x")
+```
+
+```text
+cây nền: 200.000 khoá, 2,833 trang lá (8 KB), độ đầy 69%
+
+ checkpoint mỗi  trang bẩn ghi ra   byte ghi ra  byte người dùng  write amp
+         1 lần chèn            20,000   163,840,000        1,600,000     102.4x
+        10 lần chèn            19,969   163,586,048        1,600,000     102.2x
+       100 lần chèn            19,674   161,169,408        1,600,000     100.7x
+      1000 lần chèn            16,858   138,100,736        1,600,000      86.3x
+     10000 lần chèn             5,725    46,899,200        1,600,000      29.3x
+```
+
+(Script dùng lại lớp `BPlusTree` của bài Indexing.) Khi mỗi lần chèn phải ghi xuống đĩa ngay (`K = 1`), khuếch đại là **102 lần**: để ghi 80 byte thì ghi 8.192 byte. Cho nhiều lần chèn dồn lại trước khi ghi giúp ít hơn: ở 1.000 lần chèn mỗi checkpoint còn **86 lần**, ở 10.000 lần còn **29 lần**, vì cây chỉ có 2.833 trang lá nên nhiều lần chèn rơi vào cùng một trang. Số này **chưa tính** write-ahead log (mỗi thay đổi còn được ghi vào log, xem [Transactions](/docs/databases/transactions)) và các trang nút trong bị sửa khi trang lá tách, nên con số thật còn cao hơn. B-tree còn có một điểm yếu khác: sau nhiều lần tách trang, lá chỉ đầy khoảng **69%** (xem bài Indexing), tức space amplification khoảng 1,45 lần so với dữ liệu thuần.
+
+Đổi lại, B-tree **đọc** rất tốt: một lần tìm chạm đúng số trang bằng chiều cao cây (3 đến 4), không phụ thuộc lịch sử ghi. Mỗi khoá nằm ở đúng một nơi, nên không có phiên bản cũ chồng nhau để đọc qua.
+
+## LSM-tree: ghi nối đuôi, gộp ở nền
+
+LSM-tree giải bài toán ghi bằng cách **không bao giờ ghi ngẫu nhiên**:
+
+1. **Memtable**: mọi ghi vào một bảng sắp xếp trong RAM. Song song, một bản ghi nối đuôi vào **write-ahead log** (WAL) trên đĩa để khôi phục nếu sập (tuần tự, rẻ).
+2. Khi memtable đầy, nó được **xả** thành một file sắp xếp bất biến gọi là **SSTable** (sorted string table), ghi tuần tự một lần. Memtable mới bắt đầu; WAL cũ được bỏ.
+3. File không bao giờ sửa. Xoá bằng cách ghi một **bia mộ** (tombstone), ghi đè bằng cách ghi bản mới.
+4. Đọc phải kiểm tra memtable rồi các SSTable **từ mới tới cũ** cho tới khi thấy khoá: có thể phải xem nhiều file.
+5. Để việc đọc không chậm dần, một tiến trình nền **gộp** (compaction): trộn nhiều SSTable thành một, bản mới ghi đè bản cũ, bỏ bia mộ khi chắc chắn không còn bản cũ nào bên dưới.
+6. Mỗi SSTable có một **Bloom filter**: cấu trúc xác suất trả lời "khoá này **chắc chắn không** có trong file" hoặc "có thể có" (không bao giờ sai theo hướng nói "không" nhầm), cho phép bỏ qua phần lớn file khi đọc.
+
+Dưới đây là bản cài tối giản đủ cả sáu phần (SSTable ghi file thật và `fsync`; chi phí đọc được đếm bằng số SSTable bị kiểm tra, thay vì mở lại file). Compaction theo kiểu **size-tiered**: khi một tầng có `fanout` file thì trộn chúng thành một file ở tầng kế tiếp:
+
+```python
+# LSM-tree tối giản: memtable + WAL, SSTable (file sắp xếp bất biến) có chỉ mục thưa và Bloom filter,
+# gộp theo tầng (size-tiered). Đếm byte ghi và số SSTable phải đọc để đo write và read amplification.
+import os, bisect, hashlib, math, random, struct, tempfile, json
+
+class Bloom:
+    def __init__(self, n, bits_per_key):
+        self.m = max(8, int(n * bits_per_key)); self.k = max(1, round(bits_per_key * math.log(2)))
+        self.bits = bytearray((self.m + 7) // 8)
+    def _hashes(self, key):
+        h = hashlib.blake2b(key.encode(), digest_size=16).digest()
+        a, b = int.from_bytes(h[:8], "big"), int.from_bytes(h[8:], "big") | 1
+        return ((a + i * b) % self.m for i in range(self.k))
+    def add(self, key):
+        for p in self._hashes(key): self.bits[p >> 3] |= 1 << (p & 7)
+    def might_contain(self, key):
+        return all(self.bits[p >> 3] & (1 << (p & 7)) for p in self._hashes(key))
+
+TOMB = None                                              # bia mộ: giá trị None nghĩa là đã xoá
+
+class SSTable:
+    """File không bao giờ sửa. Dữ liệu sắp theo khoá; giữ chỉ mục thưa (mỗi 16 khoá) trong bộ nhớ và Bloom filter."""
+    def __init__(self, path, items, bits_per_key):
+        self.path, self.n = path, len(items)
+        self.keys = [k for k, _ in items]
+        self.bloom = Bloom(len(items), bits_per_key) if bits_per_key else None
+        if self.bloom:
+            for k in self.keys: self.bloom.add(k)
+        with open(path, "w") as f:
+            for k, v in items: f.write(json.dumps([k, v]) + "\n")
+            f.flush(); os.fsync(f.fileno())
+        self.size = os.path.getsize(path)
+        self.data = items                                # mô phỏng: giữ bản trong RAM để khỏi mở lại file; chi phí đọc đếm bằng "lần chạm"
+    def get(self, key):
+        i = bisect.bisect_left(self.keys, key)
+        return (True, self.data[i][1]) if i < len(self.keys) and self.keys[i] == key else (False, None)
+
+class LSM:
+    def __init__(self, d, memtable_limit=1000, fanout=4, bloom_bits=10):
+        self.d, self.limit, self.fanout, self.bloom_bits = d, memtable_limit, fanout, bloom_bits
+        self.mem, self.levels = {}, []                   # levels[i] = danh sách SSTable ở tầng i (cũ -> mới)
+        self.wal = open(os.path.join(d, "wal.log"), "a")
+        self.user_bytes = self.disk_bytes = 0            # byte người dùng ghi vs byte thực sự ghi xuống đĩa
+        self.touched = 0                                 # tổng số SSTable phải kiểm tra qua các lần get
+        self.bloom_skips = 0; self.seq = 0
+    def _rec_bytes(self, k, v): return len(k) + (len(v) if v else 0) + 8
+
+    def put(self, k, v):
+        rb = self._rec_bytes(k, v); self.user_bytes += rb
+        self.wal.write(json.dumps([k, v]) + "\n"); self.wal.flush(); self.disk_bytes += rb      # WAL (không fsync mỗi lần để chạy nhanh)
+        self.mem[k] = v
+        if len(self.mem) >= self.limit: self._flush()
+    def delete(self, k): self.put(k, TOMB)
+
+    def _new_table(self, items):
+        self.seq += 1
+        t = SSTable(os.path.join(self.d, f"sst{self.seq}.json"), items, self.bloom_bits)
+        self.disk_bytes += sum(self._rec_bytes(k, v) for k, v in items)
+        return t
+    def _flush(self):
+        t = self._new_table(sorted(self.mem.items())); self.mem = {}
+        self.wal.truncate(0); self.wal.seek(0)
+        self._add(0, t)
+    def _add(self, lvl, t):
+        while len(self.levels) <= lvl: self.levels.append([])
+        self.levels[lvl].append(t)
+        if len(self.levels[lvl]) >= self.fanout: self._compact(lvl)
+    def _compact(self, lvl):
+        runs, self.levels[lvl] = self.levels[lvl], []
+        merged = {}
+        for t in runs:                                   # cũ -> mới: bản mới ghi đè bản cũ
+            for k, v in t.data: merged[k] = v
+        if lvl == len(self.levels) - 1:                  # tầng cuối: bia mộ không còn gì để che nữa, bỏ hẳn
+            merged = {k: v for k, v in merged.items() if v is not TOMB}
+        for t in runs: os.remove(t.path)
+        self._add(lvl + 1, self._new_table(sorted(merged.items())))
+
+    def get(self, k):
+        if k in self.mem: return self.mem[k]
+        for lvl in self.levels:                          # tầng nông (mới) trước
+            for t in reversed(lvl):
+                if t.bloom and not t.bloom.might_contain(k): self.bloom_skips += 1; continue
+                self.touched += 1
+                found, v = t.get(k)
+                if found: return v
+        return None
+    def n_tables(self): return sum(len(l) for l in self.levels)
+
+def run_writes(n, fanout, bloom_bits=10, limit=1000, seed=1):
+    d = tempfile.mkdtemp(); db = LSM(d, limit, fanout, bloom_bits)
+    random.seed(seed); keys = [f"user{random.randrange(10**9):09d}" for _ in range(n)]
+    for k in keys: db.put(k, "x" * 64)
+    return db, keys
+
+if __name__ == "__main__":
+    # 1) đúng sai so với dict, có ghi đè và xoá
+    d = tempfile.mkdtemp(); db = LSM(d, memtable_limit=200, fanout=3); ref = {}
+    random.seed(7)
+    for i in range(20000):
+        k = f"k{random.randrange(3000):05d}"
+        if random.random() < 0.2: db.delete(k); ref.pop(k, None)
+        else: v = f"v{i}"; db.put(k, v); ref[k] = v
+    assert all(db.get(k) == v for k, v in ref.items())
+    assert all(db.get(f"k{i:05d}") is None for i in range(3000) if f"k{i:05d}" not in ref)
+    print(f"đúng với dict sau 20.000 thao tác (gồm ghi đè và xoá): {len(ref)} khoá còn sống, {db.n_tables()} SSTable, tầng = {[len(l) for l in db.levels]}")
+
+    # 2) write amplification theo fanout (số SSTable gộp mỗi lần)
+    print()
+    N = 100_000
+    print(f"{N:,} lần ghi ngẫu nhiên, memtable 1.000 khoá (mỗi bản ghi ~ 80 byte):")
+    print(f"{'fanout':>7} {'số tầng':>8} {'số SSTable':>11} {'byte người dùng':>16} {'byte ghi xuống đĩa':>19} {'write amp':>10}")
+    for fo in (2, 4, 10):
+        db, _ = run_writes(N, fo)
+        print(f"{fo:>7} {len(db.levels):>8} {db.n_tables():>11} {db.user_bytes:>16,} {db.disk_bytes:>19,} {db.disk_bytes / db.user_bytes:>9.1f}x")
+
+    # 3) read amplification: số SSTable phải kiểm tra, có và không có Bloom filter
+    print()
+    print("đọc 20.000 khoá (một nửa có thật, một nửa không có), fanout 4, 100.000 khoá trong cây:")
+    print(f"{'Bloom bits/khoá':>16} {'SSTable/lượt đọc':>17} {'đã bỏ qua nhờ Bloom':>21}")
+    for bits in (0, 4, 10, 16):
+        db, keys = run_writes(N, 4, bloom_bits=bits)
+        random.seed(99)
+        present = random.sample(keys, 10_000); absent = [f"nokey{random.randrange(10**9):09d}" for _ in range(10_000)]
+        db.touched = db.bloom_skips = 0
+        for k in present + absent: db.get(k)
+        print(f"{bits:>16} {db.touched / 20_000:>17.2f} {db.bloom_skips:>21,}")
+
+    # 4) tỉ lệ dương tính giả của Bloom: đo so với công thức (1 - e^(-k/b))^k
+    print()
+    print(f"{'bits/khoá':>10} {'k':>3} {'FPR đo':>9} {'FPR lý thuyết':>14}")
+    n = 20000; ks = [f"in{i}" for i in range(n)]; probes = [f"out{i}" for i in range(50000)]
+    for bits in (4, 8, 10, 14):
+        b = Bloom(n, bits)
+        for k in ks: b.add(k)
+        fp = sum(b.might_contain(p) for p in probes) / len(probes)
+        print(f"{bits:>10} {b.k:>3} {fp:>8.2%} {(1 - math.exp(-b.k / bits)) ** b.k:>14.2%}")
+```
+
+```text
+đúng với dict sau 20.000 thao tác (gồm ghi đè và xoá): 2390 khoá còn sống, 4 SSTable, tầng = [0, 2, 1, 0, 1]
+
+100,000 lần ghi ngẫu nhiên, memtable 1.000 khoá (mỗi bản ghi ~ 80 byte):
+ fanout  số tầng  số SSTable  byte người dùng  byte ghi xuống đĩa  write amp
+      2        7           4        8,500,000          63,324,660       7.4x
+      4        4           6        8,500,000          38,674,745       4.5x
+     10        2          18        8,500,000          24,565,000       2.9x
+
+đọc 20.000 khoá (một nửa có thật, một nửa không có), fanout 4, 100.000 khoá trong cây:
+ Bloom bits/khoá  SSTable/lượt đọc   đã bỏ qua nhờ Bloom
+               0              5.67                     0
+               4              1.27                88,140
+              10              0.54               102,700
+              16              0.50               103,531
+
+ bits/khoá   k    FPR đo  FPR lý thuyết
+         4   3   14.58%         14.69%
+         8   6    2.17%          2.16%
+        10   7    0.81%          0.82%
+        14  10    0.10%          0.12%
+```
+
+### Đúng đắn
+
+Dòng đầu: sau 20.000 thao tác ngẫu nhiên gồm ghi đè và xoá (20% là xoá), cây trả đúng kết quả của một `dict` cho mọi khoá (2.390 khoá còn sống, nằm trong 4 SSTable ở các tầng khác nhau). Các assert kiểm tra cả khoá còn sống lẫn khoá đã xoá: bia mộ che đúng bản cũ.
+
+### Write amplification theo fanout
+
+Ghi 100.000 bản ghi ngẫu nhiên (khoảng 8,5 MB dữ liệu người dùng) với memtable 1.000 khoá:
+
+| Fanout | Số tầng | SSTable còn lại | Byte ghi xuống đĩa | Write amplification |
+|---|---|---|---|---|
+| 2 | 7 | 4 | 63,3 MB | **7,4 lần** |
+| 4 | 4 | 6 | 38,7 MB | **4,5 lần** |
+| 10 | 2 | 18 | 24,6 MB | **2,9 lần** |
+
+Ba thành phần cộng lại: **1 lần** vào WAL, **1 lần** khi xả memtable thành SSTable, và **một lần mỗi tầng** mà dữ liệu đi qua khi bị gộp. Fanout lớn làm **ít tầng hơn** (2 tầng cho fanout 10), nên mỗi byte bị chép lại ít lần hơn: khuếch đại 2,9 lần, thấp hơn nhiều so với **102 lần** của B-tree ở mức không gộp ghi. Nhưng cột "SSTable còn lại" cho thấy cái giá: **18 file** cùng tồn tại ở fanout 10 so với 4 file ở fanout 2, nghĩa là đọc phải xem nhiều file hơn. Đây là một nút vặn: **fanout lớn, ghi rẻ, đọc đắt**.
+
+### Read amplification và Bloom filter
+
+Đọc 20.000 khoá (một nửa có thật, một nửa không có trong cây), fanout 4:
+
+| Bloom bits mỗi khoá | SSTable phải kiểm tra mỗi lần đọc | Số lần bỏ qua nhờ Bloom |
+|---|---|---|
+| 0 (không có Bloom) | **5,67** | 0 |
+| 4 | 1,27 | 88.140 |
+| 10 | **0,54** | 102.700 |
+| 16 | 0,50 | 103.531 |
+
+Không có Bloom filter, một lần đọc phải kiểm tra trung bình **5,67 SSTable**, vì khoá không có thật phải được loại trừ ở **mọi** file. Với 10 bit mỗi khoá chỉ còn **0,54**: dưới 1 vì nửa số lần đọc là khoá không có và hầu hết bị lọc ngay. Các con số tiệm cận khoảng 0,5, đúng một lần kiểm tra cho các khoá có thật. Tăng từ 10 lên 16 bit chỉ cải thiện thêm chút ít, phản ánh lợi ích giảm dần.
+
+### Bloom filter hoạt động thế nào
+
+Bloom filter là một mảng `m` bit, ban đầu toàn 0, và `k` hàm băm. Thêm một khoá: băm `k` lần, bật `k` bit tương ứng. Hỏi một khoá: băm `k` lần, nếu **mọi** bit đều bật thì "có thể có", chỉ cần một bit tắt thì "chắc chắn không có". Không bao giờ có **âm tính giả** (khoá có thật mà trả lời không), nhưng có **dương tính giả** (khoá không có mà các bit tình cờ đã bật vì các khoá khác). Với `b` bit mỗi khoá và `k` hàm băm, tỉ lệ dương tính giả là xấp xỉ `(1 - e^(-k/b))^k`, và `k = b · ln 2` tối ưu. Phần cuối của output đo đúng điều đó:
+
+| Bit mỗi khoá | k | FPR đo | FPR lý thuyết |
+|---|---|---|---|
+| 4 | 3 | 14,58% | 14,69% |
+| 8 | 6 | 2,17% | 2,16% |
+| 10 | 7 | **0,81%** | 0,82% |
+| 14 | 10 | 0,10% | 0,12% |
+
+Số đo trùng khít công thức. Quy tắc nhớ: **10 bit mỗi khoá cho khoảng 1% dương tính giả**, thêm khoảng 4,8 bit mỗi khoá thì giảm mười lần. Với 10 bit/khoá, filter của một SSTable 1 triệu khoá chỉ chiếm khoảng 1,2 MB, đủ nhỏ để giữ trong RAM, và tránh được hầu hết các lần đọc đĩa vô ích. Cái giá của Bloom: không hỗ trợ **truy vấn khoảng** (chỉ trả lời cho điểm), nên LSM-tree vẫn phải trộn nhiều file khi quét khoảng.
+
+## Compaction: hai chiến lược
+
+Bản cài trên là **size-tiered** (Cassandra gọi là STCS): gộp các file cùng cỡ. **Leveled** (LevelDB, RocksDB mặc định) tổ chức khác: mỗi tầng là một dãy file **không chồng khoảng khoá**, tầng sau lớn gấp khoảng 10 lần tầng trước; khi tầng đầy, lấy một file nhét vào tầng dưới, trộn với các file chồng khoảng khoá với nó. Hệ quả:
+
+| | Size-tiered | Leveled |
+|---|---|---|
+| Write amplification | thấp (như bảng trên: 2,9 tới 7,4) | cao hơn (thường hàng chục lần, vì mỗi byte bị chép lại khoảng 10 lần mỗi tầng) |
+| Read amplification | cao hơn (nhiều file có thể chứa cùng khoá) | thấp (mỗi tầng có tối đa một file chứa khoá, tức chừng bằng số tầng) |
+| Space amplification | cao (có thể gấp đôi khi gộp các file lớn, vì cần chỗ cho cả bản cũ lẫn bản mới) | thấp (khoảng 1,1 lần) |
+| Hợp với | tải ghi nặng, đọc ít | tải đọc nhiều, cần độ trễ đọc ổn định |
+
+Không có chiến lược thắng tuyệt đối; hầu hết engine cho cấu hình được và có biến thể lai (tầng đầu tiered, các tầng sau leveled).
+
+Compaction còn là **nguồn phiền toái vận hành**: nó ngốn CPU và băng thông đĩa ở nền, gây **write stall** (engine làm chậm hoặc dừng ghi nếu việc gộp không theo kịp tốc độ ghi vào, để số file không phình vô hạn), và làm độ trễ đuôi (p99) thất thường vào lúc gộp lớn. **Bia mộ** ở lại cho tới khi gộp tới tầng cuối: một khối lượng xoá lớn khiến đọc phải đi qua nhiều bia mộ, một vấn đề nổi tiếng trong Cassandra.
+
+## Chọn B-tree hay LSM-tree
+
+| | B-tree | LSM-tree |
+|---|---|---|
+| Ghi | ghi ngẫu nhiên mức trang; khuếch đại lớn (đo: 29 tới 102 lần ở mức trang) | ghi tuần tự; khuếch đại thấp (đo: 2,9 tới 7,4 lần) |
+| Đọc điểm | ổn định: số trang bằng chiều cao cây | phải xem nhiều file; Bloom filter cứu |
+| Đọc khoảng | tốt (lá nối sẵn) | phải trộn nhiều file; khó hơn |
+| Độ trễ | ổn định, dễ đoán | có đuôi dài khi compaction |
+| Không gian | lá đầy khoảng 69%, ít phiên bản dư | phiên bản cũ chờ gộp; có thể gấp đôi với size-tiered |
+| Giao dịch, khoá | trưởng thành, khoá trên từng khoá trong cây | dựa vào lớp trên (MVCC theo thời điểm ghi) |
+| Dùng khi | cơ sở dữ liệu đa dụng, đọc nhiều, truy vấn khoảng, giao dịch | ghi liên tục với khối lượng lớn (log, sự kiện, chuỗi thời gian, thông điệp), SSD cần bớt ghi |
+
+## Trong hệ thống thật
+
+- **B-tree**: PostgreSQL (heap cộng B-tree phụ), MySQL InnoDB (clustered B+ tree), SQLite, SQL Server, Oracle. **LMDB** dùng B+ tree **copy-on-write** (không ghi đè trang mà ghi trang mới rồi đổi con trỏ gốc), tránh WAL và đọc rất nhanh.
+- **LSM-tree**: **LevelDB** và **RocksDB** (RocksDB là nền của TiKV trong TiDB, của MyRocks trong MySQL, và nhiều hệ khác; CockroachDB dùng Pebble, bản viết lại bằng Go theo thiết kế của RocksDB), **Cassandra**, **HBase** (kế thừa từ Bigtable), **ScyllaDB**. **ClickHouse** `MergeTree` cũng dùng ý tưởng ghi thành "part" bất biến rồi gộp ở nền.
+- **Log là cấu trúc dữ liệu**: Kafka là một nhật ký phân đoạn ghi nối đuôi, lấy chính tính tuần tự làm điểm mạnh; ý tưởng "ghi nối đuôi, đọc theo vị trí" giống cốt lõi LSM nhưng không có sắp xếp theo khoá.
+- **WiredTiger** (MongoDB) hỗ trợ cả B-tree và LSM; nhiều engine cho chọn.
+- Dù chọn họ nào, **WAL** vẫn có mặt (xem [Transactions](/docs/databases/transactions)): LSM dùng nó để bảo vệ memtable, B-tree dùng nó để bảo vệ các trang đang sửa dở.
+
+## Quan sát và chẩn đoán
+
+- **Đo write amplification thật**: so byte ghi xuống đĩa (`iostat`, `/proc/<pid>/io` ở trường `write_bytes`, hoặc thống kê của engine) với byte dữ liệu ứng dụng ghi. Với SSD, thanh `SMART` có tổng byte đã ghi.
+- RocksDB cho thống kê ghi theo từng tầng (`rocksdb.stats`, `DB::GetProperty`): xem `Write(GB)`, `W-Amp` và số file ở mỗi tầng; Cassandra có `nodetool tablestats` (số SSTable, tỉ lệ dương tính giả của Bloom filter) và `nodetool compactionstats`.
+- Với PostgreSQL, `pg_stat_bgwriter` và `pg_stat_wal` cho lượng trang và log ghi ra; tỉ số với dữ liệu thật là khuếch đại của bạn.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Độ trễ ghi lúc nhanh lúc đứng hình (LSM) | write stall vì compaction không theo kịp | tăng băng thông compaction, giảm tốc độ ghi, chỉnh số file cho phép |
+| Độ trễ đọc tăng dần (LSM) | quá nhiều SSTable chồng nhau, Bloom filter kém hoặc thiếu | compaction, thêm bit Bloom, chuyển sang leveled |
+| Đĩa đầy gấp đôi dữ liệu (LSM size-tiered) | cần chỗ cho cả file cũ lẫn file đang gộp | chừa dung lượng, dùng leveled |
+| Đọc chậm sau đợt xoá lớn (LSM) | đi qua nhiều bia mộ chưa được dọn | ép compaction, đừng thiết kế mẫu "ghi rồi xoá liên tục" trong cùng khoá |
+| SSD mòn nhanh (B-tree) | ghi ngẫu nhiên nhiều, mỗi checkpoint ghi lại nhiều trang | tăng khoảng checkpoint, chỉnh bộ đệm, dùng cấu trúc ghi nối đuôi cho tải ghi nặng |
+| Bảng hay chỉ mục phình (B-tree) | trang chưa đầy, nhiều trang rỗng một phần | `REINDEX`, `VACUUM FULL` hoặc dựng lại |
+
+## Lưu ý
+
+- Không có cấu trúc nào tốt nhất ở cả ba mặt đọc, ghi, không gian; chọn là chọn **cái bạn chịu trả**.
+- B-tree ghi ngẫu nhiên theo trang nên khuếch đại ghi lớn (tới gấp trăm lần ở mô hình không gộp); LSM ghi tuần tự nên khuếch đại ghi thấp nhưng phải gộp ở nền.
+- LSM-tree đọc phải xem nhiều file; Bloom filter (10 bit mỗi khoá cho khoảng 1% dương tính giả) là thứ khiến đọc điểm chấp nhận được, nhưng không giúp truy vấn khoảng.
+- Fanout (hay chiến lược compaction) là nút vặn đổi write amplification lấy read amplification và space amplification.
+- Compaction không miễn phí: nó ăn CPU, đĩa, gây write stall và độ trễ đuôi; theo dõi nó như một thành phần vận hành chính.
+- Bia mộ ở lại tới khi gộp xuống tầng cuối; mẫu truy cập "ghi và xoá liên tục" trên LSM gây đọc chậm.
+- WAL có mặt ở cả hai họ; nó ghi tuần tự, nên không phải nguồn khuếch đại đáng kể so với phần còn lại.
+- Đừng chọn engine theo tên tuổi; đo với tải thật của bạn (tỉ lệ đọc ghi, kích thước bản ghi, phân bố khoá, nhu cầu truy vấn khoảng).

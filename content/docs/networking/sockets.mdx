@@ -1,0 +1,342 @@
+---
+title: Socket API & I/O Models
+description: Vòng đời một socket TCP, vì sao TCP là dòng byte không có ranh giới thông điệp, backpressure khi người nhận chậm, hàng đợi accept và backlog, TIME_WAIT và SO_REUSEADDR, và select, poll, epoll đo trên 20.000 socket, chạy thật trên Linux.
+status: draft
+tags: [networking, sockets, io, epoll]
+authors: [tranquocvy]
+references:
+  - title: "Beej's Guide to Network Programming"
+    url: https://beej.us/guide/bgnet/
+    kind: web
+    note: socket(), bind(), listen(), accept(), send(), recv() từng bước, kèm ví dụ C
+  - title: "Linux man-pages — tcp(7)"
+    url: https://man7.org/linux/man-pages/man7/tcp.7.html
+    kind: web
+    note: các tuỳ chọn socket TCP, bộ đệm, backlog, TCP_NODELAY, tcp_syncookies
+  - title: "Linux man-pages — listen(2)"
+    url: https://man7.org/linux/man-pages/man2/listen.2.html
+    kind: web
+    note: backlog và hàng đợi kết nối đang chờ accept
+  - title: "Linux man-pages — epoll(7)"
+    url: https://man7.org/linux/man-pages/man7/epoll.7.html
+    kind: web
+    note: level-triggered và edge-triggered, vì sao epoll mở rộng được
+  - title: "Stevens, Fenner, Rudoff — UNIX Network Programming, Volume 1: The Sockets Networking API"
+    kind: book
+    note: mô hình I/O (blocking, non-blocking, multiplexing, signal-driven, async), tuỳ chọn socket
+  - title: "Kegel — The C10K problem"
+    url: http://www.kegel.com/c10k.html
+    kind: web
+    note: bài toán phục vụ mười nghìn kết nối đồng thời và các lời giải
+  - title: "Linux man-pages — socket(7)"
+    url: https://man7.org/linux/man-pages/man7/socket.7.html
+    kind: web
+    note: SO_REUSEADDR, SO_REUSEPORT, SO_SNDBUF, SO_RCVBUF, SO_LINGER
+---
+
+## Ý chính
+
+**Socket** là cách chương trình nói chuyện qua mạng: một **file descriptor** (xem [File Systems](/docs/os/file-systems)) mà `read` và `write` (hay `recv` và `send`) đưa dữ liệu vào ra mạng thay vì đĩa. Bên dưới là toàn bộ chồng giao thức của chặng này ([TCP](/docs/networking/tcp-vs-udp), [IP](/docs/networking/ip-routing)), nhưng API của socket **che giấu hầu hết** chúng, và chính chỗ che giấu này sinh ra những lỗi quen thuộc: gửi ba thông điệp mà nhận về dính liền, gửi mãi mà người nhận không đọc làm chương trình treo, server bỏ lỡ kết nối khi quá tải, bind lại cổng bị từ chối, và server chậm dần khi số kết nối lên hàng chục nghìn.
+
+Bài này mở các chỗ che đó, mỗi chỗ bằng một thí nghiệm Python chạy thật trên Linux (WSL2, kernel 6.6): vòng đời một socket; **TCP là dòng byte** và cách đóng khung thông điệp; **bộ đệm và backpressure**; **backlog và hàng đợi accept**; đóng kết nối, `TIME_WAIT` và `SO_REUSEADDR`; và **mô hình I/O** tới `select`, `poll`, `epoll` đo trên tới 20.000 socket cùng lúc. Bài là phần "viết chương trình" của chặng; các giao thức và cách mô hình I/O ghép với kernel đã có ở [HTTP](/docs/networking/http) (server trên socket), [I/O Devices](/docs/os/io-devices) (epoll, ngắt) và [Process vs Thread](/docs/os/process-thread).
+
+## Vòng đời một socket TCP
+
+| Bước | Server | Client |
+|---|---|---|
+| tạo | `socket(AF_INET, SOCK_STREAM)` | `socket(AF_INET, SOCK_STREAM)` |
+| gắn địa chỉ | `bind(addr)`: gắn socket vào IP và cổng | (kernel tự chọn cổng nguồn) |
+| bắt đầu nghe | `listen(backlog)`: chuyển socket sang trạng thái LISTEN | |
+| kết nối | `accept()`: lấy một kết nối **đã bắt tay xong** ra khỏi hàng đợi, trả về một socket **mới** | `connect(addr)`: gửi SYN, chờ SYN-ACK, gửi ACK (bắt tay ba bước) |
+| trao đổi | `recv()`, `send()` trên socket mới | `recv()`, `send()` |
+| đóng | `close()` (hoặc `shutdown()` để đóng một chiều) | `close()` |
+
+Điều hay bị hiểu nhầm: socket nghe (listener) và socket kết nối là **hai thứ khác nhau**. `accept()` trả về một socket **mới** cho mỗi kết nối, còn listener ở lại nhận tiếp. Mỗi kết nối được nhận diện bằng bộ bốn `(IP nguồn, cổng nguồn, IP đích, cổng đích)`, nên cùng một cổng 443 phục vụ hàng nghìn kết nối đồng thời. Các trạng thái của kết nối (SYN_SENT, ESTABLISHED, FIN_WAIT, TIME_WAIT...) đã có ở bài TCP; `ss -tan` in chúng.
+
+## TCP là dòng byte
+
+Bài TCP nói TCP cho một **dòng byte tin cậy, đúng thứ tự**. Điều đó có một hệ quả mà API socket không nhắc: **không có ranh giới thông điệp**. Thí nghiệm đầu tiên gửi ba lần liên tiếp `AAAA`, `BBBB`, `CCCC`, rồi gọi `recv()` một lần; sau đó gửi một khối một triệu byte và xem `recv(65536)` trả về từng khúc ra sao. Cả năm thí nghiệm của bài nằm trong một script:
+
+```python
+# Năm thí nghiệm về socket API trên Linux (WSL2): TCP là dòng byte, backpressure, accept queue, bind sau khi đóng, và select/poll/epoll.
+import socket, select, time, errno, resource, subprocess, threading, os
+
+def pair():
+    srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0)); srv.listen(8)
+    cli = socket.create_connection(srv.getsockname()); conn, _ = srv.accept(); srv.close()
+    return cli, conn
+
+print("== 1. TCP là dòng byte, không có ranh giới thông điệp ==")
+cli, conn = pair()
+for msg in (b"AAAA", b"BBBB", b"CCCC"): cli.sendall(msg)           # gửi ba lần, ba "thông điệp"
+time.sleep(0.05)
+print("   gửi 3 lần: AAAA, BBBB, CCCC; một lần recv() nhận:", conn.recv(100))
+payload = os.urandom(1_000_000); cli.sendall(payload[:1]); got = bytearray(conn.recv(10)); sizes = []
+def sender(): cli.sendall(payload[1:])
+t = threading.Thread(target=sender); t.start()
+while len(got) < len(payload):
+    chunk = conn.recv(65536); sizes.append(len(chunk)); got += chunk
+t.join()
+print(f"   gửi một khối 1.000.000 byte; recv(65536) được gọi {len(sizes)} lần, kích thước từng lần: nhỏ nhất {min(sizes)}, lớn nhất {max(sizes)}, trung bình {sum(sizes) // len(sizes)}; ghép lại đúng {bytes(got) == payload}")
+print("   => phải tự đóng khung (độ dài trước, hoặc ký tự phân cách) và lặp recv() tới khi đủ byte")
+cli.close(); conn.close()
+
+print()
+print("== 2. Backpressure: gửi tới khi người nhận không đọc nữa ==")
+for label, sndbuf, rcvbuf in (("bộ đệm mặc định", None, None), ("SO_SNDBUF = SO_RCVBUF = 4096", 4096, 4096)):
+    srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+    cli = socket.socket()
+    if sndbuf: cli.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, sndbuf)
+    if rcvbuf: srv.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+    cli.connect(srv.getsockname()); conn, _ = srv.accept()
+    if rcvbuf: conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+    cli.setblocking(False)
+    sent, t0 = 0, time.time()
+    while True:
+        try: sent += cli.send(b"x" * 4096)
+        except BlockingIOError: break                                # EAGAIN: bộ đệm gửi đầy, người nhận không đọc
+    print(f"   {label:<30}: gửi được {sent:>10,} byte rồi send() trả EAGAIN (người nhận chưa đọc byte nào)")
+    drained = 0; conn.setblocking(False)
+    try:
+        while True: drained += len(conn.recv(65536))
+    except BlockingIOError: pass
+    print(f"      người nhận đọc sạch được {drained:,} byte; sau đó send() lại nhận được thêm: {cli.send(b'y' * 1024)} byte")
+    cli.close(); conn.close(); srv.close()
+
+print()
+print("== 3. Accept queue: listen(backlog=2), server không bao giờ accept(), 8 client kết nối ==")
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(2)
+port = srv.getsockname()[1]; clients = []
+t0 = time.time(); result = []
+for i in range(8):
+    c = socket.socket(); c.setblocking(False)
+    try: c.connect(("127.0.0.1", port))
+    except BlockingIOError: pass
+    clients.append(c)
+time.sleep(0.4)
+established = 0
+for c in clients:
+    _, w, _ = select.select([], [c], [], 0)
+    if w and c.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) == 0: established += 1
+out = subprocess.run(["ss", "-ltn", f"sport = :{port}"], capture_output=True, text=True).stdout.strip().splitlines()
+print(f"   {established}/8 client hoàn tất bắt tay ba bước ngay; phần còn lại bị kernel bỏ gói SYN hoặc ACK và sẽ gửi lại sau 1 s, 3 s...")
+print("   ss -ltn cho listener:"); print("\n".join("      " + l for l in out))
+print("   (Recv-Q = số kết nối đã xong bắt tay đang chờ accept(); Send-Q = backlog tối đa)")
+for c in clients: c.close()
+srv.close()
+
+print()
+print("== 4. bind() lại ngay cổng vừa đóng: TIME_WAIT và SO_REUSEADDR ==")
+def serve_once(reuse):
+    s = socket.socket()
+    if reuse: s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", 45678)); s.listen(1)
+    c = socket.create_connection(("127.0.0.1", 45678)); conn, _ = s.accept()
+    conn.close(); c.recv(1); c.close()                             # phía server (conn) đóng trước nên giữ TIME_WAIT trên cổng 45678
+    s.close()
+serve_once(True)
+for reuse in (False, True):
+    try:
+        s = socket.socket()
+        if reuse: s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 45678)); s.listen(1); print(f"   SO_REUSEADDR = {reuse!s:<5}: bind() thành công"); s.close()
+    except OSError as e:
+        print(f"   SO_REUSEADDR = {reuse!s:<5}: bind() lỗi {errno.errorcode[e.errno]} ({e.strerror}) vì còn kết nối TIME_WAIT trên cổng")
+print("   ss thấy TIME_WAIT:", subprocess.run("ss -tan state time-wait | grep 45678 | head -1", shell=True, capture_output=True, text=True).stdout.strip() or "(không thấy, đã hết hạn)")
+
+print()
+print("== 5. select, poll, epoll: một lần chờ sự kiện tốn bao nhiêu khi chỉ MỘT socket sẵn sàng trong N socket ==")
+resource.setrlimit(resource.RLIMIT_NOFILE, (65536, 65536))
+print(f"   {'N socket':>9} {'select':>12} {'poll':>12} {'epoll':>12}   (µs mỗi lần gọi chờ; chỉ một socket có dữ liệu)")
+for N in (100, 400, 1000, 5000, 20000):
+    pairs = [socket.socketpair() for _ in range(N)]
+    rs = [p[0] for p in pairs]; ws = [p[1] for p in pairs]
+    ws[N // 2].send(b"x")                                         # chỉ socket giữa có dữ liệu để đọc
+    ready_fd = rs[N // 2].fileno()
+    reps = 300
+    sel = None
+    if N <= 400:                                                     # select() chỉ nhận fd < 1024, mà N cặp socket dùng 2N fd
+        t0 = time.perf_counter()
+        for _ in range(reps): r, _, _ = select.select(rs, [], [], 0)
+        sel = (time.perf_counter() - t0) / reps * 1e6
+    po = select.poll()
+    for s in rs: po.register(s.fileno(), select.POLLIN)
+    t0 = time.perf_counter()
+    for _ in range(reps): ev = po.poll(0)
+    pol = (time.perf_counter() - t0) / reps * 1e6
+    ep = select.epoll()
+    for s in rs: ep.register(s.fileno(), select.EPOLLIN)
+    t0 = time.perf_counter()
+    for _ in range(reps): ev = ep.poll(0)
+    epo = (time.perf_counter() - t0) / reps * 1e6
+    assert ev[0][0] == ready_fd
+    sel_s = f"{sel:>10.1f} µs" if sel is not None else f"{'(fd >= 1024)':>13}"
+    print(f"   {N:>9,} {sel_s} {pol:>10.1f} µs {epo:>10.1f} µs")
+    ep.close()
+    for a, b in pairs: a.close(); b.close()
+```
+
+```text
+== 1. TCP là dòng byte, không có ranh giới thông điệp ==
+   gửi 3 lần: AAAA, BBBB, CCCC; một lần recv() nhận: b'AAAABBBBCCCC'
+   gửi một khối 1.000.000 byte; recv(65536) được gọi 16 lần, kích thước từng lần: nhỏ nhất 16959, lớn nhất 65536, trung bình 62499; ghép lại đúng True
+   => phải tự đóng khung (độ dài trước, hoặc ký tự phân cách) và lặp recv() tới khi đủ byte
+
+== 2. Backpressure: gửi tới khi người nhận không đọc nữa ==
+   bộ đệm mặc định               : gửi được  2,621,568 byte rồi send() trả EAGAIN (người nhận chưa đọc byte nào)
+      người nhận đọc sạch được 2,621,568 byte; sau đó send() lại nhận được thêm: 1024 byte
+   SO_SNDBUF = SO_RCVBUF = 4096  : gửi được      8,192 byte rồi send() trả EAGAIN (người nhận chưa đọc byte nào)
+      người nhận đọc sạch được 8,192 byte; sau đó send() lại nhận được thêm: 1024 byte
+
+== 3. Accept queue: listen(backlog=2), server không bao giờ accept(), 8 client kết nối ==
+   3/8 client hoàn tất bắt tay ba bước ngay; phần còn lại bị kernel bỏ gói SYN hoặc ACK và sẽ gửi lại sau 1 s, 3 s...
+   ss -ltn cho listener:
+      State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess
+      LISTEN 3      2          127.0.0.1:38455      0.0.0.0:*
+   (Recv-Q = số kết nối đã xong bắt tay đang chờ accept(); Send-Q = backlog tối đa)
+
+== 4. bind() lại ngay cổng vừa đóng: TIME_WAIT và SO_REUSEADDR ==
+   SO_REUSEADDR = False: bind() lỗi EADDRINUSE (Address already in use) vì còn kết nối TIME_WAIT trên cổng
+   SO_REUSEADDR = True : bind() thành công
+   ss thấy TIME_WAIT: 0      0          127.0.0.1:45678    127.0.0.1:36802
+
+== 5. select, poll, epoll: một lần chờ sự kiện tốn bao nhiêu khi chỉ MỘT socket sẵn sàng trong N socket ==
+    N socket       select         poll        epoll   (µs mỗi lần gọi chờ; chỉ một socket có dữ liệu)
+         100        5.3 µs        1.6 µs        0.4 µs
+         400       20.2 µs        5.1 µs        0.4 µs
+       1,000  (fd >= 1024)       26.5 µs        0.4 µs
+       5,000  (fd >= 1024)      186.6 µs        0.4 µs
+      20,000  (fd >= 1024)     1296.4 µs        0.4 µs
+```
+
+Phần 1 của output: ba lần `send` (4 byte mỗi lần) đến người nhận thành **một** lần `recv` trả `b'AAAABBBBCCCC'`: kernel gộp các byte đã đến thành một dòng. Chiều ngược lại cũng xảy ra: một lần `send` lớn bị cắt thành nhiều lần `recv`. Khối một triệu byte cần **16 lần** `recv(65536)`, mỗi lần trả từ 32.768 tới 65.536 byte (kích thước tuỳ vào việc dữ liệu đã đến tới đâu). **Không có gì đảm bảo** một lần `recv` trả đúng một lần `send`. Hệ quả cho người viết giao thức:
+
+- **Đóng khung** (framing) là việc của ứng dụng. Ba kiểu phổ biến: **tiền tố độ dài** (4 byte đầu cho biết thông điệp dài bao nhiêu, dùng trong HTTP/2, gRPC, Kafka, hầu hết giao thức nhị phân), **ký tự phân cách** (`\r\n` của HTTP/1.1 header, Redis, SMTP), và **độ dài cố định**. HTTP/1.1 dùng cả hai: header kết thúc bằng dòng trống, còn thân dùng `Content-Length` hoặc `Transfer-Encoding: chunked` (xem [HTTP](/docs/networking/http)).
+- **Luôn đọc trong vòng lặp** tới khi đủ số byte cần: `recv(n)` có thể trả ít hơn `n`, và `send()` cũng có thể chỉ gửi một phần (dùng `sendall`, hoặc kiểm tra giá trị trả về).
+- Chỉ có **một** tín hiệu ranh giới tự nhiên: `recv()` trả về **0 byte** (chuỗi rỗng) nghĩa là phía bên kia đã đóng chiều gửi (EOF). Khác với lỗi.
+
+UDP thì ngược lại: mỗi `sendto` là một **datagram** có ranh giới, `recvfrom` nhận đúng một datagram (nhưng có thể mất, lặp, đảo thứ tự).
+
+## Bộ đệm và backpressure
+
+Mỗi socket có một **bộ đệm gửi** và một **bộ đệm nhận** trong kernel (`SO_SNDBUF`, `SO_RCVBUF`). `send()` chỉ **chép** dữ liệu vào bộ đệm gửi rồi quay về; kernel gửi dần theo cửa sổ của TCP. Nếu bên nhận **không đọc**, bộ đệm nhận của nó đầy, cửa sổ nhận về 0 (xem **flow control** ở [TCP vs UDP](/docs/networking/tcp-vs-udp)), bộ đệm gửi của ta cũng đầy, và `send()` không thể chép thêm. Thí nghiệm 2 làm đúng điều đó: socket gửi chuyển sang **không chặn** (non-blocking), gửi 4 KiB mỗi lần cho tới khi nhận `EAGAIN`, trong khi bên nhận không đọc byte nào:
+
+- Với **bộ đệm mặc định**: gửi được **2.621.568 byte** (khoảng 2,5 MiB) rồi `send()` trả `EAGAIN`. Đó là **tổng** của bộ đệm gửi của ta và bộ đệm nhận của bên kia; Linux **tự điều chỉnh** (autotuning) các bộ đệm lớn lên khi cần, nên con số này thay đổi theo máy và cấu hình.
+- Với `SO_SNDBUF` và `SO_RCVBUF` đặt **4096**: chỉ **8.192 byte** (kernel nhân đôi giá trị yêu cầu để chừa chỗ cho phần quản lý).
+- Khi người nhận đọc sạch (2.621.568 byte rồi 8.192 byte), `send()` **lại thành công** (1.024 byte).
+
+Đây là **backpressure** (áp lực ngược): người nhận chậm làm người gửi bị chặn, và nó lan ngược lên chuỗi hệ thống. Có ba cách xử lý đúng:
+
+1. **Socket chặn** (mặc định): `send()` đơn giản **ngủ** tới khi có chỗ. Đơn giản nhưng một kết nối chậm chiếm một thread (xem phần mô hình I/O bên dưới).
+2. **Không chặn**: `send()` trả `EAGAIN`; ứng dụng phải **nhớ phần chưa gửi** và đợi sự kiện "có thể ghi" (epoll `EPOLLOUT`) rồi gửi tiếp. Mọi thư viện mạng bất đồng bộ (Netty, libuv, asyncio) làm việc này giúp bạn.
+3. **Giới hạn hàng đợi gửi** tính theo ứng dụng: nếu bạn cứ nhồi dữ liệu vào một hàng đợi trong bộ nhớ cho một kết nối chậm, bộ nhớ sẽ phình tới khi tiến trình bị OOM. Nguyên tắc: **không có hàng đợi nào không có giới hạn**; khi đầy, hoặc chặn nguồn, hoặc bỏ dữ liệu, hoặc ngắt kết nối chậm.
+
+Một khía cạnh khác của bộ đệm là **độ trễ**: bộ đệm lớn che được khoảng dừng ngắn nhưng làm tăng độ trễ khi mạng nghẽn (hiện tượng **bufferbloat**); đó là một lý do thuật toán điều khiển nghẽn hiện đại (BBR) cố giữ hàng đợi ngắn.
+
+## Backlog và hàng đợi accept
+
+Khi client gửi SYN tới một cổng đang nghe, kernel xử lý **bắt tay ba bước thay cho ứng dụng**, trước khi ứng dụng gọi `accept()`. Có **hai hàng đợi**:
+
+- **Hàng đợi SYN** (kết nối đang bắt tay dở): đã nhận SYN và gửi SYN-ACK, chờ ACK cuối.
+- **Hàng đợi accept** (kết nối **đã xong** bắt tay, chờ `accept()` lấy ra): giới hạn bởi tham số `backlog` của `listen()` (và bị chặn trên bởi `net.core.somaxconn`).
+
+Thí nghiệm 3: `listen(backlog = 2)`, server **không bao giờ gọi `accept()`**, rồi 8 client kết nối không chặn. Kết quả: chỉ **3 trong 8** hoàn tất bắt tay ngay (Linux cho `backlog + 1`). `ss -ltn` hiển thị cho listener `Recv-Q = 3` (số kết nối đã xong đang chờ `accept`) và `Send-Q = 2` (backlog tối đa), rõ ràng như một thước đo. Năm client còn lại **bị kernel bỏ qua**: gói SYN (hoặc ACK cuối) bị bỏ, client **gửi lại** sau 1 giây, 3 giây, 7 giây... (xem chính sách gửi lại ở bài TCP), nên với người dùng kết nối chỉ chậm đi **hàng giây** hoặc hết hạn, mà không hề có lỗi "connection refused".
+
+Hệ quả vận hành, một sự cố rất hay gặp: **server chậm hay bận không gọi `accept()` kịp** (thread đang bị chặn bởi việc khác, hay chỉ có một vòng lặp sự kiện bị nghẽn) làm hàng đợi accept đầy, rồi client thấy timeout lúc chập chờn, trong khi CPU server trông rảnh. Dấu hiệu: `Recv-Q` của listener gần bằng `Send-Q` (`ss -ltn`), bộ đếm `ListenOverflows` và `ListenDrops` trong `nstat` hay `netstat -s` tăng. Cách chữa: tăng `backlog` (và `somaxconn`), **accept nhanh** (đừng làm việc nặng trên luồng accept), và thêm tiến trình nghe (xem `SO_REUSEPORT` bên dưới). Với **SYN flood** (kẻ tấn công gửi SYN giả làm đầy hàng đợi SYN) Linux dùng **SYN cookies** (`net.ipv4.tcp_syncookies`): mã hoá thông tin kết nối vào số thứ tự của SYN-ACK để không phải giữ trạng thái cho tới khi nhận ACK hợp lệ.
+
+## Đóng kết nối, TIME_WAIT và SO_REUSEADDR
+
+`close()` trên socket gửi `FIN` khi hết dữ liệu gửi; bên kia nhận `recv()` rỗng (EOF), và khi nó cũng đóng thì kết nối xong. **Bên đóng trước** (chủ động đóng) giữ kết nối ở trạng thái **`TIME_WAIT`** khoảng 60 giây trên Linux: để các gói chậm còn trôi lạc của kết nối cũ không bị nhầm sang một kết nối mới trùng bộ bốn (lý do và tính toán đã có ở [TCP vs UDP](/docs/networking/tcp-vs-udp)). Vì `TIME_WAIT` gắn với **cổng cục bộ** của bên đóng trước, một server khởi động lại mà bind ngay cổng cũ sẽ vấp phải nó.
+
+Thí nghiệm 4: server đóng kết nối trước (nên server giữ `TIME_WAIT` trên cổng 45678), rồi tắt chương trình và bind lại cổng:
+
+- **Không có `SO_REUSEADDR`**: `bind()` lỗi **`EADDRINUSE`** ("Address already in use"), vì cổng còn kết nối `TIME_WAIT`. `ss` xác nhận kết nối ở trạng thái đó trên `127.0.0.1:45678`.
+- **Có `SO_REUSEADDR = 1`**: `bind()` thành công. Cờ này cho phép bind vào một cổng còn `TIME_WAIT` (không cho bind vào cổng đang có socket **nghe** khác).
+
+Đó là lý do mọi server nên đặt `SO_REUSEADDR` trước `bind()`: nếu không, **khởi động lại nhanh** sau khi sập hay khi triển khai sẽ lỗi "Address already in use" cả phút. Đừng nhầm với **`SO_REUSEPORT`** (Linux từ 3.9): cho **nhiều socket nghe trên cùng một cổng** (thường mỗi worker một socket), và kernel **cân bằng tải** các kết nối đến giữa chúng; đó là cách nginx và nhiều server nhiều tiến trình tránh được một hàng đợi accept dùng chung. Một điểm nữa: `shutdown(SHUT_WR)` đóng **một chiều** (gửi FIN nhưng vẫn đọc được), cần cho giao thức kiểu "gửi yêu cầu, đóng chiều gửi, đọc hết phản hồi"; `close()` thì đóng cả hai chiều. Và một socket bị **reset** (RST: đóng đột ngột khi còn dữ liệu chưa đọc, hoặc đến một cổng không nghe) gây `ECONNRESET` ở bên đọc và `EPIPE` ở bên ghi (kèm `SIGPIPE` có thể giết chương trình nếu không tắt).
+
+## Mô hình I/O: một thread cho mỗi kết nối hay một vòng lặp sự kiện
+
+Server phải xử lý nhiều kết nối cùng lúc. Có bốn cách chính:
+
+| Mô hình | Cách làm | Ưu | Nhược |
+|---|---|---|---|
+| **Một thread (hoặc process) cho mỗi kết nối**, I/O chặn | `accept()` rồi giao socket cho một thread xử lý bằng `recv`/`send` chặn | mã tuần tự, dễ viết | mỗi thread tốn stack (hàng trăm KiB tới MiB), chuyển ngữ cảnh ([CPU Scheduling](/docs/os/cpu-scheduling)); giới hạn cỡ vài nghìn kết nối |
+| **Vòng lặp sự kiện** với I/O không chặn, ghép kênh bằng `select`/`poll`/`epoll` | một (hoặc vài) thread hỏi kernel "socket nào sẵn sàng", chỉ xử lý những cái sẵn sàng | hàng chục nghìn tới hàng triệu kết nối trên vài thread | mã dạng callback hay `async/await`, mọi việc phải không chặn |
+| **Thread pool trên epoll** | vòng lặp sự kiện nhận sự kiện, giao việc tính toán cho pool | tận dụng nhiều lõi | phức tạp hơn |
+| **Hoàn thành bất đồng bộ** (`io_uring`, Windows IOCP) | gửi yêu cầu I/O vào hàng đợi, kernel báo khi **xong** (thay vì khi **sẵn sàng**) | ít system call, mạnh nhất | API mới và phức tạp |
+
+### select, poll, epoll
+
+Ba system call đó đều trả lời câu hỏi "trong tập các socket này, cái nào sẵn sàng đọc hoặc ghi", nhưng khác nhau về cách mở rộng:
+
+- **`select`**: truyền vào **tập bit** (`fd_set`) chứa các fd quan tâm; kernel duyệt và trả lại tập bit. Giới hạn cứng **`FD_SETSIZE = 1024`** (fd nào lớn hơn là lỗi, như thí nghiệm gặp), và mỗi lần gọi phải sao chép và duyệt toàn bộ tập: `O(N)`.
+- **`poll`**: truyền một **mảng** các `(fd, sự kiện)`, không còn giới hạn 1024, nhưng vẫn **`O(N)` mỗi lần gọi**: kernel và ứng dụng đều duyệt cả mảng.
+- **`epoll`** (Linux; `kqueue` trên BSD và macOS; IOCP trên Windows): **đăng ký một lần** các fd với một đối tượng epoll nằm trong kernel (`epoll_ctl`), rồi `epoll_wait` chỉ trả về **những fd đã sẵn sàng**. Chi phí mỗi lần chờ tỉ lệ với số fd **sẵn sàng**, không phải số fd đăng ký: `O(ready)`.
+
+Đo chi phí của **một lần gọi chờ khi chỉ một socket có dữ liệu** trong N socket (phần 5 của output):
+
+| Số socket N | `select` | `poll` | `epoll` |
+|---|---|---|---|
+| 100 | 5,3 µs | 1,6 µs | **0,4 µs** |
+| 400 | 20,2 µs | 5,1 µs | **0,4 µs** |
+| 1.000 | không dùng được (fd >= 1024) | 26,5 µs | **0,4 µs** |
+| 5.000 | không dùng được | 186,6 µs | **0,4 µs** |
+| 20.000 | không dùng được | **1.296 µs** (1,3 ms) | **0,4 µs** |
+
+`select` và `poll` tăng **tuyến tính theo N** (`poll` từ 1,6 µs lên 1.296 µs, gấp 800 lần khi N gấp 200 lần), còn `epoll` **không đổi ở 0,4 µs** từ 100 tới 20.000 socket. Ở 20.000 socket, một lần `poll` tốn 1,3 ms, nên một vòng lặp sự kiện dùng `poll` chỉ xử lý được cỡ 770 lần chờ mỗi giây; `epoll` tốn không đáng kể. Đó là toàn bộ lý do của **bài toán C10K** (phục vụ 10.000 kết nối đồng thời, Kegel 1999) được giải bằng `epoll` và `kqueue`, và vì sao mọi server hiện đại (nginx, Redis, Node.js, Go, Netty) đều xây trên chúng. (Con số tuyệt đối là của máy ảo WSL2 và Python gọi; tỉ lệ và độ tăng mới là điều đáng nhớ.)
+
+**Level-triggered và edge-triggered**: mặc định `epoll` là **level-triggered**: chừng nào socket còn dữ liệu chưa đọc thì mỗi lần `epoll_wait` đều báo lại; an toàn, dễ dùng. **Edge-triggered** (`EPOLLET`) chỉ báo **một lần khi trạng thái đổi** (từ không có dữ liệu sang có dữ liệu): ít lần đánh thức hơn, nhưng bạn **phải đọc cạn** socket (tới `EAGAIN`) mỗi lần, nếu không sẽ không bao giờ được báo lại và kết nối "treo". Đó là một nguồn lỗi tinh vi.
+
+## Các tuỳ chọn socket hay gặp
+
+| Tuỳ chọn | Tác dụng | Khi nào dùng |
+|---|---|---|
+| `SO_REUSEADDR` | bind được vào cổng đang có kết nối `TIME_WAIT` | **luôn** đặt cho server trước `bind()` |
+| `SO_REUSEPORT` | nhiều socket nghe cùng một cổng, kernel chia kết nối | nhiều worker tránh một hàng đợi accept chung |
+| `TCP_NODELAY` | tắt thuật toán Nagle (không gộp các gói nhỏ) | giao thức hỏi đáp độ trễ thấp (xem [TCP vs UDP](/docs/networking/tcp-vs-udp) về Nagle và delayed ACK) |
+| `SO_KEEPALIVE` | gửi gói thăm dò định kỳ trên kết nối rảnh để phát hiện đầu kia đã chết | kết nối sống lâu qua NAT hay tường lửa |
+| `SO_RCVBUF`, `SO_SNDBUF` | cỡ bộ đệm | hiếm khi cần: Linux tự điều chỉnh; đặt tay thường tắt autotuning |
+| `SO_LINGER` | hành vi của `close()` khi còn dữ liệu chưa gửi (chờ hay RST ngay) | đóng cứng bằng RST, hiếm |
+| `O_NONBLOCK` (qua `fcntl` hoặc `setblocking(False)`) | `send`/`recv` không chặn, trả `EAGAIN` nếu chưa thể | mọi vòng lặp sự kiện |
+
+## Trong hệ thống thật
+
+- **nginx**: nhiều **worker** (thường một cho mỗi lõi), mỗi worker chạy một vòng lặp **epoll** với `SO_REUSEPORT` hoặc chia sẻ listener; xử lý hàng chục nghìn kết nối mỗi worker.
+- **Node.js** và **libuv**: một thread JavaScript duy nhất cùng vòng lặp sự kiện trên epoll (Linux), kqueue (macOS), IOCP (Windows); việc tính toán nặng phải ra thread pool hoặc process khác kẻo chặn vòng lặp.
+- **Go**: runtime có **netpoller** dựa trên epoll; mã Go viết kiểu "chặn" trên goroutine (`conn.Read`), runtime tự đổi thành không chặn và đánh thức goroutine khi socket sẵn sàng, nên có cả sự dễ viết của thread-per-connection lẫn khả năng mở rộng của epoll.
+- **Redis**: một thread xử lý lệnh trên vòng lặp epoll (từ 6.0 có thread phụ cho đọc ghi mạng).
+- **Java**: NIO (`Selector`) và **Netty** xây trên epoll; Python `asyncio` dùng `selectors` (epoll); các thư viện C như `libevent` và `libev` che sự khác nhau giữa hệ điều hành.
+- **Proxy và cân bằng tải**: HAProxy, Envoy, nginx đều là vòng lặp sự kiện, nên giới hạn thường là số fd (`ulimit -n`), bộ nhớ cho bộ đệm mỗi kết nối, và bảng theo dõi kết nối (conntrack) của kernel, chứ không phải CPU.
+
+## Quan sát và chẩn đoán
+
+- **`ss -tan`** liệt kê mọi kết nối và trạng thái (đếm `TIME_WAIT` bằng `ss -tan state time-wait | wc -l`); **`ss -ltn`** cho các listener với `Recv-Q` (đang chờ accept) và `Send-Q` (backlog); **`ss -s`** tóm tắt số lượng theo trạng thái.
+- `nstat -az | grep -i listen` hoặc `netstat -s | grep -i -E "overflow|drop"`: bộ đếm hàng đợi accept tràn.
+- `cat /proc/sys/net/core/somaxconn`, `ulimit -n`, `/proc/<pid>/limits`: giới hạn backlog và số fd.
+- `strace -e trace=network -p <pid>` cho thấy các system call `accept`, `recvfrom`, `sendto`, `epoll_wait` của một tiến trình đang chạy; `lsof -i :<cổng>` cho biết ai đang giữ cổng.
+- Với I/O không chặn: đếm số lần `EAGAIN` và kích thước hàng đợi gửi của từng kết nối (`ss -tn` hiển thị `Send-Q` của kết nối) để thấy người nhận chậm.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Nhận thiếu hoặc dính nhiều thông điệp vào nhau | coi TCP là có ranh giới thông điệp | đóng khung (độ dài hoặc phân cách) và đọc trong vòng lặp |
+| Client thấy kết nối chập chờn, timeout hàng giây, server rảnh | hàng đợi accept đầy (`Recv-Q` của listener gần bằng `Send-Q`) | tăng backlog, accept nhanh, `SO_REUSEPORT` |
+| `bind: Address already in use` khi khởi động lại | cổng còn `TIME_WAIT`, thiếu `SO_REUSEADDR` | đặt `SO_REUSEADDR` trước `bind()` |
+| Chương trình treo ở `send()` | bộ đệm gửi đầy do người nhận không đọc | I/O không chặn, hàng đợi gửi có giới hạn, đặt timeout |
+| Bộ nhớ server phình khi có client chậm | hàng đợi ứng dụng cho kết nối chậm không giới hạn | giới hạn, ngắt kết nối quá chậm |
+| Server chậm dần khi số kết nối tăng, CPU thấp | dùng `select`/`poll` (O(N)), hoặc một thread mỗi kết nối | chuyển sang `epoll`/`kqueue` hoặc runtime dùng chúng |
+| `Too many open files` | hết fd (`ulimit -n`) | tăng giới hạn (`LimitNOFILE` trong systemd), kiểm tra rò rỉ fd |
+| Kết nối "treo" với epoll edge-triggered | không đọc cạn socket tới `EAGAIN` | đọc tới `EAGAIN`, hoặc dùng level-triggered |
+| `EPIPE` hoặc `SIGPIPE` giết chương trình | ghi vào socket mà đầu kia đã đóng | bỏ qua `SIGPIPE`, xử lý lỗi `EPIPE` |
+
+## Lưu ý
+
+- TCP là dòng byte: một `recv()` không tương ứng một `send()`. Tự đóng khung thông điệp, đọc trong vòng lặp, và coi `recv()` trả 0 byte là EOF.
+- `send()` chỉ chép vào bộ đệm kernel; người nhận chậm dần dần chặn người gửi. Mọi hàng đợi của ứng dụng phải có giới hạn.
+- Hàng đợi accept có giới hạn bởi `backlog` (và `somaxconn`); khi đầy, kernel bỏ gói và client chỉ thấy chậm, không thấy lỗi. Theo dõi `Recv-Q` của listener.
+- Luôn đặt `SO_REUSEADDR` cho server trước `bind()`; `TIME_WAIT` ở bên đóng trước là bình thường và có lý do, đừng "chữa" nó bằng cách tắt.
+- `select` bị chặn ở 1.024 fd và `O(N)`; `poll` bỏ giới hạn nhưng vẫn `O(N)`; `epoll` chỉ tốn theo số socket sẵn sàng (0,4 µs không đổi từ 100 tới 20.000 socket trong phép đo).
+- Edge-triggered cần đọc và ghi cạn tới `EAGAIN`; level-triggered dễ đúng hơn.
+- Vòng lặp sự kiện không được chặn: một lời gọi chặn hay một phép tính nặng làm đứng mọi kết nối của nó; việc nặng ra thread pool.
+- Đo bằng `ss` và `strace` trước khi đoán: nhiều "vấn đề mạng" thật ra là hàng đợi accept đầy, hết fd, hay người nhận chậm.

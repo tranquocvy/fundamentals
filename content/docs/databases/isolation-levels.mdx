@@ -1,0 +1,481 @@
+---
+title: Isolation Levels
+description: Năm anomaly (dirty read, non-repeatable read, phantom, lost update, write skew) chạy thành kịch bản hai phiên ở từng mức cô lập trên PostgreSQL 16, bốn mức chuẩn SQL so với mức thật, snapshot isolation và SSI, và cách chọn mức kèm vòng thử lại.
+status: draft
+tags: [databases, isolation, concurrency]
+authors: [tranquocvy]
+references:
+  - title: "PostgreSQL docs — Transaction Isolation (Chapter 13.2)"
+    url: https://www.postgresql.org/docs/current/transaction-iso.html
+    kind: web
+    note: bốn mức và hành vi thật của PostgreSQL, SSI, khi nào cần thử lại
+  - title: "Berenson et al. — A Critique of ANSI SQL Isolation Levels (1995)"
+    url: https://arxiv.org/pdf/cs/0701157
+    kind: paper
+    note: vì sao định nghĩa của chuẩn SQL chưa đủ, snapshot isolation, write skew, lost update
+  - title: "Ports & Grittner — Serializable Snapshot Isolation in PostgreSQL (VLDB 2012)"
+    url: https://drkp.net/papers/ssi-vldb12.pdf
+    kind: paper
+    note: cách PostgreSQL cài SSI bằng khoá vị từ và phát hiện cấu trúc nguy hiểm
+  - title: "Cahill, Röhm, Fekete — Serializable Isolation for Snapshot Databases (2008)"
+    kind: paper
+    note: thuật toán SSI gốc
+  - title: "Jepsen — Consistency Models"
+    url: https://jepsen.io/consistency
+    kind: web
+    note: bản đồ các mô hình nhất quán và quan hệ giữa chúng
+  - title: "Kleppmann — Designing Data-Intensive Applications, Chapter 7: Transactions (Weak Isolation Levels)"
+    kind: book
+    note: dirty read, lost update, write skew, phantom và cách phòng
+  - title: "PostgreSQL docs — Application-level Consistency Checks"
+    url: https://www.postgresql.org/docs/current/applevel-consistency.html
+    kind: web
+    note: dùng SERIALIZABLE hoặc khoá tường minh để giữ bất biến
+  - title: "CMU 15-445/645 Database Systems — Concurrency Control and MVCC lectures"
+    url: https://15445.courses.cs.cmu.edu/
+    kind: video
+    note: các giao thức cô lập, bài giảng công khai
+---
+
+## Ý chính
+
+[Bài trước](/docs/databases/transactions) cho thấy một giao dịch riêng lẻ an toàn thế nào (atomic, durable). Câu hỏi còn lại là **nhiều giao dịch chạy cùng lúc** thì thấy nhau ra sao: đây là chữ **I** của ACID. Đáp án lý tưởng là **serializable**: kết quả giống như chạy lần lượt từng giao dịch một, theo một thứ tự nào đó. Đảm bảo này đắt, nên cơ sở dữ liệu cho bạn chọn <Term>mức cô lập</Term> (isolation level) yếu hơn, đổi một số hiện tượng bất thường (**anomaly**) lấy hiệu năng. Chọn sai thì dữ liệu sai âm thầm, không có lỗi nào được báo.
+
+Bài này làm cho từng anomaly **hiện hình**: mỗi cái là một kịch bản hai phiên A, B xen kẽ từng bước, chạy thật trên **PostgreSQL 16.15** ở cả bốn mức, kết quả gom thành một bảng đo được. Trình tự: năm anomaly và định nghĩa chuẩn SQL (cùng vì sao chuẩn chưa đủ); bảng đo thật và đọc từng kịch bản; **snapshot isolation** và **SSI** (cách PostgreSQL cài REPEATABLE READ và SERIALIZABLE); các cách chống lost update, kèm thí nghiệm 8 luồng tranh nhau một bộ đếm với vòng **thử lại** (retry); và cách chọn mức cho ứng dụng. Nền tảng MVCC ở bài [Transactions & ACID](/docs/databases/transactions); khoá và deadlock ở bài đó và ở [Deadlock](/docs/os/deadlock).
+
+## Năm anomaly
+
+Mỗi anomaly là một cách giao dịch **A** thấy hoặc làm hỏng gì đó vì giao dịch **B** chạy xen vào:
+
+| Anomaly | Điều gì xảy ra | Ví dụ |
+|---|---|---|
+| **Dirty read** | A đọc dữ liệu B đã ghi nhưng **chưa commit** (B có thể rollback) | A thấy số dư 0 rồi B huỷ, số dư thật là 100 |
+| **Non-repeatable read** | A đọc **một dòng hai lần** trong cùng giao dịch và được hai giá trị khác nhau (B sửa và commit giữa hai lần) | đọc 100 rồi đọc 999 |
+| **Phantom read** | A chạy cùng một truy vấn điều kiện hai lần và tập **dòng** khác nhau (B thêm hoặc xoá dòng khớp) | đếm đơn trên 100 được 1 rồi được 2 |
+| **<Term>Lost update</Term>** | A và B cùng đọc, cùng tính lại, cùng ghi; ghi sau **đè mất** ghi trước | hai người cùng cộng tiền, chỉ một lần được tính |
+| **<Term>Write skew</Term>** | A và B đọc **cùng điều kiện** rồi ghi **hai dòng khác nhau**, mỗi người đúng khi nhìn riêng, nhưng cả hai cùng vi phạm bất biến | hai bác sĩ trực cùng xin nghỉ, không còn ai trực |
+
+Lost update và write skew là hai anomaly khó thấy nhất vì **không có lỗi nào** và mỗi giao dịch, xét riêng, hoàn toàn hợp lệ.
+
+### Bốn mức chuẩn SQL
+
+Chuẩn SQL định nghĩa bốn mức bằng cách liệt kê **ba** anomaly (dirty, non-repeatable, phantom) mỗi mức cho phép:
+
+| Mức | Dirty read | Non-repeatable read | Phantom |
+|---|---|---|---|
+| READ UNCOMMITTED | được phép | được phép | được phép |
+| READ COMMITTED | không | được phép | được phép |
+| REPEATABLE READ | không | không | được phép |
+| SERIALIZABLE | không | không | không |
+
+Cách định nghĩa này có hai điểm yếu lớn (bài báo của Berenson và cộng sự năm 1995 chỉ ra từ rất sớm). Một: nó **không nhắc tới lost update và write skew**, hai anomaly thực tế nguy hiểm nhất. Hai: nó viết theo ngôn ngữ của **cơ chế khoá** (cơ sở dữ liệu thập niên 1980), bỏ sót mô hình **snapshot** của MVCC, nên các hệ thống MVCC hiện đại có mức "REPEATABLE READ" **khác hẳn** nhau về hành vi. Vì vậy phải kiểm tra từng hệ quản trị chứ không tin tên mức.
+
+## Đo thật trên PostgreSQL
+
+Script dưới đây dựng mỗi anomaly thành một kịch bản hai phiên chạy xen kẽ từng câu lệnh (hai kết nối thật, tự `BEGIN` và `COMMIT`), chạy ở bốn mức, rồi in bảng tổng hợp và dòng thời gian của từng kịch bản:
+
+```python
+# Mỗi anomaly là một kịch bản hai phiên A, B xen kẽ từng bước, chạy ở từng mức cô lập, in kết quả thật.
+import psycopg2, psycopg2.errors as E
+
+LEVELS = ["READ UNCOMMITTED", "READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE"]
+
+def connect():
+    c = psycopg2.connect(dbname="demo"); c.autocommit = True      # autocommit: ta tự viết BEGIN và COMMIT
+    return c
+
+def q(conn, sql, args=None):
+    cur = conn.cursor(); cur.execute(sql, args)
+    return cur.fetchall() if cur.description else None
+
+def setup():
+    c = connect()
+    q(c, "DROP TABLE IF EXISTS acct, doctors, orders_iso")
+    q(c, "CREATE TABLE acct (id int PRIMARY KEY, balance int)")
+    q(c, "INSERT INTO acct VALUES (1, 100)")
+    q(c, "CREATE TABLE doctors (name text PRIMARY KEY, on_call boolean)")
+    q(c, "INSERT INTO doctors VALUES ('An', true), ('Bình', true)")
+    q(c, "CREATE TABLE orders_iso (id serial PRIMARY KEY, amount int)")
+    q(c, "INSERT INTO orders_iso (amount) VALUES (50), (200)")
+    c.close()
+
+class Session:
+    def __init__(self, name, trace):
+        self.name, self.c, self.trace = name, connect(), trace
+    def do(self, sql, args=None, show=True):
+        try:
+            r = q(self.c, sql, args)
+            shown = sql % tuple(args) if args else sql
+            if show: self.trace.append(f"{self.name}: {shown}" + (f"   -> {r[0][0] if r and len(r[0]) == 1 else r}" if r else ""))
+            return r
+        except (E.SerializationFailure, E.DeadlockDetected) as e:
+            shown = sql % tuple(args) if args else sql
+            self.trace.append(f"{self.name}: {shown}   -> LỖI {e.pgcode}: {str(e).splitlines()[0]}")
+            q(self.c, "ROLLBACK"); raise
+    def begin(self, level): return self.do(f"BEGIN ISOLATION LEVEL {level}")
+    def close(self): self.c.close()
+
+def dirty_read(level):
+    setup(); tr = []; a, b = Session("A", tr), Session("B", tr)
+    a.begin(level); a.do("UPDATE acct SET balance = 0 WHERE id = 1")
+    b.begin(level); seen = b.do("SELECT balance FROM acct WHERE id = 1")[0][0]
+    b.do("COMMIT"); a.do("ROLLBACK"); a.close(); b.close()
+    return seen == 0, tr
+
+def non_repeatable_read(level):
+    setup(); tr = []; a, b = Session("A", tr), Session("B", tr)
+    a.begin(level); first = a.do("SELECT balance FROM acct WHERE id = 1")[0][0]
+    b.do("UPDATE acct SET balance = 999 WHERE id = 1")             # tự commit
+    second = a.do("SELECT balance FROM acct WHERE id = 1")[0][0]
+    a.do("COMMIT"); a.close(); b.close()
+    return first != second, tr
+
+def phantom(level):
+    setup(); tr = []; a, b = Session("A", tr), Session("B", tr)
+    a.begin(level); first = a.do("SELECT count(*) FROM orders_iso WHERE amount > 100")[0][0]
+    b.do("INSERT INTO orders_iso (amount) VALUES (500)")
+    second = a.do("SELECT count(*) FROM orders_iso WHERE amount > 100")[0][0]
+    a.do("COMMIT"); a.close(); b.close()
+    return first != second, tr
+
+def lost_update(level):
+    setup(); tr = []; a, b = Session("A", tr), Session("B", tr)
+    a.begin(level); b.begin(level)
+    va = a.do("SELECT balance FROM acct WHERE id = 1")[0][0]       # đọc vào biến ứng dụng
+    vb = b.do("SELECT balance FROM acct WHERE id = 1")[0][0]
+    a.do("UPDATE acct SET balance = %s WHERE id = 1", (va + 10,)); a.do("COMMIT")      # A cộng 10
+    aborted = False
+    try:
+        b.do("UPDATE acct SET balance = %s WHERE id = 1", (vb + 20,)); b.do("COMMIT")  # B cộng 20 dựa trên số đã cũ
+    except (E.SerializationFailure, E.DeadlockDetected): aborted = True
+    final = q(connect(), "SELECT balance FROM acct WHERE id = 1")[0][0]
+    a.close(); b.close()
+    note = "B bị huỷ nên không mất cập nhật nào (B phải thử lại)" if aborted else "cả hai đã commit"
+    return (final != 130 and not aborted), tr + [f"kết quả cuối: balance = {final} (cả hai cùng thành công thì phải là 130); {note}"]
+
+def write_skew(level):
+    setup(); tr = []; a, b = Session("A", tr), Session("B", tr)
+    a.begin(level); b.begin(level)
+    ca = a.do("SELECT count(*) FROM doctors WHERE on_call")[0][0]
+    cb = b.do("SELECT count(*) FROM doctors WHERE on_call")[0][0]
+    try:
+        if ca >= 2: a.do("UPDATE doctors SET on_call = false WHERE name = 'An'")
+        if cb >= 2: b.do("UPDATE doctors SET on_call = false WHERE name = 'Bình'")
+        a.do("COMMIT"); b.do("COMMIT")
+    except (E.SerializationFailure, E.DeadlockDetected): pass
+    left = q(connect(), "SELECT count(*) FROM doctors WHERE on_call")[0][0]
+    a.close(); b.close()
+    return left == 0, tr + [f"kết quả cuối: số bác sĩ trực = {left} (luật: luôn phải >= 1)"]
+
+SCENARIOS = [("dirty read", dirty_read), ("non-repeatable read", non_repeatable_read), ("phantom", phantom),
+             ("lost update", lost_update), ("write skew", write_skew)]
+
+if __name__ == "__main__":
+    matrix = {}
+    for name, fn in SCENARIOS:
+        for lv in LEVELS:
+            matrix[(name, lv)] = fn(lv)
+    print("== bảng kết quả đo trên PostgreSQL 16: anomaly có xảy ra không (CÓ / không) ==")
+    print(f"{'':<22}" + "".join(f"{lv:>20}" for lv in LEVELS))
+    for name, _ in SCENARIOS:
+        print(f"{name:<22}" + "".join(f"{('CÓ' if matrix[(name, lv)][0] else 'không'):>20}" for lv in LEVELS))
+    print()
+    for name, lv in (("dirty read", "READ UNCOMMITTED"), ("non-repeatable read", "READ COMMITTED"), ("non-repeatable read", "REPEATABLE READ"),
+                     ("phantom", "READ COMMITTED"), ("phantom", "REPEATABLE READ"),
+                     ("lost update", "READ COMMITTED"), ("lost update", "REPEATABLE READ"),
+                     ("write skew", "REPEATABLE READ"), ("write skew", "SERIALIZABLE")):
+        happened, tr = matrix[(name, lv)]
+        print(f"-- {name} ở {lv}: {'XẢY RA' if happened else 'không xảy ra'}")
+        for line in tr: print("   " + line)
+        print()
+```
+
+```text
+== bảng kết quả đo trên PostgreSQL 16: anomaly có xảy ra không (CÓ / không) ==
+                          READ UNCOMMITTED      READ COMMITTED     REPEATABLE READ        SERIALIZABLE
+dirty read                           không               không               không               không
+non-repeatable read                     CÓ                  CÓ               không               không
+phantom                                 CÓ                  CÓ               không               không
+lost update                             CÓ                  CÓ               không               không
+write skew                              CÓ                  CÓ                  CÓ               không
+
+-- dirty read ở READ UNCOMMITTED: không xảy ra
+   A: BEGIN ISOLATION LEVEL READ UNCOMMITTED
+   A: UPDATE acct SET balance = 0 WHERE id = 1
+   B: BEGIN ISOLATION LEVEL READ UNCOMMITTED
+   B: SELECT balance FROM acct WHERE id = 1   -> 100
+   B: COMMIT
+   A: ROLLBACK
+
+-- non-repeatable read ở READ COMMITTED: XẢY RA
+   A: BEGIN ISOLATION LEVEL READ COMMITTED
+   A: SELECT balance FROM acct WHERE id = 1   -> 100
+   B: UPDATE acct SET balance = 999 WHERE id = 1
+   A: SELECT balance FROM acct WHERE id = 1   -> 999
+   A: COMMIT
+
+-- non-repeatable read ở REPEATABLE READ: không xảy ra
+   A: BEGIN ISOLATION LEVEL REPEATABLE READ
+   A: SELECT balance FROM acct WHERE id = 1   -> 100
+   B: UPDATE acct SET balance = 999 WHERE id = 1
+   A: SELECT balance FROM acct WHERE id = 1   -> 100
+   A: COMMIT
+
+-- phantom ở READ COMMITTED: XẢY RA
+   A: BEGIN ISOLATION LEVEL READ COMMITTED
+   A: SELECT count(*) FROM orders_iso WHERE amount > 100   -> 1
+   B: INSERT INTO orders_iso (amount) VALUES (500)
+   A: SELECT count(*) FROM orders_iso WHERE amount > 100   -> 2
+   A: COMMIT
+
+-- phantom ở REPEATABLE READ: không xảy ra
+   A: BEGIN ISOLATION LEVEL REPEATABLE READ
+   A: SELECT count(*) FROM orders_iso WHERE amount > 100   -> 1
+   B: INSERT INTO orders_iso (amount) VALUES (500)
+   A: SELECT count(*) FROM orders_iso WHERE amount > 100   -> 1
+   A: COMMIT
+
+-- lost update ở READ COMMITTED: XẢY RA
+   A: BEGIN ISOLATION LEVEL READ COMMITTED
+   B: BEGIN ISOLATION LEVEL READ COMMITTED
+   A: SELECT balance FROM acct WHERE id = 1   -> 100
+   B: SELECT balance FROM acct WHERE id = 1   -> 100
+   A: UPDATE acct SET balance = 110 WHERE id = 1
+   A: COMMIT
+   B: UPDATE acct SET balance = 120 WHERE id = 1
+   B: COMMIT
+   kết quả cuối: balance = 120 (cả hai cùng thành công thì phải là 130); cả hai đã commit
+
+-- lost update ở REPEATABLE READ: không xảy ra
+   A: BEGIN ISOLATION LEVEL REPEATABLE READ
+   B: BEGIN ISOLATION LEVEL REPEATABLE READ
+   A: SELECT balance FROM acct WHERE id = 1   -> 100
+   B: SELECT balance FROM acct WHERE id = 1   -> 100
+   A: UPDATE acct SET balance = 110 WHERE id = 1
+   A: COMMIT
+   B: UPDATE acct SET balance = 120 WHERE id = 1   -> LỖI 40001: could not serialize access due to concurrent update
+   kết quả cuối: balance = 110 (cả hai cùng thành công thì phải là 130); B bị huỷ nên không mất cập nhật nào (B phải thử lại)
+
+-- write skew ở REPEATABLE READ: XẢY RA
+   A: BEGIN ISOLATION LEVEL REPEATABLE READ
+   B: BEGIN ISOLATION LEVEL REPEATABLE READ
+   A: SELECT count(*) FROM doctors WHERE on_call   -> 2
+   B: SELECT count(*) FROM doctors WHERE on_call   -> 2
+   A: UPDATE doctors SET on_call = false WHERE name = 'An'
+   B: UPDATE doctors SET on_call = false WHERE name = 'Bình'
+   A: COMMIT
+   B: COMMIT
+   kết quả cuối: số bác sĩ trực = 0 (luật: luôn phải >= 1)
+
+-- write skew ở SERIALIZABLE: không xảy ra
+   A: BEGIN ISOLATION LEVEL SERIALIZABLE
+   B: BEGIN ISOLATION LEVEL SERIALIZABLE
+   A: SELECT count(*) FROM doctors WHERE on_call   -> 2
+   B: SELECT count(*) FROM doctors WHERE on_call   -> 2
+   A: UPDATE doctors SET on_call = false WHERE name = 'An'
+   B: UPDATE doctors SET on_call = false WHERE name = 'Bình'
+   A: COMMIT
+   B: COMMIT   -> LỖI 40001: could not serialize access due to read/write dependencies among transactions
+   kết quả cuối: số bác sĩ trực = 1 (luật: luôn phải >= 1)
+```
+
+### Bảng kết quả
+
+| Anomaly | READ UNCOMMITTED | READ COMMITTED | REPEATABLE READ | SERIALIZABLE |
+|---|---|---|---|---|
+| dirty read | không | không | không | không |
+| non-repeatable read | **CÓ** | **CÓ** | không | không |
+| phantom | **CÓ** | **CÓ** | không | không |
+| lost update | **CÓ** | **CÓ** | không (bị huỷ) | không (bị huỷ) |
+| write skew | **CÓ** | **CÓ** | **CÓ** | không (bị huỷ) |
+
+Ba điều bảng này nói, khác với bảng chuẩn ở trên:
+
+1. **PostgreSQL không có dirty read ở bất kỳ mức nào.** `READ UNCOMMITTED` được chấp nhận về cú pháp nhưng **hành xử y hệt `READ COMMITTED`**: hai cột đầu giống nhau. Kịch bản đầu cho thấy A ghi `balance = 0` chưa commit và B (cùng mức `READ UNCOMMITTED`) vẫn đọc ra `100`.
+2. **`REPEATABLE READ` của PostgreSQL mạnh hơn chuẩn**: nó cũng **chặn phantom** (chuẩn cho phép). Lý do là nó cài bằng **snapshot isolation**: cả giao dịch dùng một ảnh chụp cố định lấy ở lệnh đầu tiên, nên dòng chèn thêm sau đó đơn giản là không nằm trong ảnh chụp.
+3. **Nhưng `REPEATABLE READ` vẫn bị write skew.** Mức duy nhất chặn được nó là `SERIALIZABLE`.
+
+### Đọc từng kịch bản
+
+**Non-repeatable read ở `READ COMMITTED`**: A đọc `balance = 100`; B sửa thành 999 và commit; A đọc lại thấy **999**. Ở `READ COMMITTED` mỗi **câu lệnh** có snapshot riêng (lấy lúc câu lệnh bắt đầu), nên câu thứ hai của A thấy thay đổi đã commit. Ở `REPEATABLE READ`, snapshot là của cả **giao dịch**, nên A vẫn đọc 100 cả hai lần.
+
+**Phantom ở `READ COMMITTED`**: A đếm đơn trên 100 được 1; B chèn một đơn 500 và commit; A đếm lại được 2. Cùng cơ chế snapshot theo từng câu lệnh. Ở `REPEATABLE READ` kết quả vẫn 1.
+
+**Lost update ở `READ COMMITTED`**: cả A và B đọc `balance = 100` vào biến. A ghi `100 + 10 = 110` rồi commit. B ghi `100 + 20 = 120` rồi commit, dựa trên số đã cũ và **đè mất** cộng 10 của A. Kết quả cuối **120** chứ đúng phải là 130. Không có lỗi, không có cảnh báo. Ở `REPEATABLE READ`, B ghi sau thấy dòng đã bị giao dịch khác sửa và commit **sau snapshot của B**, nên PostgreSQL **huỷ B** với lỗi `40001 could not serialize access due to concurrent update` (quy tắc **first updater wins**). Dữ liệu không bị hỏng; B phải thử lại cả giao dịch từ đầu với số đọc mới.
+
+**Write skew**: hai bác sĩ An và Bình đang trực; bất biến là "luôn có ít nhất một người trực". A kiểm tra (thấy 2 người), cho An nghỉ; B kiểm tra **cũng thấy 2**, cho Bình nghỉ. Hai `UPDATE` ghi **hai dòng khác nhau**, nên không đụng nhau ở mức dòng (khác với lost update), và ở `REPEATABLE READ` cả hai commit: **số người trực = 0**, bất biến vỡ. Ở `SERIALIZABLE`, `COMMIT` của B bị huỷ với `40001 could not serialize access due to read/write dependencies among transactions`: còn **1 người trực**.
+
+## Snapshot isolation và SSI
+
+**<Term>Snapshot isolation</Term> (SI)** là thứ PostgreSQL gọi là `REPEATABLE READ` (và Oracle gọi là `SERIALIZABLE`, một điểm dễ gây nhầm lẫn). Mỗi giao dịch thấy ảnh chụp nhất quán lúc bắt đầu; hai giao dịch ghi **cùng một dòng** thì người đến sau bị huỷ (first updater wins). Nó nhanh (đọc không bao giờ chờ), và chặn được dirty read, non-repeatable read, phantom, lost update. Nhưng không chặn **write skew**, vì hai giao dịch **không ghi chung dòng nào**; xung đột nằm ở chỗ một người **đọc** thứ mà người kia **ghi**.
+
+**Serializable Snapshot Isolation (SSI)**, PostgreSQL cài từ 9.1, thêm một lớp giám sát lên SI. Nó theo dõi các **phụ thuộc đọc-ghi** (rw-antidependency): "A đọc cái B (sau đó) ghi, nên A phải xếp trước B". Một **cấu trúc nguy hiểm** là hai phụ thuộc như vậy nối thành chuỗi `T1 → T2 → T3` trong đó T1 và T3 chạy xen nhau, báo hiệu một vòng trong đồ thị thứ tự, tức khả năng kết quả không tương đương bất kỳ thứ tự tuần tự nào (xem đồ thị phụ thuộc và phát hiện chu trình ở [Graph](/docs/dsa/graphs)). Khi phát hiện, SSI huỷ **một** giao dịch trong cấu trúc. Để biết giao dịch đọc cái gì, nó giữ **khoá vị từ** (SIREAD lock): không chặn ai (khác khoá thường), chỉ **ghi nhớ** "giao dịch này đã đọc miền này". Đặc điểm cần nhớ:
+
+- SSI **có thể huỷ oan** (false positive): nó an toàn nhưng bảo thủ, huỷ cả vài trường hợp thực ra vẫn tuần tự được.
+- Nên **mọi giao dịch SERIALIZABLE phải có vòng thử lại**: lỗi `40001` là bình thường, không phải bug.
+- Giao dịch **chỉ đọc** ở `SERIALIZABLE` rất rẻ, và có thể khai báo `READ ONLY DEFERRABLE` để chờ tới khi có snapshot chắc chắn an toàn rồi chạy mà không bao giờ bị huỷ.
+
+Có ba cách cài SERIALIZABLE trong thực tế:
+
+| Cách | Ví dụ | Đặc điểm |
+|---|---|---|
+| Khoá hai pha chặt (kể cả khoá khoảng/vị từ) | SQL Server (serializable), InnoDB (serializable), kiểu cổ điển | người đọc và người ghi chặn nhau; có deadlock |
+| SSI (SI cộng phát hiện xung đột) | PostgreSQL 9.1 trở đi, CockroachDB | không chặn, nhưng huỷ và buộc thử lại |
+| Chạy tuần tự thật trên một luồng | VoltDB, Redis (lệnh đơn luồng), nhiều hệ trong bộ nhớ | không cần khoá; chỉ nhanh khi giao dịch rất ngắn và dữ liệu vừa RAM |
+
+## Chống lost update trong ứng dụng
+
+Lost update đến từ mẫu **đọc-sửa-ghi** (đọc giá trị vào ứng dụng, tính, ghi lại). Có nhiều cách chặn, từ gọn đến nặng:
+
+1. **Để cơ sở dữ liệu tính**: `UPDATE acct SET balance = balance + 10`. Phép cộng và ghi là một lệnh nguyên tử, khoá dòng. Cách tốt nhất khi làm được.
+2. **Khoá dòng lúc đọc**: `SELECT ... FOR UPDATE`, rồi tính, rồi ghi. Người thứ hai chờ ở `SELECT` cho tới khi người thứ nhất commit và **thấy giá trị mới**.
+3. **Khoá lạc quan** (optimistic): thêm cột `version`, ghi bằng `UPDATE ... SET ..., version = version + 1 WHERE id = ? AND version = ?` và kiểm tra có đúng một dòng bị đổi; không thì có người sửa trước, đọc lại và thử lại. Dùng được qua nhiều request HTTP mà không giữ khoá.
+4. **Mức cô lập cao hơn kèm vòng thử lại**: `REPEATABLE READ` hoặc `SERIALIZABLE`, bắt lỗi `40001` và chạy lại cả giao dịch.
+
+Thí nghiệm: 8 luồng, mỗi luồng cộng 250 lần vào cùng một bộ đếm; kết quả đúng là **2.000**:
+
+```python
+# 8 luồng, mỗi luồng cộng 250 lần vào cùng một bộ đếm. Kết quả đúng là 2000. Năm cách làm, năm kết quả.
+import psycopg2, psycopg2.errors as E, threading, time
+
+THREADS, PER = 8, 250
+
+def connect():
+    c = psycopg2.connect(dbname="demo"); c.autocommit = False; return c
+
+def reset():
+    c = connect(); cur = c.cursor()
+    cur.execute("DROP TABLE IF EXISTS counter; CREATE TABLE counter (id int PRIMARY KEY, n int); INSERT INTO counter VALUES (1, 0)")
+    c.commit(); c.close()
+
+def final():
+    c = connect(); cur = c.cursor(); cur.execute("SELECT n FROM counter WHERE id = 1"); v = cur.fetchone()[0]; c.close(); return v
+
+# ---- các cách tăng bộ đếm; mỗi hàm thực hiện MỘT lần cộng bằng conn, trả về số lần thử lại ----
+def rmw_plain(conn, level):                       # đọc vào ứng dụng rồi ghi lại: đọc-sửa-ghi
+    cur = conn.cursor(); cur.execute("SELECT n FROM counter WHERE id = 1"); n = cur.fetchone()[0]
+    cur.execute("UPDATE counter SET n = %s WHERE id = 1", (n + 1,)); conn.commit(); return 0
+
+def atomic_update(conn, level):                   # để cơ sở dữ liệu làm phép cộng
+    cur = conn.cursor(); cur.execute("UPDATE counter SET n = n + 1 WHERE id = 1"); conn.commit(); return 0
+
+def select_for_update(conn, level):               # khoá dòng ngay lúc đọc
+    cur = conn.cursor(); cur.execute("SELECT n FROM counter WHERE id = 1 FOR UPDATE"); n = cur.fetchone()[0]
+    cur.execute("UPDATE counter SET n = %s WHERE id = 1", (n + 1,)); conn.commit(); return 0
+
+def rmw_retry(conn, level):                       # đọc-sửa-ghi ở mức cao hơn, bắt lỗi serialization và thử lại cả giao dịch
+    retries = 0
+    while True:
+        try:
+            cur = conn.cursor(); cur.execute(f"SET TRANSACTION ISOLATION LEVEL {level}")
+            cur.execute("SELECT n FROM counter WHERE id = 1"); n = cur.fetchone()[0]
+            cur.execute("UPDATE counter SET n = %s WHERE id = 1", (n + 1,)); conn.commit(); return retries
+        except (E.SerializationFailure, E.DeadlockDetected):
+            conn.rollback(); retries += 1
+
+def run(name, fn, level="READ COMMITTED"):
+    reset(); retries = [0] * THREADS
+    def worker(i):
+        conn = connect()
+        for _ in range(PER): retries[i] += fn(conn, level)
+        conn.close()
+    ts = [threading.Thread(target=worker, args=(i,)) for i in range(THREADS)]
+    t0 = time.perf_counter()
+    for t in ts: t.start()
+    for t in ts: t.join()
+    dt = time.perf_counter() - t0
+    v = final()
+    print(f"{name:<44} cuối = {v:>5}  {'ĐÚNG' if v == THREADS * PER else 'MẤT ' + str(THREADS * PER - v):<10} thử lại = {sum(retries):>5}  {dt:>5.2f}s")
+
+print(f"mục tiêu: {THREADS} luồng x {PER} lần cộng = {THREADS * PER}")
+run("1. đọc-sửa-ghi, READ COMMITTED", rmw_plain)
+run("2. UPDATE n = n + 1 (nguyên tử)", atomic_update)
+run("3. SELECT ... FOR UPDATE rồi ghi", select_for_update)
+run("4. đọc-sửa-ghi, REPEATABLE READ + thử lại", rmw_retry, "REPEATABLE READ")
+run("5. đọc-sửa-ghi, SERIALIZABLE + thử lại", rmw_retry, "SERIALIZABLE")
+```
+
+```text
+mục tiêu: 8 luồng x 250 lần cộng = 2000
+1. đọc-sửa-ghi, READ COMMITTED               cuối =   250  MẤT 1750   thử lại =     0   3.80s
+2. UPDATE n = n + 1 (nguyên tử)              cuối =  2000  ĐÚNG       thử lại =     0   3.48s
+3. SELECT ... FOR UPDATE rồi ghi             cuối =  2000  ĐÚNG       thử lại =     0   4.50s
+4. đọc-sửa-ghi, REPEATABLE READ + thử lại    cuối =  2000  ĐÚNG       thử lại = 10785   4.91s
+5. đọc-sửa-ghi, SERIALIZABLE + thử lại       cuối =  2000  ĐÚNG       thử lại = 11121   4.93s
+```
+
+- **Cách 1 (đọc-sửa-ghi thuần, `READ COMMITTED`)** cho kết quả **250**, mất 1.750 trong 2.000 lần cộng. Con số cực đoan này là do các luồng chạy gần như đồng bộ từng vòng: cả tám cùng đọc một giá trị rồi cùng ghi `giá trị + 1`, nên mỗi vòng chỉ cộng được 1 thay vì 8 (250 vòng cho ra 250). Trong ứng dụng thật ít cực đoan hơn, nhưng nguyên lý giống hệt, và **không có lỗi nào được báo**.
+- **Cách 2 (`UPDATE n = n + 1`)** và **cách 3 (`SELECT ... FOR UPDATE`)** cho đúng **2.000** mà không cần thử lại, nhờ chờ khoá: luồng sau đợi luồng trước commit.
+- **Cách 4 và 5 (`REPEATABLE READ` và `SERIALIZABLE` kèm thử lại)** cũng đúng **2.000**, nhưng giá phải trả: tổng cộng **10.785** và **11.121** lần thử lại cho 2.000 lần cộng thành công, trung bình khoảng **5 đến 6 lần huỷ cho mỗi lần thành công** (và thời gian chạy dài hơn). Khi **tranh chấp cao** trên một dòng (một "điểm nóng"), mức cao kèm thử lại bị **bão thử lại**: nhiều luồng liên tục huỷ nhau. Với bộ đếm, cách 2 là lời giải đúng; mức cô lập cao kèm thử lại hợp với giao dịch **ít tranh chấp** và logic phức tạp mà không viết được thành một lệnh.
+
+### Vòng thử lại đúng cách
+
+```python
+# khung chuẩn cho SERIALIZABLE hoặc REPEATABLE READ
+conn.set_session(isolation_level="SERIALIZABLE")     # đặt trước khi mở giao dịch
+for attempt in range(MAX_RETRIES):
+    try:
+        with conn:                                   # BEGIN ... COMMIT (hoặc ROLLBACK nếu có lỗi)
+            do_business_logic(conn)                  # đọc lại MỌI dữ liệu từ đầu mỗi lần thử
+        break
+    except (SerializationFailure, DeadlockDetected):
+        time.sleep(random.uniform(0, 0.01 * 2 ** attempt))   # lùi dần có ngẫu nhiên, tránh các luồng đụng nhau lần nữa
+else:
+    raise GaveUp
+```
+
+Ba quy tắc: **chạy lại cả giao dịch từ đầu** (kể cả các lệnh đọc, vì giá trị đã đọc có thể đã cũ); phải **idempotent** về tác dụng phụ ngoài cơ sở dữ liệu (đừng gửi email hay gọi API thanh toán bên trong giao dịch có thể bị chạy lại: ghi một dòng "việc cần làm" vào bảng rồi xử lý sau khi commit); và **giới hạn số lần thử** cùng lùi dần có ngẫu nhiên.
+
+## Chọn mức nào
+
+| Tình huống | Gợi ý |
+|---|---|
+| Truy vấn đơn lẻ, bảng báo cáo, không có bất biến chéo dòng | `READ COMMITTED` (mặc định PostgreSQL), nhanh và đủ |
+| Báo cáo cần **một bức ảnh nhất quán** qua nhiều truy vấn | `REPEATABLE READ` (đọc cùng snapshot), tốt nhất kèm `READ ONLY` |
+| Đọc-sửa-ghi trên cùng dòng | viết thành `UPDATE` nguyên tử, hoặc `FOR UPDATE`, hoặc khoá lạc quan |
+| Bất biến liên quan **nhiều dòng** (số người trực, tổng hạn mức, hai bên không trùng lịch) | `SERIALIZABLE` kèm vòng thử lại, hoặc khoá tường minh hoặc ràng buộc `UNIQUE` và `EXCLUDE` đúng chỗ |
+| Hệ thống không phải PostgreSQL | **đọc tài liệu** của đúng hệ quản trị (xem bảng dưới) |
+
+Với write skew còn có cách không cần `SERIALIZABLE`: **biến bất biến thành ràng buộc cơ sở dữ liệu** (ví dụ ràng buộc loại trừ `EXCLUDE` cho các lịch trùng), hoặc **khoá một dòng chung đại diện** cho bất biến (ví dụ một dòng "ca trực" mà mọi giao dịch phải `SELECT ... FOR UPDATE` trước khi sửa) để hai người buộc phải xếp hàng. Chọn cách nào là chuyện của thiết kế, nhưng **phải chọn một cách có chủ ý**: mặc định không bảo vệ gì cả.
+
+## Trong hệ thống thật
+
+Cùng tên mức nhưng hành vi khác nhau; các điểm sau lấy theo tài liệu của từng hệ (kiểm tra lại với phiên bản bạn dùng):
+
+| Hệ | Mặc định | Ghi chú |
+|---|---|---|
+| PostgreSQL | READ COMMITTED | `REPEATABLE READ` là snapshot isolation (chặn phantom); `SERIALIZABLE` là SSI; `READ UNCOMMITTED` giống `READ COMMITTED` |
+| MySQL InnoDB | REPEATABLE READ | lệnh `SELECT` thường đọc snapshot nhưng `UPDATE` và `SELECT ... FOR UPDATE` đọc **dữ liệu mới nhất** (current read) và dùng khoá khoảng để chặn phantom; `SERIALIZABLE` biến `SELECT` thường thành khoá chia sẻ; không có SSI |
+| Oracle | READ COMMITTED | `SERIALIZABLE` thực chất là snapshot isolation, **vẫn bị write skew** |
+| SQL Server | READ COMMITTED (dùng khoá, hoặc có tuỳ chọn snapshot) | có mức `SNAPSHOT` riêng; `SERIALIZABLE` dùng khoá khoảng |
+| SQLite | SERIALIZABLE (một người ghi tại một thời điểm) | không có đồng thời ghi |
+
+Hai bài học phổ biến: **một chương trình "chạy đúng" trên hệ này có thể sai trên hệ kia** dù cùng tên mức; và **ORM và framework** thường đặt mức riêng hoặc tự mở giao dịch, nên hãy kiểm tra `SHOW transaction_isolation` từ trong ứng dụng.
+
+## Quan sát và chẩn đoán
+
+- `SHOW transaction_isolation;` cho mức hiện tại của phiên; `SHOW default_transaction_isolation;` cho mặc định; `SET TRANSACTION ISOLATION LEVEL ...` phải là lệnh **đầu tiên** trong giao dịch.
+- Lỗi cần bắt: SQLSTATE `40001` (`serialization_failure`) và `40P01` (`deadlock_detected`); cả hai đều **an toàn để thử lại toàn bộ giao dịch**.
+- `pg_stat_database.xact_rollback` tăng đột biến và log có nhiều `could not serialize access` là dấu hiệu tranh chấp cao.
+- `pg_locks` có các dòng `SIReadLock` khi có giao dịch `SERIALIZABLE` đang chạy; số lượng lớn là dấu hiệu giao dịch đọc quá rộng (quét cả bảng), làm tăng nguy cơ bị huỷ.
+- Để tái hiện một anomaly nghi ngờ, viết kịch bản hai phiên như `isolation.py`: nếu không tái hiện được trong môi trường kiểm soát thì khó mà chắc đã sửa đúng.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Tổng tiền hoặc tồn kho lệch dần, không có lỗi | lost update do đọc-sửa-ghi ở `READ COMMITTED` | `UPDATE` nguyên tử, `FOR UPDATE`, hoặc khoá lạc quan |
+| Vi phạm bất biến chỉ thỉnh thoảng (hai người cùng nhận chỗ cuối cùng) | write skew | `SERIALIZABLE` kèm thử lại, hoặc ràng buộc `UNIQUE` và `EXCLUDE`, hoặc khoá dòng đại diện |
+| Báo cáo nhiều truy vấn cho số không khớp nhau | mỗi truy vấn ở `READ COMMITTED` thấy snapshot khác nhau | `REPEATABLE READ` cho cả báo cáo |
+| Nhiều lỗi `40001`, throughput giảm | tranh chấp cao ở điểm nóng, bão thử lại | thu hẹp giao dịch, đổi thành `UPDATE` nguyên tử, giảm tranh chấp (ví dụ chia nhỏ bộ đếm) |
+| Lỗi `40001` làm hỏng yêu cầu của người dùng | ứng dụng không có vòng thử lại | thêm vòng thử lại như khung ở trên |
+| Kết quả khác nhau giữa PostgreSQL và MySQL cho cùng mã | cùng tên mức, khác cơ chế | kiểm tra tài liệu và kịch bản hai phiên trên từng hệ |
+
+## Lưu ý
+
+- Mức cô lập là sự **đánh đổi** giữa đúng đắn và đồng thời; mặc định của nhiều hệ (`READ COMMITTED`) **cho phép** lost update và write skew. Đừng giả định "giao dịch là đủ".
+- Tên mức không đảm bảo hành vi: PostgreSQL không có dirty read ở bất kỳ mức nào, `REPEATABLE READ` của nó chặn cả phantom, `SERIALIZABLE` của Oracle vẫn bị write skew.
+- Lost update chặn tốt nhất bằng `UPDATE` nguyên tử; write skew cần `SERIALIZABLE`, ràng buộc cơ sở dữ liệu, hoặc khoá một dòng đại diện cho bất biến.
+- Mọi giao dịch ở `REPEATABLE READ` hay `SERIALIZABLE` **phải** có vòng thử lại cả giao dịch; `40001` là bình thường.
+- Đừng để tác dụng phụ ngoài cơ sở dữ liệu (email, thanh toán, API) bên trong giao dịch có thể bị thử lại; ghi dòng việc cần làm và xử lý sau commit, hoặc dùng khoá idempotency.
+- Tranh chấp cao trên một dòng làm vòng thử lại thành bão huỷ; ưu tiên thiết kế để giảm tranh chấp (cập nhật nguyên tử, chia nhỏ điểm nóng) thay vì dựa vào thử lại.
+- Giao dịch càng ngắn thì càng ít xung đột; đừng giữ giao dịch mở trong lúc chờ người dùng hay gọi dịch vụ ngoài.
+- Một kịch bản hai phiên xen kẽ là cách đáng tin duy nhất để chắc một đoạn mã an toàn trước đồng thời; suy luận bằng mắt thường bỏ sót.

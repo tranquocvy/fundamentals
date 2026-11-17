@@ -1,0 +1,12 @@
+{
+  "title": "Databases",
+  "pages": [
+    "relational-model",
+    "indexing",
+    "transactions",
+    "isolation-levels",
+    "normalization",
+    "storage-engines",
+    "query-processing"
+  ]
+}

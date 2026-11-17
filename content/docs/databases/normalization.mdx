@@ -1,0 +1,595 @@
+---
+title: Normalization
+description: Ba dị thường khi cập nhật trên bảng gom, phụ thuộc hàm và bao đóng thuộc tính tự cài, 1NF đến BCNF từng bước, tách bảng không mất thông tin (và một phép tách sai), và cái giá thật của phi chuẩn hoá đo trên PostgreSQL.
+status: draft
+tags: [databases, normalization, schema-design]
+authors: [tranquocvy]
+references:
+  - title: "Kent — A Simple Guide to Five Normal Forms in Relational Database Theory (1983)"
+    url: https://www.bkent.net/Doc/simple5.htm
+    kind: web
+    note: giải thích 1NF tới 5NF bằng ví dụ ngắn
+  - title: "Silberschatz, Korth, Sudarshan — Database System Concepts, Chapter 7: Relational Database Design"
+    kind: book
+    note: phụ thuộc hàm, bao đóng, BCNF, 3NF, thuật toán tách
+  - title: "Codd — Further Normalization of the Data Base Relational Model (1972)"
+    kind: paper
+    note: định nghĩa gốc của 2NF và 3NF
+  - title: "Wikipedia — Functional dependency"
+    url: https://en.wikipedia.org/wiki/Functional_dependency
+    kind: web
+    note: tiên đề Armstrong, bao đóng, khoá ứng viên
+  - title: "Wikipedia — Database normalization"
+    url: https://en.wikipedia.org/wiki/Database_normalization
+    kind: web
+    note: bảng tổng hợp các dạng chuẩn và dị thường
+  - title: "Kleppmann — Designing Data-Intensive Applications, Chapter 2: Data Models (Relational vs Document)"
+    kind: book
+    note: khi nào nhúng dữ liệu (phi chuẩn hoá) và khi nào tham chiếu
+  - title: "Kimball — The Data Warehouse Toolkit (star schema)"
+    kind: book
+    note: phi chuẩn hoá có chủ đích cho phân tích
+---
+
+## Ý chính
+
+Thiết kế bảng nghe như chuyện chọn cột, nhưng thực chất là chuyện **mỗi sự thật chỉ nên được lưu ở đúng một nơi**. Khi cùng một sự thật (ví dụ "cô Hà ngồi phòng P101") bị chép vào nhiều dòng, ba loại lỗi xuất hiện: sửa ở chỗ này quên chỗ kia (mâu thuẫn), không thể ghi một sự thật khi chưa có sự thật khác đi kèm, và xoá một thứ kéo theo mất thứ khác. **<Term>Normalization</Term>** (chuẩn hoá) là quy trình có hệ thống để loại bỏ sự trùng lặp đó bằng cách tách bảng, dựa trên một khái niệm hình thức gọi là **<Term>phụ thuộc hàm</Term>** (functional dependency).
+
+Bài này đi từ lỗi sang lý thuyết rồi quay lại thực tế: ba dị thường chạy thật trên một bảng gom; phụ thuộc hàm và **bao đóng thuộc tính** (cài bằng Python, có ví dụ tính tay); các dạng chuẩn 1NF, 2NF, 3NF, BCNF áp dụng từng bước lên chính bảng đó; tách bảng sao cho **không mất thông tin** (kèm một cách tách sai gây ra dòng "ma"); và cuối cùng **phi chuẩn hoá**, tức khi nào cố tình đi ngược lại, cái giá và cái lợi đo trên bảng triệu dòng. Mọi SQL chạy trên **PostgreSQL 16.15**, code Python 3.13. Bài này dựa vào khoá và ràng buộc ở [Relational Model & SQL](/docs/databases/relational-model), và nối với [Indexing](/docs/databases/indexing) (chi phí đọc nối bảng) và [Transactions](/docs/databases/transactions) (giữ nhiều bảng nhất quán).
+
+## Ba dị thường trên một bảng gom
+
+Giả sử trường lưu mọi thứ vào một bảng `flat`: sinh viên nào học môn nào được điểm gì, môn do ai dạy, người dạy ngồi phòng nào. Nhìn tiện, vì một câu `SELECT` là đủ. Hãy xem nó vỡ ra sao:
+
+```sql
+\pset null '∅'
+DROP TABLE IF EXISTS flat;
+-- MỘT bảng gom hết: ai học môn nào, môn do ai dạy, người dạy ngồi phòng nào
+CREATE TABLE flat (
+  student     text,
+  course      text,
+  grade       text,
+  instructor  text,
+  office      text
+);
+INSERT INTO flat VALUES
+ ('An',   'CSDL',  'A', 'Hà',   'P101'),
+ ('An',   'Mạng',  'B', 'Lâm',  'P205'),
+ ('Bình', 'CSDL',  'B', 'Hà',   'P101'),
+ ('Chi',  'CSDL',  'A', 'Hà',   'P101'),
+ ('Chi',  'Thuật toán', 'A', 'Minh', 'P310'),
+ ('Dũng', 'Mạng',  'C', 'Lâm',  'P205');
+SELECT * FROM flat ORDER BY student, course;
+
+\echo ''
+\echo '== 1. dị thường CẬP NHẬT: cô Hà chuyển sang phòng P150, nhưng ứng dụng chỉ sửa 2 trong 3 dòng của cô =='
+UPDATE flat SET office = 'P150' WHERE instructor = 'Hà' AND student IN ('An', 'Bình');
+SELECT instructor, office, count(*) AS so_dong FROM flat GROUP BY instructor, office ORDER BY instructor, office;
+\echo '   -> cô Hà vừa ở P101 vừa ở P150: dữ liệu mâu thuẫn, không có ràng buộc nào ngăn được'
+
+\echo ''
+\echo '== 2. dị thường CHÈN: muốn thêm môn mới "Học máy" (thầy Phú, P400) nhưng chưa có sinh viên nào đăng ký =='
+INSERT INTO flat (student, course, grade, instructor, office) VALUES (NULL, 'Học máy', NULL, 'Phú', 'P400');
+SELECT * FROM flat WHERE course = 'Học máy';
+\echo '   -> phải chèn dòng với student = ∅ (rác); nếu student là khoá chính thì không chèn được'
+DELETE FROM flat WHERE course = 'Học máy';
+
+\echo ''
+\echo '== 3. dị thường XOÁ: Chi là sinh viên DUY NHẤT của môn Thuật toán, rồi Chi rút môn =='
+SELECT course, count(*) AS so_sv FROM flat WHERE course = 'Thuật toán' GROUP BY course;
+DELETE FROM flat WHERE student = 'Chi' AND course = 'Thuật toán';
+SELECT count(*) AS dong_con_lai_ve_thay_Minh FROM flat WHERE instructor = 'Minh';
+\echo '   -> Chi rút môn Thuật toán thì cả thông tin "thầy Minh dạy Thuật toán, ở P310" biến mất theo'
+```
+
+```text
+ student |   course   | grade | instructor | office 
+---------+------------+-------+------------+--------
+ An      | CSDL       | A     | Hà         | P101
+ An      | Mạng       | B     | Lâm        | P205
+ Bình    | CSDL       | B     | Hà         | P101
+ Chi     | CSDL       | A     | Hà         | P101
+ Chi     | Thuật toán | A     | Minh       | P310
+ Dũng    | Mạng       | C     | Lâm        | P205
+(6 rows)
+
+
+== 1. dị thường CẬP NHẬT: cô Hà chuyển sang phòng P150, nhưng ứng dụng chỉ sửa 2 trong 3 dòng của cô ==
+ instructor | office | so_dong 
+------------+--------+---------
+ Hà         | P101   |       1
+ Hà         | P150   |       2
+ Lâm        | P205   |       2
+ Minh       | P310   |       1
+(4 rows)
+
+   -> cô Hà vừa ở P101 vừa ở P150: dữ liệu mâu thuẫn, không có ràng buộc nào ngăn được
+
+== 2. dị thường CHÈN: muốn thêm môn mới "Học máy" (thầy Phú, P400) nhưng chưa có sinh viên nào đăng ký ==
+ student | course  | grade | instructor | office 
+---------+---------+-------+------------+--------
+ ∅       | Học máy | ∅     | Phú        | P400
+(1 row)
+
+   -> phải chèn dòng với student = ∅ (rác); nếu student là khoá chính thì không chèn được
+
+== 3. dị thường XOÁ: Chi là sinh viên DUY NHẤT của môn Thuật toán, rồi Chi rút môn ==
+   course   | so_sv 
+------------+-------
+ Thuật toán |     1
+(1 row)
+
+ dong_con_lai_ve_thay_minh 
+---------------------------
+                         0
+(1 row)
+
+   -> Chi rút môn Thuật toán thì cả thông tin "thầy Minh dạy Thuật toán, ở P310" biến mất theo
+```
+
+1. **Dị thường cập nhật**: cô Hà (dạy CSDL) có mặt ở **ba** dòng. Khi cô chuyển sang phòng P150, ứng dụng chỉ sửa hai dòng; kết quả cô Hà **vừa ở P101 vừa ở P150**. Không có ràng buộc nào ngăn được, vì với cơ sở dữ liệu đó chỉ là ba dòng hợp lệ độc lập.
+2. **Dị thường chèn**: muốn ghi nhận môn "Học máy" (thầy Phú, phòng P400) khi chưa có sinh viên nào đăng ký thì phải chèn một dòng với `student` là `NULL`: rác trong dữ liệu, và sẽ không chèn được nếu `student` thuộc khoá chính.
+3. **Dị thường xoá**: Chi là sinh viên **duy nhất** của môn Thuật toán. Khi Chi rút môn, dòng đó biến mất, kéo theo **toàn bộ thông tin về thầy Minh** (không còn dòng nào nhắc tới thầy hay phòng P310).
+
+Cả ba có chung một nguyên nhân: bảng đang lưu **nhiều sự thật độc lập** trong cùng một dòng: "SV đăng ký MH và được điểm D", "MH do GV dạy", "GV ngồi phòng PH". Chuẩn hoá là tách chúng ra.
+
+## Phụ thuộc hàm
+
+Nói `X → Y` (đọc "X xác định Y") nghĩa là: **hai dòng nào có cùng giá trị X thì cũng phải có cùng giá trị Y**. Trong ví dụ trên:
+
+- `(SV, MH) → D`: biết sinh viên và môn thì biết điểm;
+- `MH → GV`: mỗi môn có đúng một người dạy;
+- `GV → PH`: mỗi người dạy ngồi đúng một phòng.
+
+Phụ thuộc hàm là **ràng buộc ngữ nghĩa của miền nghiệp vụ**, không đọc ra từ dữ liệu mẫu được (dữ liệu hiện tại có thể trùng hợp thoả `X → Y` dù về nguyên tắc không đúng). Người thiết kế phải nói rõ "mỗi môn có đúng một người dạy" có đúng với trường mình không (nhiều trường cho một môn có nhiều giảng viên thì `MH → GV` sai và phải thiết kế khác).
+
+### Bao đóng và khoá
+
+Từ một tập phụ thuộc hàm `F`, ta suy ra các phụ thuộc khác bằng ba **tiên đề Armstrong**: phản xạ (`Y ⊆ X` thì `X → Y`), tăng cường (`X → Y` thì `XZ → YZ`), bắc cầu (`X → Y` và `Y → Z` thì `X → Z`). Công cụ thực dụng là **bao đóng** (closure) `X⁺`: tập mọi thuộc tính xác định được từ `X`. Thuật toán đơn giản: bắt đầu với `X`, lặp "nếu vế trái của một phụ thuộc hàm đã nằm trong tập hiện tại thì thêm vế phải", dừng khi không thêm được nữa.
+
+- **Siêu khoá**: tập thuộc tính `X` có `X⁺` là mọi thuộc tính của quan hệ.
+- **Khoá ứng viên**: siêu khoá **tối thiểu** (bỏ bất kỳ thuộc tính nào đi là hết là siêu khoá).
+- Thuộc tính thuộc ít nhất một khoá ứng viên gọi là **thuộc tính khoá** (prime), còn lại là thuộc tính không khoá.
+
+Dưới đây là code cho bao đóng, khoá ứng viên, kiểm tra BCNF, thuật toán tách, và kiểm tra tách không mất thông tin; chạy trên bảng gom, trên ví dụ "Địa chỉ" kinh điển, và một ví dụ bao đóng tính tay:
+
+```python
+# Phụ thuộc hàm (functional dependency): bao đóng thuộc tính, khoá ứng viên, kiểm tra BCNF, tách bảng, kiểm tra không mất thông tin.
+from itertools import combinations
+
+def closure(attrs, fds):
+    """Bao đóng X+: mọi thuộc tính xác định được từ X nhờ các phụ thuộc hàm fds = [(vế trái, vế phải)]."""
+    result = set(attrs); changed = True
+    while changed:
+        changed = False
+        for lhs, rhs in fds:
+            if set(lhs) <= result and not set(rhs) <= result:
+                result |= set(rhs); changed = True
+    return result
+
+def candidate_keys(attrs, fds):
+    """Tập thuộc tính nhỏ nhất có bao đóng là toàn bộ quan hệ (thử theo kích thước tăng dần)."""
+    attrs, keys = set(attrs), []
+    for size in range(1, len(attrs) + 1):
+        for cand in combinations(sorted(attrs), size):
+            if closure(cand, fds) >= attrs and not any(set(k) <= set(cand) for k in keys):
+                keys.append(cand)
+    return keys
+
+def project_fds(sub, fds):
+    """Phụ thuộc hàm còn lại khi chiếu lên tập thuộc tính con: với mỗi tập X của sub, X -> (X+ giao sub) - X."""
+    out = []
+    for size in range(1, len(sub)):
+        for x in combinations(sorted(sub), size):
+            rhs = (closure(x, fds) & set(sub)) - set(x)
+            if rhs: out.append((x, tuple(sorted(rhs))))
+    return out
+
+def bcnf_violation(attrs, fds):
+    """Một phụ thuộc X -> Y không tầm thường mà X không phải siêu khoá thì vi phạm BCNF."""
+    for lhs, rhs in project_fds(attrs, fds):
+        if closure(lhs, fds) >= set(attrs): continue          # X là siêu khoá: hợp lệ
+        return lhs, rhs
+    return None
+
+def bcnf_decompose(attrs, fds):
+    attrs = tuple(sorted(attrs)); v = bcnf_violation(attrs, fds)
+    if not v: return [attrs]
+    x, y = v
+    r1 = tuple(sorted(set(x) | (closure(x, fds) & set(attrs))))   # X+ giao R
+    r2 = tuple(sorted((set(attrs) - closure(x, fds)) | set(x)))     # R - (X+ - X)
+    return bcnf_decompose(r1, fds) + bcnf_decompose(r2, fds)
+
+def lossless_binary(r, r1, r2, fds):
+    """Tách R thành R1, R2 không mất thông tin khi giao R1 giao R2 xác định R1 hoặc R2 (Heath)."""
+    common = set(r1) & set(r2)
+    c = closure(common, fds)
+    return set(r1) <= c or set(r2) <= c
+
+def show(fds): return ", ".join(f"{''.join(l)} -> {''.join(r)}" for l, r in fds)
+
+def analyze(name, attrs, fds):
+    print(f"== {name} ==  R({', '.join(attrs)})   F = {{ {show(fds)} }}")
+    keys = candidate_keys(attrs, fds)
+    print("   khoá ứng viên :", ", ".join("{" + ",".join(k) + "}" for k in keys))
+    v = bcnf_violation(attrs, fds)
+    print("   vi phạm BCNF  :", "không" if not v else f"có, ví dụ {','.join(v[0])} -> {','.join(v[1])} (vế trái không phải siêu khoá)")
+    parts = bcnf_decompose(attrs, fds)
+    print("   tách BCNF     :", "  |  ".join("R(" + ",".join(p) + ")" for p in parts))
+    return parts
+
+if __name__ == "__main__":
+    # bảng ví dụ ở phần dị thường: SV, MH (môn), D (điểm), GV, PH (phòng)
+    attrs = ("SV", "MH", "D", "GV", "PH")
+    F = [(("SV", "MH"), ("D",)), (("MH",), ("GV",)), (("GV",), ("PH",))]
+    parts = analyze("bảng gom (student, course, grade, instructor, office)", attrs, F)
+    print("   kiểm tra không mất thông tin ở bước tách đầu:", lossless_binary(attrs, ("MH", "GV", "PH"), ("SV", "MH", "D"), F))
+    print()
+    # ví dụ kinh điển BCNF không bảo toàn phụ thuộc: R(Phố, Thành phố, Mã bưu điện)
+    analyze("Địa chỉ", ("P", "T", "Z"), [(("P", "T"), ("Z",)), (("Z",), ("T",))])
+    print("   Lưu ý: tách theo BCNF mất phụ thuộc PT -> Z (không còn nằm gọn trong một bảng), nên 3NF giữ lại được nó còn BCNF thì không.")
+    print()
+    # bao đóng tính tay
+    F2 = [(("A",), ("B",)), (("B",), ("C",)), (("C", "D"), ("E",))]
+    print("bao đóng tính tay với F = { A -> B, B -> C, CD -> E }:")
+    for x in (("A",), ("A", "D"), ("B", "D")):
+        print(f"   {{{','.join(x)}}}+ = {{{','.join(sorted(closure(x, F2)))}}}")
+```
+
+```text
+== bảng gom (student, course, grade, instructor, office) ==  R(SV, MH, D, GV, PH)   F = { SVMH -> D, MH -> GV, GV -> PH }
+   khoá ứng viên : {MH,SV}
+   vi phạm BCNF  : có, ví dụ GV -> PH (vế trái không phải siêu khoá)
+   tách BCNF     : R(GV,PH)  |  R(GV,MH)  |  R(D,MH,SV)
+   kiểm tra không mất thông tin ở bước tách đầu: True
+
+== Địa chỉ ==  R(P, T, Z)   F = { PT -> Z, Z -> T }
+   khoá ứng viên : {P,T}, {P,Z}
+   vi phạm BCNF  : có, ví dụ Z -> T (vế trái không phải siêu khoá)
+   tách BCNF     : R(T,Z)  |  R(P,Z)
+   Lưu ý: tách theo BCNF mất phụ thuộc PT -> Z (không còn nằm gọn trong một bảng), nên 3NF giữ lại được nó còn BCNF thì không.
+
+bao đóng tính tay với F = { A -> B, B -> C, CD -> E }:
+   {A}+ = {A,B,C}
+   {A,D}+ = {A,B,C,D,E}
+   {B,D}+ = {B,C,D,E}
+```
+
+Phần cuối tính tay với `F = { A → B, B → C, CD → E }`:
+
+- `{A}⁺`: từ A có B (nhờ `A → B`), từ B có C (nhờ `B → C`), còn `CD → E` thiếu D nên dừng: **`{A, B, C}`**.
+- `{A, D}⁺`: thêm D cho phép dùng `CD → E` sau khi đã có C: **`{A, B, C, D, E}`**, là toàn bộ, nên `{A, D}` là siêu khoá (và là khoá ứng viên vì bỏ A hay D đều không đủ).
+- `{B, D}⁺ = {B, C, D, E}` thiếu A, nên không phải siêu khoá.
+
+Với bảng gom, khoá ứng viên duy nhất là **`{MH, SV}`** (biết sinh viên và môn là biết hết mọi thứ khác qua chuỗi `MH → GV → PH` và `(SV, MH) → D`).
+
+## Các dạng chuẩn
+
+Mỗi **dạng chuẩn** (normal form) là một bộ điều kiện chặt hơn dạng trước, loại bỏ thêm một kiểu phụ thuộc có hại. Bốn dạng đầu:
+
+| Dạng | Điều kiện | Loại bỏ |
+|---|---|---|
+| **1NF** | mọi ô là giá trị **nguyên tử** (không phải danh sách, bảng lồng) và có khoá | nhóm lặp trong một ô (`"CSDL, Mạng"`) |
+| **2NF** | 1NF và mọi thuộc tính không khoá phụ thuộc vào **toàn bộ** khoá, không chỉ một phần | **phụ thuộc từng phần** (chỉ xảy ra với khoá ghép) |
+| **3NF** | 2NF và mọi thuộc tính không khoá phụ thuộc **trực tiếp** vào khoá, không qua thuộc tính không khoá khác | **phụ thuộc bắc cầu** |
+| **BCNF** | mọi phụ thuộc `X → Y` không tầm thường đều có `X` là **siêu khoá** | mọi phụ thuộc có vế trái không phải khoá |
+
+Cách nhớ cổ điển cho 3NF: mọi thuộc tính không khoá phải phụ thuộc vào **khoá, toàn bộ khoá, và không gì ngoài khoá**. BCNF mạnh hơn 3NF một chút (loại thêm các trường hợp phụ thuộc vào thuộc tính khoá).
+
+### Áp vào bảng gom, từng bước
+
+Bảng `flat(SV, MH, D, GV, PH)`, khoá `{SV, MH}`:
+
+- **1NF**: mọi ô là giá trị đơn, có khoá: đạt.
+- **2NF**: có thuộc tính không khoá phụ thuộc vào **một phần** khoá không? `GV` (và qua đó `PH`) chỉ phụ thuộc `MH`, mà `MH` chỉ là **một nửa** khoá `{SV, MH}`. Đây là phụ thuộc từng phần: **vi phạm 2NF**. Sửa: tách thông tin môn ra bảng riêng. Ta có `Course(MH, GV, PH)` và `Enrollment(SV, MH, D)`.
+- **3NF**: trong `Course(MH, GV, PH)`, `PH` phụ thuộc `GV`, mà `GV` không phải khoá: phụ thuộc bắc cầu `MH → GV → PH`: **vi phạm 3NF**. Sửa: tách `Instructor(GV, PH)` và `Course(MH, GV)`.
+- **BCNF**: ba bảng `Instructor(GV, PH)` khoá `GV`, `Course(MH, GV)` khoá `MH`, `Enrollment(SV, MH, D)` khoá `{SV, MH}`: mọi phụ thuộc đều có vế trái là khoá: đạt BCNF.
+
+Đó chính là kết quả của thuật toán tách BCNF trong code: **`R(GV, PH) | R(GV, MH) | R(D, MH, SV)`**. Thực hiện bằng SQL, rồi kiểm chứng:
+
+```sql
+\pset null '∅'
+-- bảng gom ban đầu (đủ 6 dòng, tạo lại cho sạch)
+DROP TABLE IF EXISTS flat, enrollment, course, instructor, bad_a, bad_b CASCADE;
+CREATE TABLE flat (student text, course text, grade text, instructor text, office text);
+INSERT INTO flat VALUES
+ ('An','CSDL','A','Hà','P101'), ('An','Mạng','B','Lâm','P205'), ('Bình','CSDL','B','Hà','P101'),
+ ('Chi','CSDL','A','Hà','P101'), ('Chi','Thuật toán','A','Minh','P310'), ('Dũng','Mạng','C','Lâm','P205');
+
+\echo '== tách theo BCNF: mỗi sự thật chỉ nằm ở MỘT nơi =='
+CREATE TABLE instructor (instructor text PRIMARY KEY, office text NOT NULL);                       -- GV -> PH
+CREATE TABLE course     (course text PRIMARY KEY, instructor text NOT NULL REFERENCES instructor); -- MH -> GV
+CREATE TABLE enrollment (student text, course text REFERENCES course, grade text NOT NULL,           -- (SV, MH) -> D
+                         PRIMARY KEY (student, course));
+INSERT INTO instructor SELECT DISTINCT instructor, office FROM flat;
+INSERT INTO course     SELECT DISTINCT course, instructor FROM flat;
+INSERT INTO enrollment SELECT student, course, grade FROM flat;
+SELECT 'instructor' AS bang, count(*) AS dong FROM instructor UNION ALL
+SELECT 'course', count(*) FROM course UNION ALL SELECT 'enrollment', count(*) FROM enrollment;
+
+\echo ''
+\echo '== không mất thông tin: nối lại ba bảng phải ra đúng bảng gom (hai chiều EXCEPT đều rỗng) =='
+WITH rejoined AS (
+  SELECT e.student, e.course, e.grade, c.instructor, i.office
+  FROM enrollment e JOIN course c USING (course) JOIN instructor i USING (instructor))
+SELECT (SELECT count(*) FROM (SELECT * FROM rejoined EXCEPT SELECT * FROM flat) x) AS thua_so_voi_goc,
+       (SELECT count(*) FROM (SELECT * FROM flat EXCEPT SELECT * FROM rejoined) y) AS thieu_so_voi_goc;
+
+\echo ''
+\echo '== ba dị thường biến mất =='
+\echo '-- cập nhật: đổi phòng của cô Hà là MỘT dòng, không thể mâu thuẫn'
+UPDATE instructor SET office = 'P150' WHERE instructor = 'Hà';
+SELECT DISTINCT i.instructor, i.office FROM enrollment e JOIN course c USING (course) JOIN instructor i USING (instructor) WHERE i.instructor = 'Hà';
+\echo '-- chèn: thêm môn Học máy khi chưa có sinh viên nào'
+INSERT INTO instructor VALUES ('Phú', 'P400'); INSERT INTO course VALUES ('Học máy', 'Phú');
+SELECT * FROM course WHERE course = 'Học máy';
+\echo '-- xoá: Chi rút môn Thuật toán, thông tin thầy Minh vẫn còn'
+DELETE FROM enrollment WHERE student = 'Chi' AND course = 'Thuật toán';
+SELECT c.course, c.instructor, i.office FROM course c JOIN instructor i USING (instructor) WHERE c.course = 'Thuật toán';
+
+\echo ''
+\echo '== tách SAI (lossy): tách bảng gom thành (student, instructor) và (instructor, course) =='
+-- thông tin "sv nào học môn nào" được suy ra từ nối theo instructor; nhưng một thầy dạy nhiều môn gây ghép nhầm
+DROP TABLE IF EXISTS flat2; CREATE TABLE flat2 (student text, course text, instructor text);
+INSERT INTO flat2 VALUES ('An','CSDL','Hà'), ('An','AI','Phú'), ('Bình','AI','Phú'), ('Bình','Web','Hà');
+CREATE TABLE bad_a AS SELECT DISTINCT student, instructor FROM flat2;
+CREATE TABLE bad_b AS SELECT DISTINCT instructor, course FROM flat2;
+SELECT 'bảng gốc' AS nguon, count(*) AS dong FROM flat2
+UNION ALL SELECT 'nối lại sau khi tách', count(*) FROM bad_a JOIN bad_b USING (instructor);
+\echo '-- các dòng ma xuất hiện sau khi nối lại (không có trong bảng gốc):'
+SELECT a.student, b.course, a.instructor FROM bad_a a JOIN bad_b b USING (instructor)
+EXCEPT SELECT student, course, instructor FROM flat2 ORDER BY 1, 2;
+\echo '   (An không hề học Web, Bình không hề học CSDL: phần giao instructor KHÔNG xác định student hay course, nên không phải khoá của bên nào)'
+```
+
+```text
+== tách theo BCNF: mỗi sự thật chỉ nằm ở MỘT nơi ==
+    bang    | dong 
+------------+------
+ instructor |    3
+ course     |    3
+ enrollment |    6
+(3 rows)
+
+
+== không mất thông tin: nối lại ba bảng phải ra đúng bảng gom (hai chiều EXCEPT đều rỗng) ==
+ thua_so_voi_goc | thieu_so_voi_goc 
+-----------------+------------------
+               0 |                0
+(1 row)
+
+
+== ba dị thường biến mất ==
+-- cập nhật: đổi phòng của cô Hà là MỘT dòng, không thể mâu thuẫn
+ instructor | office 
+------------+--------
+ Hà         | P150
+(1 row)
+
+-- chèn: thêm môn Học máy khi chưa có sinh viên nào
+ course  | instructor 
+---------+------------
+ Học máy | Phú
+(1 row)
+
+-- xoá: Chi rút môn Thuật toán, thông tin thầy Minh vẫn còn
+   course   | instructor | office 
+------------+------------+--------
+ Thuật toán | Minh       | P310
+(1 row)
+
+
+== tách SAI (lossy): tách bảng gom thành (student, instructor) và (instructor, course) ==
+        nguon         | dong 
+----------------------+------
+ bảng gốc             |    4
+ nối lại sau khi tách |    6
+(2 rows)
+
+-- các dòng ma xuất hiện sau khi nối lại (không có trong bảng gốc):
+ student | course | instructor 
+---------+--------+------------
+ An      | Web    | Hà
+ Bình    | CSDL   | Hà
+(2 rows)
+
+   (An không hề học Web, Bình không hề học CSDL: phần giao instructor KHÔNG xác định student hay course, nên không phải khoá của bên nào)
+```
+
+## Tách bảng sao cho không mất thông tin
+
+Chuẩn hoá chỉ đúng nếu **nối lại các bảng đã tách ra đúng bảng gốc**, không thừa không thiếu; đó là tính chất **tách không mất thông tin** (lossless-join).
+
+**Kiểm chứng**: ba bảng sau khi tách có 3, 3 và 6 dòng; nối lại cho đúng 6 dòng của bảng gom, và hai chiều `EXCEPT` đều rỗng (`thua_so_voi_goc = 0`, `thieu_so_voi_goc = 0`). Ba dị thường biến mất: đổi phòng cô Hà là **một** dòng (`UPDATE instructor`), nên không thể mâu thuẫn; thêm môn Học máy không cần sinh viên; Chi rút môn Thuật toán thì thông tin thầy Minh vẫn còn trong `course` và `instructor`.
+
+**Điều kiện** (Heath) cho tách một bảng `R` thành `R1` và `R2`: không mất thông tin nếu phần giao `R1 ∩ R2` **xác định** `R1` hoặc `R2` (nghĩa là nó là khoá của một trong hai). Code `lossless_binary` kiểm tra bằng bao đóng và trả `True` cho bước tách đầu tiên (`R(MH, GV, PH)` và `R(SV, MH, D)` có phần chung `{MH}`, mà `MH → GV, PH`).
+
+**Một phép tách sai**: nếu tách theo thuộc tính **không phải khoá** thì hỏng. Tách bảng `(student, course, instructor)` thành `(student, instructor)` và `(instructor, course)` (phần chung `instructor` không xác định `student` cũng không xác định `course`, vì một người dạy nhiều môn và một sinh viên học nhiều người dạy): nối lại cho **6 dòng** thay vì 4, trong đó **hai dòng ma** `(An, Web, Hà)` và `(Bình, CSDL, Hà)` mà An và Bình chưa từng học. Đây là **lossy decomposition**: không mất dòng mà **thêm dòng sai**, và còn nguy hiểm hơn mất dữ liệu vì nhìn vẫn hợp lệ.
+
+### 3NF hay BCNF
+
+BCNF luôn đạt được với một phép tách không mất thông tin, nhưng **có thể mất phụ thuộc hàm** (không còn kiểm tra được một ràng buộc trong một bảng duy nhất). Ví dụ "Địa chỉ" `R(P, T, Z)` (phố, thành phố, mã bưu điện) với `PT → Z` và `Z → T`: mã bưu điện xác định thành phố, và phố cùng thành phố xác định mã. Khoá ứng viên là `{P, T}` và `{P, Z}`, và `Z → T` vi phạm BCNF (`Z` không phải siêu khoá). Tách BCNF thành `R(T, Z)` và `R(P, Z)` thì **ràng buộc `PT → Z` không còn nằm gọn trong bảng nào**: kiểm tra nó phải nối hai bảng. **3NF** cho phép giữ lại `R(P, T, Z)` vì `T` là thuộc tính khoá. Vì vậy thực tế thường dừng ở **3NF**, hoặc BCNF khi phép tách bảo toàn được các phụ thuộc.
+
+### Hơn BCNF
+
+**4NF** loại bỏ **phụ thuộc đa trị** (multi-valued dependency): ví dụ bảng `(nhân viên, kỹ năng, ngôn ngữ)` mà kỹ năng và ngôn ngữ độc lập với nhau buộc phải lưu mọi tổ hợp, và sửa một kỹ năng phải sửa nhiều dòng. **5NF** xử lý các phụ thuộc nối phức tạp hơn. Thực tế, hầu như mọi bài toán thiết kế dừng ở 3NF hoặc BCNF; 4NF khi bảng chứa hai danh sách độc lập; 5NF hiếm khi gặp.
+
+## Phi chuẩn hoá: khi nào đi ngược lại
+
+Chuẩn hoá có giá: muốn thấy tên khách cùng đơn hàng phải **nối** bảng. **Phi chuẩn hoá** (denormalization) là cố tình chép dữ liệu để bớt phải nối. Nó là một **đánh đổi**, không phải lỗi; điều quan trọng là biết trước giá. Thí nghiệm: 1.000.000 đơn hàng, 50.000 khách; một bản chuẩn hoá (`o_norm` và `c_norm`) và một bản phi chuẩn hoá (`o_flat`, chép tên, thành phố và địa chỉ vào **mỗi đơn**):
+
+```sql
+\pset null '∅'
+\echo '== chuẩn hoá hay không: 1.000.000 đơn hàng, 50.000 khách =='
+DROP TABLE IF EXISTS o_norm, c_norm, o_flat CASCADE;
+CREATE TABLE c_norm AS
+  SELECT g AS id, 'Khách ' || g AS name, (ARRAY['Hà Nội','Đà Nẵng','Huế','Cần Thơ','Hải Phòng'])[1 + g % 5] AS city,
+         md5(g::text) || md5((g + 1)::text) AS address
+  FROM generate_series(1, 50000) g;
+ALTER TABLE c_norm ADD PRIMARY KEY (id);
+CREATE TABLE o_norm AS
+  SELECT g AS id, 1 + ((g::bigint * 7919) % 50000)::int AS customer_id, (g * 37) % 1000 AS amount
+  FROM generate_series(1, 1000000) g;
+ALTER TABLE o_norm ADD PRIMARY KEY (id);
+CREATE INDEX ON o_norm (customer_id);
+-- bản phi chuẩn hoá: chép tên, thành phố, địa chỉ vào MỌI đơn
+CREATE TABLE o_flat AS
+  SELECT o.id, o.customer_id, o.amount, c.name, c.city, c.address FROM o_norm o JOIN c_norm c ON c.id = o.customer_id;
+ALTER TABLE o_flat ADD PRIMARY KEY (id);
+CREATE INDEX ON o_flat (customer_id);
+VACUUM ANALYZE c_norm; VACUUM ANALYZE o_norm; VACUUM ANALYZE o_flat;
+
+\echo '-- 1. dung lượng'
+SELECT 'chuẩn hoá (o_norm + c_norm)' AS cach,
+       pg_size_pretty(pg_total_relation_size('o_norm') + pg_total_relation_size('c_norm')) AS tong_dung_luong
+UNION ALL SELECT 'phi chuẩn hoá (o_flat)', pg_size_pretty(pg_total_relation_size('o_flat'));
+
+\echo ''
+\echo '-- 2. ĐỌC: doanh thu theo thành phố (báo cáo toàn bộ)'
+SET max_parallel_workers_per_gather = 0;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT c.city, sum(o.amount) FROM o_norm o JOIN c_norm c ON c.id = o.customer_id GROUP BY c.city;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT city, sum(amount) FROM o_flat GROUP BY city;
+
+\echo ''
+\echo '-- 3. ĐỌC: một khách và các đơn của khách (truy vấn điểm)'
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT o.id, o.amount, c.name, c.city FROM o_norm o JOIN c_norm c ON c.id = o.customer_id WHERE o.customer_id = 4242;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT id, amount, name, city FROM o_flat WHERE customer_id = 4242;
+
+\echo ''
+\echo '-- 4. GHI: khách 4242 đổi thành phố (20 đơn)'
+\timing on
+UPDATE c_norm SET city = 'Cần Thơ' WHERE id = 4242;
+UPDATE o_flat SET city = 'Cần Thơ' WHERE customer_id = 4242;
+\timing off
+SELECT 'chuẩn hoá: số dòng phải sửa' AS cach, 1 AS dong UNION ALL
+SELECT 'phi chuẩn hoá: số dòng phải sửa', count(*) FROM o_flat WHERE customer_id = 4242;
+RESET max_parallel_workers_per_gather;
+```
+
+```text
+== chuẩn hoá hay không: 1.000.000 đơn hàng, 50.000 khách ==
+-- 1. dung lượng
+            cach             | tong_dung_luong 
+-----------------------------+-----------------
+ chuẩn hoá (o_norm + c_norm) | 79 MB
+ phi chuẩn hoá (o_flat)      | 155 MB
+(2 rows)
+
+
+-- 2. ĐỌC: doanh thu theo thành phố (báo cáo toàn bộ)
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ HashAggregate (actual rows=5 loops=1)
+   Group Key: c.city
+   Batches: 1  Memory Usage: 24kB
+   ->  Hash Join (actual rows=1000000 loops=1)
+         Hash Cond: (o.customer_id = c.id)
+         ->  Seq Scan on o_norm o (actual rows=1000000 loops=1)
+         ->  Hash (actual rows=50000 loops=1)
+               Buckets: 65536  Batches: 1  Memory Usage: 2856kB
+               ->  Seq Scan on c_norm c (actual rows=50000 loops=1)
+ Planning Time: 0.337 ms
+ Execution Time: 172.563 ms
+(11 rows)
+
+                       QUERY PLAN                       
+--------------------------------------------------------
+ HashAggregate (actual rows=5 loops=1)
+   Group Key: city
+   Batches: 1  Memory Usage: 24kB
+   ->  Seq Scan on o_flat (actual rows=1000000 loops=1)
+ Planning Time: 0.065 ms
+ Execution Time: 99.947 ms
+(6 rows)
+
+
+-- 3. ĐỌC: một khách và các đơn của khách (truy vấn điểm)
+                                    QUERY PLAN                                    
+----------------------------------------------------------------------------------
+ Nested Loop (actual rows=20 loops=1)
+   ->  Index Scan using c_norm_pkey on c_norm c (actual rows=1 loops=1)
+         Index Cond: (id = 4242)
+   ->  Bitmap Heap Scan on o_norm o (actual rows=20 loops=1)
+         Recheck Cond: (customer_id = 4242)
+         Heap Blocks: exact=20
+         ->  Bitmap Index Scan on o_norm_customer_id_idx (actual rows=20 loops=1)
+               Index Cond: (customer_id = 4242)
+ Planning Time: 0.077 ms
+ Execution Time: 0.111 ms
+(10 rows)
+
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Bitmap Heap Scan on o_flat (actual rows=20 loops=1)
+   Recheck Cond: (customer_id = 4242)
+   Heap Blocks: exact=20
+   ->  Bitmap Index Scan on o_flat_customer_id_idx (actual rows=20 loops=1)
+         Index Cond: (customer_id = 4242)
+ Planning Time: 0.035 ms
+ Execution Time: 0.114 ms
+(7 rows)
+
+
+-- 4. GHI: khách 4242 đổi thành phố (20 đơn)
+Time: 2.333 ms
+Time: 2.162 ms
+              cach               | dong 
+---------------------------------+------
+ chuẩn hoá: số dòng phải sửa     |    1
+ phi chuẩn hoá: số dòng phải sửa |   20
+(2 rows)
+```
+
+| Đo | Chuẩn hoá | Phi chuẩn hoá |
+|---|---|---|
+| Dung lượng (kể cả chỉ mục) | **79 MB** | **155 MB** (gần gấp đôi) |
+| Báo cáo toàn bộ (doanh thu theo thành phố) | 172,6 ms (Hash Join) | **99,9 ms** (chỉ quét một bảng) |
+| Truy vấn điểm (một khách và 20 đơn) | 0,111 ms | 0,114 ms (**ngang nhau**) |
+| Đổi thành phố của một khách | sửa **1** dòng | sửa **20** dòng (và phải nhớ sửa hết) |
+
+Cái lợi: báo cáo toàn bộ **nhanh hơn khoảng 1,7 lần** vì không phải nối. Cái giá: dung lượng gấp đôi (nghĩa là ít dữ liệu vừa bộ nhớ đệm hơn), và mọi thay đổi của khách phải lan ra **mọi đơn** của khách đó, đúng loại dị thường cập nhật ở đầu bài. Truy vấn điểm ngang nhau vì nối bảng với chỉ mục khoá chính rất rẻ (xem [Indexing](/docs/databases/indexing)): **phi chuẩn hoá không tự động nhanh hơn**, chỉ nhanh khi truy vấn đọc lượng lớn và nối là chi phí chính. Đổi thành phố của một khách chỉ mất mili giây ở đây (chuẩn hoá 2,3 ms, phi chuẩn hoá 2,2 ms) vì mỗi khách chỉ có 20 đơn; với khách có hàng triệu đơn thì khác hẳn, và nguy cơ **quên một dòng** vẫn như nhau ở mọi kích thước.
+
+### Khi nào nên phi chuẩn hoá
+
+- **Phân tích và báo cáo** (data warehouse): lược đồ **hình sao** (star schema) có một bảng sự kiện lớn và các bảng chiều đã gộp lại, ít nối hơn, chấp nhận trùng lặp vì dữ liệu gần như chỉ **thêm** chứ không sửa.
+- **Dữ liệu bất biến theo thời điểm**: đơn hàng phải lưu **giá và địa chỉ lúc đặt** dù sau này sản phẩm đổi giá hay khách đổi địa chỉ. Đây không phải trùng lặp mà là một sự thật khác ("giá tại thời điểm mua"), nên chép là **đúng**, kể cả về mặt chuẩn hoá.
+- **Cột tính sẵn** (tổng đơn, số bình luận): tăng tốc đọc, đổi lại phải giữ đồng bộ bằng trigger, giao dịch, hay tính lại định kỳ.
+- **View vật chất hoá** (`MATERIALIZED VIEW`): để cơ sở dữ liệu giữ bản phi chuẩn hoá và làm mới khi cần, còn bảng gốc vẫn chuẩn hoá.
+- **Cơ sở dữ liệu tài liệu** (MongoDB, Firestore): nhúng dữ liệu liên quan vào cùng tài liệu là phi chuẩn hoá có chủ đích, đổi sự tiện của một lần đọc lấy gánh nặng giữ nhất quán ở ứng dụng.
+
+Quy trình hợp lý: **thiết kế chuẩn hoá trước** (3NF hoặc BCNF), đo, và chỉ phi chuẩn hoá phần **đã đo được là chậm**, đồng thời ghi lại cách giữ bản sao đồng bộ.
+
+## Trong hệ thống thật
+
+- **Khoá thay thế** (surrogate key): `id` tự tăng hoặc UUID thay cho khoá tự nhiên ghép nhiều cột, vì khoá ngắn làm chỉ mục và khoá ngoại nhỏ gọn. Nhưng nhớ vẫn phải có ràng buộc `UNIQUE` trên **khoá tự nhiên** (email, mã sản phẩm): khoá thay thế không thay được ràng buộc nghiệp vụ.
+- **Ràng buộc cho phụ thuộc hàm**: `X → Y` được thực thi bằng cách tách bảng sao cho `X` là khoá (`PRIMARY KEY` hoặc `UNIQUE`); đó là cách duy nhất cơ sở dữ liệu có thể bảo vệ nó giúp bạn. Phụ thuộc hàm nằm trong cùng một bảng mà `X` không phải khoá thì **không có ràng buộc nào thực thi được**.
+- **Chống mẫu "một cột nhiều giá trị"**: lưu `"CSDL,Mạng"` trong một ô (vi phạm 1NF) rồi tìm bằng `LIKE`. Dùng bảng nối, hoặc kiểu mảng, hoặc `jsonb` có chỉ mục GIN (xem [Indexing](/docs/databases/indexing)) nếu thật sự cần.
+- **EAV (entity-attribute-value)**: một bảng ba cột `(đối tượng, tên thuộc tính, giá trị)` cho "lược đồ linh hoạt" thoả 1NF nhưng mất kiểu dữ liệu, mất ràng buộc, mất khả năng nối hiệu quả; thường là lựa chọn tồi so với `jsonb`.
+- **Lược đồ thay đổi**: chuẩn hoá thêm bảng và khoá ngoại thì sửa lược đồ về sau (migration) là việc thường xuyên; bài [Transactions](/docs/databases/transactions) cho thấy `ALTER TABLE` có thể khoá bảng nên cần kế hoạch.
+
+## Quan sát và chẩn đoán
+
+- **Tìm trùng lặp tiềm ẩn**: `SELECT col1, count(DISTINCT col2) FROM t GROUP BY col1 HAVING count(DISTINCT col2) > 1` cho biết `col1 → col2` có đang bị vi phạm trong dữ liệu không (kết quả rỗng chỉ là dấu hiệu `col1 → col2` có thể đúng, không phải bằng chứng).
+- Cột lặp tên kiểu `phone1, phone2, phone3` hay giá trị ngăn bằng dấu phẩy là dấu hiệu vi phạm 1NF.
+- Một bảng nhiều cột mà **nhiều cột chỉ phụ thuộc vào một vài cột khác** (tên khách, địa chỉ khách trong bảng đơn hàng) là dấu hiệu phụ thuộc bắc cầu.
+- Theo dõi kích thước bảng so với số thực thể: bảng gấp nhiều lần số thực thể thật thường là bảng đang chép dữ liệu.
+
+| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+|---|---|---|
+| Cùng một thông tin hiện ra hai giá trị khác nhau ở hai nơi | sự thật được lưu ở nhiều chỗ, một chỗ bị bỏ sót khi cập nhật | tách bảng, hoặc đồng bộ có chủ đích (trigger, view vật chất hoá) |
+| Không thêm được thực thể khi chưa có thực thể khác | dị thường chèn: hai thực thể nằm chung bảng | tách mỗi thực thể một bảng, nối bằng khoá ngoại |
+| Xoá một dòng làm mất thông tin không liên quan | dị thường xoá | tách bảng |
+| Sau khi tách bảng, nối lại ra dòng lạ | tách theo cột không phải khoá (lossy) | tách theo phụ thuộc hàm; kiểm tra bằng `EXCEPT` hai chiều |
+| Báo cáo chậm vì nối quá nhiều bảng | lược đồ quá chuẩn hoá cho tải phân tích | bảng tổng hợp, view vật chất hoá, hoặc lược đồ hình sao |
+| Bảng phình to bất thường | chép cột dài vào mọi dòng | đưa cột ra bảng riêng, tham chiếu bằng khoá |
+
+## Lưu ý
+
+- Mục tiêu của chuẩn hoá là **mỗi sự thật được lưu đúng một lần**, để tránh dị thường cập nhật, chèn và xoá; dạng chuẩn chỉ là các bước kiểm tra cho việc đó.
+- Phụ thuộc hàm là ràng buộc của **nghiệp vụ**, không suy ra được chắc chắn từ dữ liệu mẫu. Hãy hỏi "điều này có luôn đúng không" trước khi viết `X → Y` thành thiết kế.
+- 3NF nghĩa là mọi thuộc tính không khoá phụ thuộc vào khoá, toàn bộ khoá và không gì ngoài khoá; BCNF mạnh hơn nhưng có thể làm mất khả năng kiểm tra một phụ thuộc trong một bảng.
+- Phép tách phải **không mất thông tin**: phần giao của hai bảng phải là khoá của ít nhất một bảng, và nên kiểm tra bằng `EXCEPT` hai chiều sau khi tách; tách sai sinh ra dòng ma còn nguy hiểm hơn mất dòng.
+- Phi chuẩn hoá có thể nhanh hơn cho báo cáo (1,7 lần trong phép đo trên) nhưng tốn gấp đôi dung lượng và tạo lại các dị thường; không nhanh hơn cho truy vấn điểm có chỉ mục.
+- Chép giá trị **tại thời điểm** (giá lúc mua, địa chỉ lúc giao) không phải trùng lặp mà là một sự thật khác: cứ chép.
+- Khoá thay thế không thay được ràng buộc `UNIQUE` trên khoá tự nhiên.
+- Thiết kế chuẩn hoá trước, đo, rồi phi chuẩn hoá có chủ đích đúng chỗ chậm và ghi lại cách giữ bản sao đồng bộ.

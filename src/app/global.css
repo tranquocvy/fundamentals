@@ -63,6 +63,7 @@ html[data-subject='dsa'] { --subject-accent: #c0392b; }
 html[data-subject='oop'] { --subject-accent: #4a7a00; }
 html[data-subject='backend'] { --subject-accent: #b0245f; }
 html[data-subject='devops'] { --subject-accent: #00785a; }
+html[data-subject='architecture'] { --subject-accent: #2f5fd0; }
 .dark[data-subject='os'] { --subject-accent: #ffb454; }
 .dark[data-subject='networking'] { --subject-accent: #5ccfe6; }
 .dark[data-subject='databases'] { --subject-accent: #c9a6ff; }
@@ -70,6 +71,7 @@ html[data-subject='devops'] { --subject-accent: #00785a; }
 .dark[data-subject='oop'] { --subject-accent: #aad94c; }
 .dark[data-subject='backend'] { --subject-accent: #f78fb3; }
 .dark[data-subject='devops'] { --subject-accent: #7ee0c3; }
+.dark[data-subject='architecture'] { --subject-accent: #8fb1ff; }
 
 /* ---------- Fonts ---------- */
 :root { --font-body: var(--font-source-serif), Georgia, serif; }
