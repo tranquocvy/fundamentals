@@ -297,9 +297,9 @@ Quicksort phân hoạch tại chỗ, không cần mảng phụ, và đi qua mả
 
 ## Heap sort và bảng so sánh
 
-Heap sort dựng một max-heap (xem bài [Tree](/docs/dsa/trees)) trên chính mảng, rồi lặp: đổi phần tử lớn nhất ở gốc về cuối, thu heap lại một ô, sift-down. Luôn `O(n log n)`, tại chỗ, không có trường hợp xấu. Code dưới đặt cả bốn thuật toán lên cùng bốn dạng dữ liệu.
+Heap sort dựng một max-heap (xem bài [Tree](/docs/dsa/trees)) trên chính mảng, rồi lặp: đổi phần tử lớn nhất ở gốc về cuối, thu heap lại một ô, sift-down. Luôn `O(n log n)`, tại chỗ, không có trường hợp xấu.
 
-**Đoán trước:** trên dữ liệu ngẫu nhiên, thuật toán nào tốn ít so sánh nhất? Heap sort có hưởng lợi khi dữ liệu đã sắp xếp không?
+<Expand title="Code heap sort (đếm số so sánh)">
 
 ```python
 def heap_sort(a):
@@ -320,7 +320,15 @@ def heap_sort(a):
     for end in range(n - 1, 0, -1):
         a[0], a[end] = a[end], a[0]; sift(0, end)         # đưa lớn nhất về cuối
     return cmp
+```
 
+</Expand>
+
+Đặt cả bốn thuật toán lên cùng bốn dạng dữ liệu.
+
+**Đoán trước:** trên dữ liệu ngẫu nhiên, thuật toán nào tốn ít so sánh nhất? Heap sort có hưởng lợi khi dữ liệu đã sắp xếp không?
+
+```python
 def ms_count(a):
     st = {"cmp": 0}; a[:] = merge_sort(a, st); return st["cmp"]
 
@@ -500,6 +508,8 @@ Dữ liệu thật hiếm khi ngẫu nhiên hoàn toàn: nó hay có sẵn các 
 
 **Đoán trước:** `sorted()` trên 100.000 số đã sắp xếp tốn bao nhiêu lần so sánh? Trên mảng ngược hoàn toàn?
 
+<Expand title="Code đếm số so sánh của sorted()">
+
 ```python
 from functools import cmp_to_key
 
@@ -525,6 +535,8 @@ for name, d in tim_shapes.items():
     c = comparisons(d)
     print(f"{name:<32} {c:>10,} lần so sánh  ({c / N:5.2f} mỗi phần tử)")
 ```
+
+</Expand>
 
 ```text
 n = 100,000: log2(n!) ≈ 1,516,704

@@ -469,6 +469,8 @@ Thí nghiệm dưới tách riêng yếu tố bố cục. Nó dựng một danh 
 
 **Đoán trước:** khi dữ liệu lớn hơn nhiều so với cache (máy đo có L3 24 MB), bản xáo trộn chậm hơn bao nhiêu lần?
 
+<Expand title="Code của thí nghiệm">
+
 ```python
 import random, time
 
@@ -503,6 +505,8 @@ for N in (1 << 14, 1 << 18, 1 << 21, 1 << 23):
     b = ns_per_step(*build(N, True))
     print(f"{N:>9} {N * 8 / 2**20:>6.1f}MB {a:>6.1f}ns/bước {b:>6.1f}ns/bước {b / a:>6.2f}x")
 ```
+
+</Expand>
 
 ```text
    số nút  dữ liệu  liền nhau   xáo trộn  chậm hơn

@@ -77,6 +77,8 @@ Ma trận luôn tốn `V^2` ô dù có ít cạnh; danh sách kề tốn `V + 2E
 
 **Đoán trước:** 4.000 đỉnh, mỗi đỉnh trung bình 4 láng giềng (8.000 cạnh). Ma trận kề (1 byte mỗi ô) và danh sách kề tốn bao nhiêu MB? Duyệt mọi láng giềng của mọi đỉnh mất bao lâu với mỗi cách?
 
+<Expand title="Code của phép đo">
+
 ```python
 import random, time, tracemalloc
 from array import array
@@ -111,6 +113,8 @@ for E in (8_000, 4_000_000):
     t = time.perf_counter(); sum(1 for u in range(V) for v in g[u]); t_g = time.perf_counter() - t
     print(f"E={E:>9,}: ma trận {m_mb:5.1f} MB, duyệt {t_m * 1000:6.0f} ms | danh sách {g_mb:5.1f} MB, duyệt {t_g * 1000:6.1f} ms")
 ```
+
+</Expand>
 
 ```text
 E=    8,000: ma trận  16.6 MB, duyệt    326 ms | danh sách   0.4 MB, duyệt    1.0 ms

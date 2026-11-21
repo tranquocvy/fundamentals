@@ -295,6 +295,8 @@ Code dưới cài Horspool rồi chạy naive, KMP và Horspool trên ba loại 
 
 **Đoán trước:** trên văn bản ngẫu nhiên, thuật toán nào tốn ít so sánh nhất? Trên trường hợp xấu, KMP tốn cỡ bao nhiêu?
 
+<Expand title="Code Horspool và phép đo">
+
 ```python
 def horspool(t, p):
     m, cmp, res = len(p), 0, []
@@ -334,6 +336,8 @@ for name, (t, p) in cases.items():
     assert r1 == r2 == r3 == find_all(t, p)         # mọi cách cho cùng các vị trí
     print(f"{name:<28}{c1:>12,}{c2:>11,}{c3:>10,} | {best_ms(kmp, t, p):>9.1f}{best_ms(find_all, t, p):>14.2f}")
 ```
+
+</Expand>
 
 ```text
                                    naive        KMP  Horspool |  KMP (ms) str.find (ms)
