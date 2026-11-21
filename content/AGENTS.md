@@ -15,7 +15,7 @@ content/
 
 Các môn khai báo ở `src/lib/subjects.ts`; môn nào có `ready: true` mới hiện nội dung. Môn chưa có bài hiện nhãn "soon". Màu accent của môn khai báo sẵn ở đó, và `src/app/global.css` cần hai dòng màu tương ứng khi tạo môn (CONTRIBUTING mục 4).
 
-Trạng thái hiện tại: năm chặng của `cs-fundamentals` (**Computer Architecture** 4 bài, **Operating Systems** 8 bài, **Computer Networks** 7 bài, **Data Structures & Algorithms** 8 bài, **Databases** 7 bài) đã có bài, đều `draft`. Chỉ `dsa/complexity` và `databases/indexing` theo chuẩn ở mục 2; các bài còn lại viết theo chuẩn cũ (dài) và chờ viết lại khi chủ repo yêu cầu. Chặng và node mới dự kiến nằm ở [roadmaps/EXPANSION.md](roadmaps/EXPANSION.md). Xem `content/roadmaps/cs-fundamentals.yaml` để biết node nào đã có `article`, đó là nguồn sự thật, đừng dựa vào danh sách trong file này.
+Trạng thái hiện tại: năm chặng của `cs-fundamentals` (**Computer Architecture** 4 bài, **Operating Systems** 8 bài, **Computer Networks** 7 bài, **Data Structures & Algorithms** 8 bài, **Databases** 7 bài) đã có bài, đều `draft`. Cả 8 bài `dsa/` và `databases/indexing` theo chuẩn ở mục 2; các bài còn lại viết theo chuẩn cũ (dài) và chờ viết lại khi chủ repo yêu cầu. Chặng và node mới dự kiến nằm ở [roadmaps/EXPANSION.md](roadmaps/EXPANSION.md). Xem `content/roadmaps/cs-fundamentals.yaml` để biết node nào đã có `article`, đó là nguồn sự thật, đừng dựa vào danh sách trong file này.
 
 ### Bản đồ từng môn (để biết bài nào nối với bài nào)
 

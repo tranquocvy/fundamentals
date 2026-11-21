@@ -1,450 +1,644 @@
 ---
 title: Sorting
-description: Insertion, merge, quick và heap sort tự cài và so sánh bằng số phép so sánh trên bốn dạng dữ liệu, giới hạn dưới n log n bằng cây quyết định, counting và radix sort, tính ổn định, Timsort và introsort trong thư viện thật, và sắp xếp ngoài.
+description: Sắp xếp n phần tử nhanh nhất được tới đâu, và vì sao thư viện chuẩn không dùng một thuật toán duy nhất?
 status: draft
 tags: [dsa, sorting]
 authors: [tranquocvy]
 references:
-  - title: "Jeff Erickson — Algorithms, Chapter 1 (Recursion: merge sort, quicksort) và Chapter 5 (Sorting lower bounds)"
-    url: https://jeffe.cs.illinois.edu/teaching/algorithms/
+  - title: "CLRS (ấn bản 4) — Chapter 2: Getting Started; Chapter 7: Quicksort; Chapter 8: Sorting in Linear Time"
     kind: book
-    note: phân tích merge sort và quicksort, cận dưới bằng cây quyết định
-  - title: "CLRS (ấn bản 4) — Chapter 2: Getting Started; Chapter 6: Heapsort; Chapter 7: Quicksort; Chapter 8: Sorting in Linear Time"
-    kind: book
-    note: thuật toán, chứng minh và cận dưới của sắp xếp so sánh
+    note: insertion sort, merge sort, quicksort, cận dưới bằng cây quyết định, counting và radix sort
   - title: "Sedgewick & Wayne — Algorithms, Chapter 2: Sorting"
     url: https://algs4.cs.princeton.edu/20sorting/
     kind: web
-    note: so sánh thực nghiệm, tính ổn định, ba nhánh (3-way) quicksort
-  - title: "MIT 6.006 (Spring 2020) — Comparison Sort, Counting and Radix Sort"
+    note: so sánh thực nghiệm, tính ổn định, chọn pivot
+  - title: "Jeff Erickson — Algorithms, Chapter 1: Recursion"
+    url: https://jeffe.cs.illinois.edu/teaching/algorithms/
+    kind: book
+    note: phân tích merge sort và quicksort bằng cây đệ quy
+  - title: "MIT 6.006 (Spring 2020) — Lecture 3: Sorting; Lecture 5: Linear Sorting"
     url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
     kind: video
-    note: bài giảng về cận dưới và sắp xếp tuyến tính
+    note: cận dưới và sắp xếp tuyến tính
   - title: "CPython — Objects/listsort.txt (Tim Peters)"
     url: https://github.com/python/cpython/blob/main/Objects/listsort.txt
     kind: web
     note: "mô tả Timsort: run, minrun, galloping"
   - title: "Musser — Introspective Sorting and Selection Algorithms (1997)"
     kind: paper
-    note: introsort, nền của std::sort
-  - title: "Knuth — The Art of Computer Programming, Vol. 3: Sorting and Searching"
+    note: introsort, nền của std::sort; cho phần đi sâu hơn
+  - title: "Knuth — The Art of Computer Programming, Vol. 3, Section 5.4: External Sorting"
     kind: book
-    note: sắp xếp trong và sắp xếp ngoài, chương 5
-  - title: "Peters, Orson — Pattern-defeating Quicksort (pdqsort)"
-    url: https://arxiv.org/abs/2106.05123
-    kind: paper
-    note: biến thể quicksort chống mẫu xấu, dùng trong nhiều thư viện hiện đại
+    note: sắp xếp ngoài; cho phần đi sâu hơn
 ---
+
+**Cần biết trước:** Big-O, cây đệ quy của merge sort và hằng số ẩn ở bài [Big-O & Complexity](/docs/dsa/complexity); heap ở bài [Tree](/docs/dsa/trees).
+
+**Cách đọc bài:** mỗi mục có một câu **Đoán trước** và kết bằng một câu **Thử ngay**. Hãy tự trả lời trong đầu (hoặc ra giấy) rồi mới xem đáp án. Việc tự nhớ lại và tự đoán giúp nhớ lâu hơn nhiều so với chỉ đọc.
 
 ## Ý chính
 
-Sắp xếp là bài toán đầu tiên mà mọi người học thuật toán đều gặp, và là bài toán mà lý thuyết trả lời **trọn vẹn nhất**: ta biết thuật toán so sánh nào tốt nhất có thể (`n log n`) và chứng minh được không ai làm tốt hơn. Nhưng "tốt nhất có thể" chỉ là phần đầu. Trên máy thật, tốc độ phụ thuộc vào dữ liệu đã gần sắp xếp chưa, có trùng lặp nhiều không, bộ nhớ có vừa không, hai phần tử bằng nhau có được giữ nguyên thứ tự không. Thư viện chuẩn của mọi ngôn ngữ vì thế không dùng một thuật toán thuần mà ghép nhiều thuật toán lại.
+Mọi thuật toán sắp xếp chỉ dùng phép so sánh "a có nhỏ hơn b không" đều cần ít nhất khoảng `n log2 n` lần so sánh trong trường hợp xấu nhất. Đây là giới hạn được chứng minh, không phải do chưa ai nghĩ ra cách hay hơn. Merge sort và quicksort đạt mức đó; insertion sort thì `n^2`. Muốn nhanh hơn `n log n` phải bỏ phép so sánh, như counting sort và radix sort dùng chính giá trị khoá làm chỉ số.
 
-Bài đi theo trình tự: các thước đo (ổn định, tại chỗ, thích nghi); bốn thuật toán so sánh tự cài và so sánh bằng số phép so sánh trên bốn dạng dữ liệu; vì sao `n log n` là giới hạn (cây quyết định) và merge sort sát giới hạn tới mức nào; counting và radix sort, những cách "phá" giới hạn bằng cách không so sánh; Timsort và introsort, hai thuật toán thật nằm trong Python, Java, C++; cuối cùng là sắp xếp ngoài khi dữ liệu không vừa bộ nhớ. Mọi code là Python 3.13 chạy thật. Bài này dùng kiến thức từ [Big-O & Complexity](/docs/dsa/complexity) (hằng số ẩn, recurrence của merge sort) và [Tree](/docs/dsa/trees) (heap, bài heapsort).
+Nhưng không thuật toán nào thắng mọi lúc. Insertion sort tuyến tính trên dữ liệu gần sắp xếp; quicksort nhanh nhất trên dữ liệu ngẫu nhiên nhưng có thể rơi về `n^2`; merge sort luôn ổn định nhưng tốn bộ nhớ phụ. Dữ liệu thật lại hay có sẵn các đoạn đã sắp xếp. Vì vậy thư viện chuẩn ghép nhiều thuật toán: `sorted()` của Python dùng Timsort (merge sort cộng insertion sort), `std::sort` của C++ dùng introsort (quicksort cộng heap sort cộng insertion sort).
 
-## Thước đo của một thuật toán sắp xếp
+## Insertion sort: tốt khi dữ liệu gần đúng thứ tự
 
-Cùng đưa ra một dãy tăng dần, nhưng các thuật toán khác nhau ở bốn tính chất:
-
-| Tính chất | Nghĩa |
-|---|---|
-| **Dựa trên so sánh** | chỉ dùng phép "a có nhỏ hơn b không"; áp dụng cho mọi kiểu có thứ tự |
-| **<Term>Stable sort</Term> (ổn định)** | hai phần tử bằng khoá giữ nguyên thứ tự ban đầu |
-| **Tại chỗ (in-place)** | chỉ dùng `O(1)` hoặc `O(log n)` bộ nhớ phụ |
-| **Thích nghi (adaptive)** | nhanh hơn khi dữ liệu đã gần sắp xếp |
-
-Tính ổn định hay bị coi nhẹ nhưng rất thực dụng: để sắp một bảng theo cột A rồi theo cột B mà vẫn giữ thứ tự theo A trong từng nhóm B, ta sắp theo A trước rồi theo B sau bằng một thuật toán ổn định. Phần sắp xếp không so sánh bên dưới có ví dụ cụ thể.
-
-## Bốn thuật toán, một bảng so sánh
-
-Dưới đây là bốn thuật toán tự cài, mỗi cái đếm **số phép so sánh** (`cmp`) và **số lần ghi** (`moves`). Đếm thao tác thay vì đo giây (xem [Big-O & Complexity](/docs/dsa/complexity)) giúp kết quả không phụ thuộc máy và không bị Python thông dịch làm nhiễu.
-
-- **Insertion sort**: giữ phần đầu đã sắp xếp, lấy từng phần tử kế và chèn vào đúng chỗ bằng cách dịch các phần tử lớn hơn sang phải. `O(n^2)` ở trường hợp xấu và trung bình, nhưng **`O(n)` nếu dữ liệu đã sắp xếp**: thích nghi.
-- **Merge sort**: chia đôi, sắp xếp từng nửa, **trộn** hai nửa (so sánh hai đầu, lấy cái nhỏ hơn). Recurrence `T(n) = 2T(n/2) + n` cho `Θ(n log n)` bất kể dữ liệu (xem bài Complexity); cần `O(n)` bộ nhớ phụ; ổn định.
-- **Quicksort**: chọn một **pivot**, **phân hoạch** mảng thành phần nhỏ hơn và lớn hơn pivot, rồi sắp xếp từng phần. Trung bình `O(n log n)`, tại chỗ, nhưng nếu pivot luôn rơi vào đầu mút thì phần chia là `n-1` và `0`, `T(n) = T(n-1) + n`, tức `Θ(n^2)`. **Không ổn định**.
-- **Heap sort**: xây max-heap (xem [Tree](/docs/dsa/trees)), rồi lần lượt đưa phần tử lớn nhất về cuối. `O(n log n)` đảm bảo, tại chỗ, không ổn định.
+Insertion sort làm giống xếp bài trên tay: giữ phần đầu mảng đã sắp xếp, lấy phần tử kế tiếp, dịch các phần tử lớn hơn nó sang phải một ô, rồi đặt nó vào chỗ trống.
 
 ```python
-import random, math, sys
-sys.setrecursionlimit(100000)
+import random, math
 
-class Counter:
-    def __init__(self): self.cmp = self.moves = 0
-
-def insertion_sort(a, c):
+def insertion_sort(a):
+    cmp = 0
     for i in range(1, len(a)):
         x, j = a[i], i - 1
         while j >= 0:
-            c.cmp += 1
+            cmp += 1
             if a[j] <= x: break
-            a[j + 1] = a[j]; c.moves += 1; j -= 1
-        a[j + 1] = x; c.moves += 1
+            a[j + 1] = a[j]; j -= 1            # dịch phần tử lớn hơn sang phải
+        a[j + 1] = x
+    return cmp
 
-def merge_sort(a, c):
-    if len(a) <= 1: return a
-    mid = len(a) // 2
-    l, r = merge_sort(a[:mid], c), merge_sort(a[mid:], c)
+def make_shapes(n, seed=12):
+    random.seed(seed)
+    near = list(range(n))
+    for _ in range(20):                         # đổi chỗ 20 cặp ngẫu nhiên
+        i, j = random.randrange(n), random.randrange(n); near[i], near[j] = near[j], near[i]
+    return {"ngẫu nhiên": random.sample(range(n), n), "đã sắp xếp": list(range(n)),
+            "ngược": list(range(n, 0, -1)), "gần sắp xếp": near}
+
+shapes = make_shapes(2000)
+```
+
+**Đoán trước:** với 2.000 phần tử, insertion sort tốn bao nhiêu lần so sánh khi mảng đã sắp xếp sẵn? Khi mảng ngược hoàn toàn?
+
+```python
+n = 2000
+for name, data in shapes.items():
+    a = list(data); c = insertion_sort(a); assert a == sorted(data)
+    print(f"{name:<12}: {c:>9,} lần so sánh")
+print(f"tham chiếu: n - 1 = {n - 1:,}, n^2/4 = {n * n // 4:,}, n(n-1)/2 = {n * (n - 1) // 2:,}")
+```
+
+```text
+ngẫu nhiên  :   996,864 lần so sánh
+đã sắp xếp  :     1,999 lần so sánh
+ngược       : 1,999,000 lần so sánh
+gần sắp xếp :    28,807 lần so sánh
+tham chiếu: n - 1 = 1,999, n^2/4 = 1,000,000, n(n-1)/2 = 1,999,000
+```
+
+Mảng đã sắp xếp: mỗi phần tử chỉ so một lần với phần tử ngay trước rồi dừng, tổng `n - 1`. Mảng ngược: mỗi phần tử phải dịch qua mọi phần tử trước nó, tổng `n(n-1)/2`. Ngẫu nhiên: trung bình dịch qua một nửa, khoảng `n^2/4`. Gần sắp xếp (chỉ 20 cặp bị đổi chỗ) tốn khoảng 29.000, ít hơn ngẫu nhiên khoảng 35 lần: chi phí tỉ lệ với số cặp đứng sai thứ tự, không phải với `n^2`. Thuật toán chạy nhanh hơn khi dữ liệu đã gần đúng thứ tự gọi là **thích nghi** (adaptive).
+
+**Thử ngay:** insertion sort trên 2.000 phần tử ngẫu nhiên tốn khoảng một triệu lần so sánh. Với 20.000 phần tử thì khoảng bao nhiêu?
+
+<Expand title="Đáp án">
+
+Khoảng 100 triệu: `n` gấp 10 thì `n^2` gấp 100. Đây là lý do insertion sort chỉ dùng cho mảng nhỏ hoặc gần sắp xếp.
+
+</Expand>
+
+## Merge sort: chia đôi rồi trộn
+
+Merge sort chia mảng làm đôi, sắp xếp từng nửa (đệ quy), rồi **trộn** hai nửa đã sắp xếp: so hai phần tử đầu, lấy cái nhỏ hơn, lặp lại. Trộn hai dãy tổng cộng `n` phần tử tốn tối đa `n - 1` lần so sánh.
+
+```python
+def merge(l, r, st):
     out, i, j = [], 0, 0
     while i < len(l) and j < len(r):
-        c.cmp += 1
-        if l[i] <= r[j]: out.append(l[i]); i += 1
+        st["cmp"] += 1
+        if l[i] <= r[j]: out.append(l[i]); i += 1    # <= : khi bằng nhau lấy bên trái trước
         else: out.append(r[j]); j += 1
-        c.moves += 1
-    out += l[i:] + r[j:]; c.moves += len(l) - i + len(r) - j
-    return out
+    return out + l[i:] + r[j:]                        # một bên hết thì chép nốt bên kia
 
-def quick_sort(a, c, pivot="first"):
-    """Lomuto, tại chỗ. pivot: 'first' (ngây thơ), 'random', 'median3'."""
-    stack = [(0, len(a) - 1)]
+def merge_sort(a, st):
+    if len(a) <= 1: return a
+    mid = len(a) // 2
+    return merge(merge_sort(a[:mid], st), merge_sort(a[mid:], st), st)
+
+st = {"cmp": 0}
+print(merge([1, 4, 7], [2, 3, 9], st), "| so sánh:", st["cmp"])
+```
+
+```text
+[1, 2, 3, 4, 7, 9] | so sánh: 5
+```
+
+Bài [Big-O & Complexity](/docs/dsa/complexity) đã vẽ cây đệ quy: `log2 n` tầng, mỗi tầng trộn tổng cộng `n` phần tử, nên tổng là `O(n log n)`.
+
+**Đoán trước:** merge sort có thích nghi như insertion sort không? Đếm trên cùng bốn dạng dữ liệu.
+
+```python
+for name, data in shapes.items():
+    st = {"cmp": 0}; out = merge_sort(list(data), st); assert out == sorted(data)
+    print(f"{name:<12}: {st['cmp']:>7,} lần so sánh")
+print(f"tham chiếu: n log2 n = {n * math.log2(n):,.0f}")
+```
+
+```text
+ngẫu nhiên  :  19,391 lần so sánh
+đã sắp xếp  :  10,864 lần so sánh
+ngược       :  11,088 lần so sánh
+gần sắp xếp :  14,886 lần so sánh
+tham chiếu: n log2 n = 21,932
+```
+
+Mọi dạng đều quanh `n log2 n`, không có dạng nào tệ. Đã sắp xếp hay ngược còn rẻ hơn khoảng một nửa, vì khi một nửa toàn nhỏ hơn nửa kia thì trộn kết thúc sớm, nhưng vẫn là `n log n`, không xuống được `n` như insertion sort. Merge sort cần thêm `O(n)` bộ nhớ cho các mảng con, và nó **ổn định**: hai phần tử bằng nhau giữ nguyên thứ tự ban đầu, nhờ dấu `<=` lấy bên trái trước (mục "Ổn định" bên dưới giải thích vì sao điều này quan trọng).
+
+**Thử ngay:** trộn `[1, 2, 3]` với `[4, 5, 6]` tốn mấy lần so sánh? Trộn `[1, 3, 5]` với `[2, 4, 6]` thì sao?
+
+<Expand title="Đáp án">
+
+`[1, 2, 3]` với `[4, 5, 6]`: 3 lần (so `4` với `1`, `2`, `3`), rồi bên trái hết nên chép nốt `4, 5, 6`. `[1, 3, 5]` với `[2, 4, 6]`: 5 lần, vì hai dãy xen kẽ nên phải so tới khi bên trái hết ở phần tử cuối. Đó là `n - 1` với `n = 6`, trường hợp xấu nhất.
+
+</Expand>
+
+## Quicksort: phân hoạch quanh một pivot
+
+Quicksort chọn một phần tử làm **pivot**, **phân hoạch** (partition) mảng để mọi phần tử nhỏ hơn pivot đứng trước nó và mọi phần tử còn lại đứng sau, rồi sắp xếp hai phần đó. Phân hoạch làm tại chỗ, không cần mảng phụ. Cách phân hoạch dưới đây (Lomuto) lấy pivot ở đầu đoạn, đi qua các phần tử còn lại, và mỗi khi gặp phần tử nhỏ hơn pivot thì đổi nó về vùng "nhỏ hơn" ở đầu.
+
+```python
+def partition(a, lo, hi, trace=False):
+    p, i = a[lo], lo                            # i: cuối vùng "nhỏ hơn pivot"
+    for j in range(lo + 1, hi + 1):
+        if a[j] < p:
+            i += 1; a[i], a[j] = a[j], a[i]
+        if trace: print(f"  xét ô {j}: {a[lo:hi + 1]}, vùng nhỏ hơn pivot tới ô {i}")
+    a[lo], a[i] = a[i], a[lo]                   # đưa pivot vào giữa hai vùng
+    return i
+```
+
+### Đọc một lần phân hoạch: ba ví dụ
+
+#### Ví dụ 1 (giải sẵn)
+
+Phân hoạch `[5, 8, 2, 9, 1, 7, 3]`, pivot là `5`:
+
+1. `8` không nhỏ hơn 5: để yên.
+2. `2` nhỏ hơn: vùng nhỏ hơn mở rộng tới ô 1, đổi `2` với `8`.
+3. `9` để yên. `1` nhỏ hơn: vùng tới ô 2, đổi `1` với `8`.
+4. `7` để yên. `3` nhỏ hơn: vùng tới ô 3, đổi `3` với `9`.
+5. Cuối cùng đổi pivot `5` với phần tử cuối vùng nhỏ hơn (ô 3).
+
+```python
+a = [5, 8, 2, 9, 1, 7, 3]
+k = partition(a, 0, len(a) - 1, trace=True)
+print("kết quả:", a, "| pivot ở ô", k)
+```
+
+```text
+  xét ô 1: [5, 8, 2, 9, 1, 7, 3], vùng nhỏ hơn pivot tới ô 0
+  xét ô 2: [5, 2, 8, 9, 1, 7, 3], vùng nhỏ hơn pivot tới ô 1
+  xét ô 3: [5, 2, 8, 9, 1, 7, 3], vùng nhỏ hơn pivot tới ô 1
+  xét ô 4: [5, 2, 1, 9, 8, 7, 3], vùng nhỏ hơn pivot tới ô 2
+  xét ô 5: [5, 2, 1, 9, 8, 7, 3], vùng nhỏ hơn pivot tới ô 2
+  xét ô 6: [5, 2, 1, 3, 8, 7, 9], vùng nhỏ hơn pivot tới ô 3
+kết quả: [3, 2, 1, 5, 8, 7, 9] | pivot ở ô 3
+```
+
+Pivot `5` nằm đúng vị trí cuối cùng của nó (ô 3); bên trái `3, 2, 1` đều nhỏ hơn, bên phải `8, 7, 9` đều lớn hơn, dù mỗi bên chưa sắp xếp. Phân hoạch tốn `n - 1` lần so sánh.
+
+#### Ví dụ 2 (giải một nửa)
+
+Phân hoạch `[4, 7, 1, 6, 3]`, pivot `4`. Điền vào chỗ trống:
+
+1. Các phần tử nhỏ hơn 4 là ___, nên vùng nhỏ hơn có ___ phần tử.
+2. Pivot cuối cùng nằm ở ô ___.
+3. Hai đoạn còn phải sắp xếp tiếp có độ dài ___ và ___.
+
+<Expand title="Đáp án">
+
+1. `1` và `3`; vùng nhỏ hơn có 2 phần tử.
+2. Ô 2.
+3. 2 và 2.
+
+```python
+a = [4, 7, 1, 6, 3]
+k = partition(a, 0, 4)
+print("kết quả:", a, "| pivot ở ô", k)
+```
+
+```text
+kết quả: [3, 1, 4, 6, 7] | pivot ở ô 2
+```
+
+</Expand>
+
+#### Ví dụ 3 (tự làm)
+
+Phân hoạch mảng **đã sắp xếp** `[1, 2, 3, 4, 5, 6]` với pivot là phần tử đầu. Hai đoạn còn lại dài bao nhiêu? Nếu quicksort cứ lấy phần tử đầu làm pivot cho mọi đoạn tiếp theo, tổng số lần so sánh với `n` phần tử là bao nhiêu?
+
+<Expand title="Đáp án">
+
+Không phần tử nào nhỏ hơn `1`, nên pivot ở ô 0, đoạn trái rỗng và đoạn phải dài 5. Đoạn phải `[2, ..., 6]` cũng đã sắp xếp, lại chia thành 0 và 4, và cứ thế. Tổng so sánh `(n-1) + (n-2) + ... + 1 = n(n-1)/2`, tức `O(n^2)`, như Ví dụ 1 của bài Complexity.
+
+```python
+a = [1, 2, 3, 4, 5, 6]
+k = partition(a, 0, 5)
+print("pivot ở ô", k, "| đoạn trái dài", k, "| đoạn phải dài", 5 - k)
+```
+
+```text
+pivot ở ô 0 | đoạn trái dài 0 | đoạn phải dài 5
+```
+
+</Expand>
+
+### Chọn pivot quyết định tất cả
+
+Quicksort hoàn chỉnh chỉ là phân hoạch rồi lặp lại cho hai đoạn con. Code dưới dùng một stack thay cho đệ quy để mảng lớn không làm tràn stack của Python.
+
+```python
+def quick_sort(a, pivot="first"):
+    cmp, stack = 0, [(0, len(a) - 1)]
     while stack:
         lo, hi = stack.pop()
-        while lo < hi:
-            if pivot == "random":
-                k = random.randint(lo, hi)
-            elif pivot == "median3":
-                mid = (lo + hi) // 2
-                k = sorted([(a[lo], lo), (a[mid], mid), (a[hi], hi)])[1][1]
-            else:
-                k = lo
-            a[lo], a[k] = a[k], a[lo]
-            p, i = a[lo], lo
-            for j in range(lo + 1, hi + 1):
-                c.cmp += 1
-                if a[j] < p:
-                    i += 1; a[i], a[j] = a[j], a[i]; c.moves += 1
-            a[lo], a[i] = a[i], a[lo]; c.moves += 1
-            # đệ quy phía nhỏ hơn bằng stack, lặp phía lớn: độ sâu stack O(log n)
-            if i - lo < hi - i: stack.append((i + 1, hi)); hi = i - 1
-            else: stack.append((lo, i - 1)); lo = i + 1
+        if lo >= hi: continue
+        k = random.randint(lo, hi) if pivot == "random" else lo
+        a[lo], a[k] = a[k], a[lo]               # đưa pivot đã chọn lên đầu đoạn
+        cmp += hi - lo                          # phân hoạch so mỗi phần tử còn lại một lần
+        i = partition(a, lo, hi)
+        stack += [(lo, i - 1), (i + 1, hi)]
+    return cmp
+```
 
-def heap_sort(a, c):
-    n = len(a)
+**Đoán trước:** với dữ liệu đã sắp xếp, quicksort lấy pivot đầu tốn bao nhiêu lần so sánh? Lấy pivot ngẫu nhiên thì sao?
+
+```python
+random.seed(4)
+print(f"{'':<14}" + "".join(f"{k:>14}" for k in shapes))
+for pv in ("first", "random"):
+    row = []
+    for data in shapes.values():
+        a = list(data); row.append(quick_sort(a, pv)); assert a == sorted(data)
+    print(f"pivot {pv:<8}" + "".join(f"{c:>14,}" for c in row))
+print(f"tham chiếu: n log2 n = {n * math.log2(n):,.0f}, n(n-1)/2 = {n * (n - 1) // 2:,}")
+```
+
+```text
+                  ngẫu nhiên    đã sắp xếp         ngược   gần sắp xếp
+pivot first           24,543     1,999,000     1,999,000       147,861
+pivot random          26,422        24,554        27,116        26,206
+tham chiếu: n log2 n = 21,932, n(n-1)/2 = 1,999,000
+```
+
+Pivot đầu thắng trên dữ liệu ngẫu nhiên nhưng sụp về đúng `n(n-1)/2` trên dữ liệu đã sắp xếp và ngược, như Ví dụ 3, và rất tệ cả trên dữ liệu gần sắp xếp. Pivot ngẫu nhiên giữ mọi dạng quanh `1,2 × n log2 n`: không có đầu vào nào làm nó chậm một cách có hệ thống, vì kẻ ra đề không đoán được pivot.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ quicksort là `O(n log n)`. Thật ra đó là **trung bình**; trường hợp xấu nhất là `O(n^2)`, và với pivot cố định, trường hợp xấu là dữ liệu đã sắp xếp, thứ rất hay gặp. Pivot không cần chia đôi hoàn hảo: chia `1/10` và `9/10` vẫn cho `n log n`. Chỉ khi pivot liên tục rơi vào đầu mút thì mới thành `n^2`.
+
+**Thử ngay:** vì sao quicksort được dùng nhiều dù có trường hợp `O(n^2)`, còn merge sort luôn `O(n log n)`?
+
+<Expand title="Đáp án">
+
+Quicksort phân hoạch tại chỗ, không cần mảng phụ, và đi qua mảng tuần tự nên thân thiện cache; trên dữ liệu ngẫu nhiên nó thường nhanh nhất. Trường hợp xấu được chặn bằng pivot ngẫu nhiên, hoặc như introsort: đếm độ sâu và đổi sang heap sort khi sâu quá `2 log2 n`. Merge sort cần `O(n)` bộ nhớ phụ và chép dữ liệu nhiều hơn.
+
+</Expand>
+
+## Heap sort và bảng so sánh
+
+Heap sort dựng một max-heap (xem bài [Tree](/docs/dsa/trees)) trên chính mảng, rồi lặp: đổi phần tử lớn nhất ở gốc về cuối, thu heap lại một ô, sift-down. Luôn `O(n log n)`, tại chỗ, không có trường hợp xấu. Code dưới đặt cả bốn thuật toán lên cùng bốn dạng dữ liệu.
+
+**Đoán trước:** trên dữ liệu ngẫu nhiên, thuật toán nào tốn ít so sánh nhất? Heap sort có hưởng lợi khi dữ liệu đã sắp xếp không?
+
+```python
+def heap_sort(a):
+    cmp, n = 0, len(a)
     def sift(i, end):
+        nonlocal cmp
         while True:
             l, r, m = 2 * i + 1, 2 * i + 2, i
             if l < end:
-                c.cmp += 1
+                cmp += 1
                 if a[l] > a[m]: m = l
             if r < end:
-                c.cmp += 1
+                cmp += 1
                 if a[r] > a[m]: m = r
             if m == i: return
-            a[i], a[m] = a[m], a[i]; c.moves += 1; i = m
-    for i in range(n // 2 - 1, -1, -1): sift(i, n)
+            a[i], a[m] = a[m], a[i]; i = m
+    for i in range(n // 2 - 1, -1, -1): sift(i, n)      # dựng max-heap
     for end in range(n - 1, 0, -1):
-        a[0], a[end] = a[end], a[0]; c.moves += 1; sift(0, end)
+        a[0], a[end] = a[end], a[0]; sift(0, end)         # đưa lớn nhất về cuối
+    return cmp
 
-def run(name, fn, data):
-    a, c = list(data), Counter()
-    out = fn(a, c)
-    res = out if out is not None else a
-    assert res == sorted(data), name
-    return c
+def ms_count(a):
+    st = {"cmp": 0}; a[:] = merge_sort(a, st); return st["cmp"]
 
-random.seed(12)
-n = 2000
-inputs = {
-    "ngẫu nhiên": [random.random() for _ in range(n)],
-    "đã sắp xếp": sorted(random.random() for _ in range(n)),
-    "ngược": sorted((random.random() for _ in range(n)), reverse=True),
-    "gần sắp xếp (1% đảo)": None,
-}
-base = sorted(random.random() for _ in range(n))
-for _ in range(n // 100):
-    i, j = random.randrange(n), random.randrange(n); base[i], base[j] = base[j], base[i]
-inputs["gần sắp xếp (1% đảo)"] = base
-
-algos = [
-    ("insertion", insertion_sort), ("merge", merge_sort),
-    ("quick (pivot đầu)", lambda a, c: quick_sort(a, c, "first")),
-    ("quick (pivot ngẫu nhiên)", lambda a, c: quick_sort(a, c, "random")),
-    ("quick (median-of-3)", lambda a, c: quick_sort(a, c, "median3")),
-    ("heap", heap_sort),
-]
-print(f"số phép so sánh khi sắp xếp n = {n}   (n log2 n = {n * math.log2(n):.0f}, n^2/2 = {n*n//2})")
-print(f"{'':<26}" + "".join(f"{k:>24}" for k in inputs))
-for name, fn in algos:
+random.seed(4)
+algos = {"insertion": insertion_sort, "merge": ms_count,
+         "quick (ngẫu nhiên)": lambda a: quick_sort(a, "random"), "heap": heap_sort}
+print(f"{'':<19}" + "".join(f"{k:>13}" for k in shapes))
+for name, fn in algos.items():
     row = []
-    for k, data in inputs.items():
-        c = run(name, fn, data)
-        row.append(f"{c.cmp:>14} ({c.moves:>6} ghi)")
-    print(f"{name:<26}" + "".join(f"{x:>24}" for x in row))
+    for data in shapes.values():
+        a = list(data); row.append(fn(a)); assert a == sorted(data)
+    print(f"{name:<19}" + "".join(f"{c:>13,}" for c in row))
 ```
 
 ```text
-số phép so sánh khi sắp xếp n = 2000   (n log2 n = 21932, n^2/2 = 2000000)
-                                        ngẫu nhiên              đã sắp xếp                   ngược    gần sắp xếp (1% đảo)
-insertion                        1009631 (1009636 ghi)          1999 (  1999 ghi)       1999000 (2000999 ghi)         24803 ( 24803 ghi)
-merge                              19428 ( 21952 ghi)         10864 ( 21952 ghi)         11088 ( 21952 ghi)         14807 ( 21952 ghi)
-quick (pivot đầu)                  23659 ( 12670 ghi)       1999000 (  1999 ghi)       1999000 (1001999 ghi)        306044 (  6858 ghi)
-quick (pivot ngẫu nhiên)           25831 ( 16159 ghi)         22900 ( 12481 ghi)         25559 ( 14962 ghi)         26761 ( 17084 ghi)
-quick (median-of-3)                20309 ( 11555 ghi)         17964 (  9893 ghi)        501002 (251501 ghi)         80132 (  7014 ghi)
-heap                               37672 ( 20141 ghi)         39159 ( 21300 ghi)         35964 ( 18708 ghi)         39188 ( 21382 ghi)
+                      ngẫu nhiên   đã sắp xếp        ngược  gần sắp xếp
+insertion                996,864        1,999    1,999,000       28,807
+merge                     19,391       10,864       11,088       14,886
+quick (ngẫu nhiên)        26,422       24,554       27,116       26,206
+heap                      37,787       39,159       35,964       39,192
 ```
 
-Mỗi cột là một dạng dữ liệu, mỗi hàng một thuật toán. Từng thuật toán có "chữ ký" riêng:
+| Thuật toán | Xấu nhất | Thích nghi | Tại chỗ | Ổn định |
+|---|---|---|---|---|
+| Insertion sort | `O(n^2)` | có, `O(n)` khi đã sắp xếp | có | có |
+| Merge sort | `O(n log n)` | một phần | không, `O(n)` phụ | có |
+| Quicksort | `O(n^2)` (trung bình `n log n`) | không | có | không |
+| Heap sort | `O(n log n)` | không | có | không |
 
-- **Insertion sort**: với dữ liệu ngẫu nhiên tốn khoảng `n^2/4` = 1.009.631 phép so sánh (đúng một nửa của `n^2/2`); đã sắp xếp chỉ **1.999** (`n - 1`, đúng thích nghi); ngược tốn **1.999.000**, tức `n(n-1)/2` cả hai vế. Với dữ liệu gần sắp xếp, 24.803 phép: rất rẻ. Đó là lý do nó vẫn sống trong các thuật toán thực tế dưới dạng bước cuối cho đoạn nhỏ.
-- **Merge sort**: số so sánh ổn định quanh `n log2 n` (19.428 với dữ liệu ngẫu nhiên, **ít hơn** cả `21.932` của `n log2 n` vì mỗi lần trộn tốn `n - 1` thay vì `n`); đã sắp xếp hay ngược còn ít hơn (khoảng một nửa), vì khi một nửa toàn nhỏ hơn thì trộn dừng sớm. Nhưng **số lần ghi** luôn 21.952 vì nó luôn chép. Không thích nghi về chép dữ liệu.
-- **Quicksort pivot đầu**: gần tối ưu với dữ liệu ngẫu nhiên (23.659) nhưng **thảm hoạ** ở đã sắp xếp và ngược: **1.999.000** so sánh, đúng bằng `n(n-1)/2`. Pivot là phần tử đầu mà dữ liệu đã sắp xếp nghĩa là mỗi lần phân hoạch tách ra `0` và `n-1`. Dữ liệu gần sắp xếp cũng xấu (306.044, gấp 13 lần).
-- **Quicksort pivot ngẫu nhiên**: số so sánh ở mọi dạng dữ liệu gần nhau (22.900 tới 26.761), không có đầu vào nào làm nó chậm một cách có hệ thống. Cái giá là hằng số lớn hơn khoảng 20% đến 30% so với median-of-3 trên dữ liệu ngẫu nhiên (25.831 so với 20.309).
-- **Quicksort median-of-3** (lấy trung vị của đầu, giữa, cuối): tốt nhất ở ngẫu nhiên và đã sắp xếp (20.309 và 17.964), nhưng ở dữ liệu **ngược** vẫn tốn **501.002** so sánh, tức một phần tư `n^2/2`. Ở bản Lomuto này, mỗi lần phân hoạch xoáy trật tự của mảng theo cách làm lệch lần phân hoạch kế. Bài học: median-of-3 giảm khả năng xấu nhưng **không loại bỏ** nó. Không có quy tắc chọn pivot tất định đơn giản nào loại bỏ hoàn toàn.
-- **Heap sort**: 35.964 đến 39.188 so sánh ở mọi dạng dữ liệu: ổn định và chặn trên được, nhưng **gần gấp đôi** merge sort ở dữ liệu ngẫu nhiên (37.672 so với 19.428), và không hưởng lợi gì khi dữ liệu đã có thứ tự. Mỗi bước `sift` tốn hai phép so sánh (con trái với con phải, rồi với cha), và truy cập nhảy cóc ở mảng lớn thân thiện cache kém hơn quicksort.
+Merge sort ít so sánh nhất và ổn định; heap sort chặn được trường hợp xấu mà không tốn bộ nhớ, nhưng tốn gần gấp đôi so sánh và nhảy cóc trong bộ nhớ nên chậm hơn trên máy thật; insertion sort vô địch khi dữ liệu gần sắp xếp hoặc rất ngắn.
 
-Tóm lại, không có người thắng tuyệt đối: quicksort nhanh nhất trên dữ liệu "bình thường", merge sort không bao giờ xấu và ổn định, heap sort chặn được trường hợp tồi nhất mà không tốn bộ nhớ phụ, insertion sort thắng khi đoạn ngắn hoặc gần sắp xếp. Thư viện thật ghép chúng lại (xem Timsort và introsort bên dưới).
+**Thử ngay:** bạn cần sắp xếp trong một thiết bị nhúng có rất ít RAM, và tuyệt đối không được có trường hợp chạy chậm bất thường. Chọn thuật toán nào?
 
-### Vì sao quicksort trung bình `O(n log n)`
+<Expand title="Đáp án">
 
-Giả sử pivot luôn chia mảng thành hai phần tỉ lệ `1/10` và `9/10`, tệ hơn trường hợp chia đôi nhiều. Recurrence `T(n) = T(n/10) + T(9n/10) + n`: cây đệ quy có tầng nào cũng tốn tối đa `n`, và đường dài nhất (luôn đi sang nhánh `9/10`) có `log_{10/9} n` tầng, một hằng số nhân của `log n`. Kết quả vẫn `Θ(n log n)`. Chỉ khi tỉ lệ chia **tới `0` và `n-1`** thì mới thành `n^2`. Pivot ngẫu nhiên khiến việc này có xác suất cực nhỏ, bất kể đầu vào.
+Heap sort: luôn `O(n log n)`, chỉ cần `O(1)` bộ nhớ phụ. Merge sort cần `O(n)` bộ nhớ; quicksort có trường hợp `O(n^2)`.
 
-## Giới hạn dưới: vì sao không thể nhanh hơn n log n
+</Expand>
 
-Mọi thuật toán so sánh có thể vẽ thành **cây quyết định**: mỗi nút trong là một phép so sánh `a_i < a_j?`, hai nhánh là kết quả có hoặc không, mỗi **lá** là một thứ tự hoàn chỉnh của đầu vào. Để đúng với mọi đầu vào, cây phải có **ít nhất một lá cho mỗi hoán vị**, tức ít nhất `n!` lá. Cây nhị phân có `L` lá thì cao ít nhất `log2 L`. Vậy trong trường hợp xấu nhất cần ít nhất
+## Giới hạn dưới: không thể nhanh hơn n log n
 
-```text
-log2(n!)  ≈  n log2 n - 1,44 n   phép so sánh        (công thức Stirling)
-```
+Mọi thuật toán chỉ dùng so sánh có thể vẽ thành một **cây quyết định**: mỗi nút là một câu hỏi "`a_i < a_j`?", hai nhánh là có và không, mỗi lá là một thứ tự đã sắp xếp. Với `n` phần tử khác nhau có `n!` thứ tự, và thuật toán phải phân biệt được hết, nên cây có ít nhất `n!` lá. Cây nhị phân có `L` lá thì cao ít nhất `log2 L`. Vậy trường hợp xấu nhất cần ít nhất `log2(n!)` lần so sánh, và `log2(n!) ≈ n log2 n − 1,44n`.
 
-Nên **không thuật toán sắp xếp dựa trên so sánh nào** nhanh hơn `Ω(n log n)`. Hãy xem giới hạn dưới sát tới mức nào so với merge sort:
+**Đoán trước:** với 1.000 phần tử, merge sort ở trường hợp xấu nhất tốn nhiều hơn cận dưới này bao nhiêu phần trăm?
 
 ```python
-import math
-print(f"{'n':>4} {'n! (số hoán vị)':>20} {'ceil(log2 n!)':>14} {'merge sort xấu nhất':>20} {'insertion xấu nhất n(n-1)/2':>28}")
-def merge_worst(n):                           # W(n) = W(n//2) + W(n - n//2) + n - 1
+def merge_worst(n):                             # W(n) = W(⌊n/2⌋) + W(⌈n/2⌉) + n - 1
     return 0 if n <= 1 else merge_worst(n // 2) + merge_worst(n - n // 2) + n - 1
-for n in (3, 4, 5, 8, 10, 12, 16, 100, 1000):
-    f = math.factorial(n)
-    print(f"{n:>4} {f if n <= 16 else '~10^' + str(int(math.log10(f))):>20} {math.ceil(math.log2(f)):>14} {merge_worst(n):>20} {n*(n-1)//2:>28}")
+
+print(f"{'n':>5} {'cận dưới ⌈log2 n!⌉':>19} {'merge sort xấu nhất':>20} {'insertion xấu nhất':>19}")
+for k in (3, 4, 5, 10, 100, 1000):
+    lb = math.ceil(math.lgamma(k + 1) / math.log(2))
+    print(f"{k:>5} {lb:>19,} {merge_worst(k):>20,} {k * (k - 1) // 2:>19,}")
 ```
 
 ```text
-   n      n! (số hoán vị)  ceil(log2 n!)  merge sort xấu nhất  insertion xấu nhất n(n-1)/2
-   3                    6              3                    3                            3
-   4                   24              5                    5                            6
-   5                  120              7                    8                           10
-   8                40320             16                   17                           28
-  10              3628800             22                   25                           45
-  12            479001600             29                   33                           66
-  16       20922789888000             45                   49                          120
- 100              ~10^157            525                  573                         4950
-1000             ~10^2567           8530                 8977                       499500
+    n  cận dưới ⌈log2 n!⌉  merge sort xấu nhất  insertion xấu nhất
+    3                   3                    3                   3
+    4                   5                    5                   6
+    5                   7                    8                  10
+   10                  22                   25                  45
+  100                 525                  573               4,950
+ 1000               8,530                8,977             499,500
 ```
 
-Với `n = 3` và `n = 4`, merge sort đạt đúng giới hạn (3 và 5). Với `n = 5` nó tốn 8 trong khi cận dưới là 7 (có thuật toán riêng cho `n` nhỏ đạt 7); với `n = 1000` merge sort tốn 8977, chỉ hơn cận dưới 8530 khoảng 5%. Insertion sort: `499.500` so với `8.530`. **Merge sort gần như tối ưu về số phép so sánh**; điểm yếu của nó là bộ nhớ phụ.
+Ở `n = 3` và `4`, merge sort đạt đúng cận dưới. Ở `n = 1000` nó chỉ hơn khoảng 5%. Merge sort gần như tối ưu về số lần so sánh; không thuật toán so sánh nào có thể nhanh hơn `O(n log n)`.
 
-Hệ quả hai chiều: không cần tìm thuật toán so sánh nhanh hơn `n log n`, nhưng có thể thoát giới hạn bằng cách **không so sánh**.
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ cận dưới này có nghĩa là không cách sắp xếp nào nhanh hơn `n log n`. Thật ra nó chỉ áp dụng cho thuật toán **chỉ dùng so sánh**. Nếu biết thêm về khoá, ví dụ khoá là số nguyên nhỏ, ta làm được `O(n)` (mục "Không so sánh" bên dưới). Và với dữ liệu có cấu trúc sẵn, thuật toán thích nghi có thể dùng ít so sánh hơn `n log2 n` nhiều, vì cận dưới là cho trường hợp xấu nhất.
 
-## Sắp xếp không so sánh: counting và radix sort
+**Thử ngay:** có thuật toán so sánh nào sắp xếp mọi dãy 5 phần tử chỉ với tối đa 6 lần so sánh không?
 
-Cây quyết định chỉ áp dụng khi thông tin duy nhất ta dùng là phép so sánh. Nếu khoá là **số nguyên trong một miền nhỏ**, ta có thể dùng chính giá trị làm chỉ số mảng.
+<Expand title="Đáp án">
 
-**Counting sort**: đếm số lần mỗi giá trị `0 .. k-1` xuất hiện, cộng dồn để biết "nhóm giá trị `v` bắt đầu từ vị trí nào", rồi đặt từng phần tử vào đúng vị trí. `O(n + k)`. Đặt phần tử theo thứ tự xuất hiện ban đầu thì **ổn định**.
+Không. `5! = 120` thứ tự, `log2 120 ≈ 6,9`, nên cần ít nhất 7 lần ở trường hợp xấu nhất. Bảng trên cho thấy cận dưới là 7, còn merge sort tốn 8.
 
-**Radix sort (LSD)**: với số nguyên lớn, chia thành các "chữ số" trong cơ số `b` (ví dụ `b = 256`, tức mỗi byte) và counting sort **từng chữ số từ thấp lên cao**. Tính ổn định của counting sort là điều khiến cách này **đúng**: sau khi sắp theo chữ số cao nhất, thứ tự của các số cùng chữ số cao nhất vẫn giữ kết quả từ các lượt trước. `O(d (n + b))` với `d` là số chữ số.
+</Expand>
+
+## Ổn định: thứ tự của các phần tử bằng nhau
+
+Một thuật toán sắp xếp là <Term>stable sort</Term> (ổn định) nếu hai phần tử có khoá bằng nhau giữ nguyên thứ tự như trong dữ liệu ban đầu.
+
+**Đoán trước:** sắp danh sách học viên theo cấp. Ba người cấp 3 là `An, Chi, Phuc` theo thứ tự gốc. Sau khi sắp, họ đứng theo thứ tự nào?
 
 ```python
-import random, time
+people = [("An", 3), ("Binh", 1), ("Chi", 3), ("Dung", 2), ("Em", 1), ("Phuc", 3)]
+
+def selection_sort_by(a, key):                  # chọn nhỏ nhất rồi đổi chỗ: không ổn định
+    a = list(a)
+    for i in range(len(a)):
+        m = min(range(i, len(a)), key=lambda j: key(a[j]))
+        a[i], a[m] = a[m], a[i]
+    return a
+
+print("sorted (ổn định):        ", sorted(people, key=lambda p: p[1]))
+print("selection (không ổn định):", selection_sort_by(people, key=lambda p: p[1]))
+```
+
+```text
+sorted (ổn định):         [('Binh', 1), ('Em', 1), ('Dung', 2), ('An', 3), ('Chi', 3), ('Phuc', 3)]
+selection (không ổn định): [('Binh', 1), ('Em', 1), ('Dung', 2), ('Chi', 3), ('An', 3), ('Phuc', 3)]
+```
+
+`sorted()` giữ `An, Chi, Phuc` và `Binh, Em` như thứ tự gốc. Selection sort đổi chỗ xa nên làm xáo thứ tự trong nhóm cấp 3.
+
+Ổn định cho phép sắp theo nhiều khoá bằng nhiều lần sắp: muốn sắp theo cấp, trong cùng cấp theo tên, thì **sắp theo tên trước, rồi theo cấp sau** bằng một thuật toán ổn định. Lần sắp sau giữ nguyên thứ tự tên trong mỗi nhóm cấp.
+
+**Thử ngay:** một bảng nhân viên cần sắp theo phòng ban, trong mỗi phòng theo lương giảm dần. Với `sorted()` của Python, sắp hai lần theo thứ tự nào? Còn cách nào gọn hơn?
+
+<Expand title="Đáp án">
+
+Sắp theo lương giảm dần trước, rồi theo phòng ban sau: `rows.sort(key=lambda r: -r.salary)` rồi `rows.sort(key=lambda r: r.dept)`. Gọn hơn: một lần với khoá là tuple, `rows.sort(key=lambda r: (r.dept, -r.salary))`.
+
+</Expand>
+
+## Không so sánh: counting sort và radix sort
+
+Nếu khoá là số nguyên trong một miền nhỏ `0 .. k-1`, không cần so sánh: **counting sort** đếm mỗi giá trị xuất hiện bao nhiêu lần, cộng dồn để biết nhóm giá trị `v` bắt đầu ở đâu, rồi đặt từng phần tử vào đúng chỗ. Chi phí `O(n + k)`, và đặt phần tử theo thứ tự xuất hiện thì nó ổn định.
+
+**Radix sort** mở rộng cho số lớn: tách số thành các "chữ số" theo cơ số `b` (ví dụ mỗi byte, `b = 256`) và counting sort lần lượt theo từng chữ số, **từ thấp lên cao**. Tính ổn định là điều làm cách này đúng: lượt sau giữ nguyên thứ tự của các lượt trước trong mỗi nhóm.
+
+```python
+import time
 
 def counting_sort(a, k, key=lambda x: x):
-    """a: list; key(x) in [0, k). Ổn định: duyệt ngược khi đặt."""
-    count = [0] * (k + 1)
-    for x in a: count[key(x) + 1] += 1
-    for i in range(k): count[i + 1] += count[i]          # count[v] = vị trí bắt đầu của nhóm v
+    start = [0] * (k + 1)
+    for x in a: start[key(x) + 1] += 1
+    for v in range(k): start[v + 1] += start[v]      # start[v] = vị trí đầu của nhóm v
     out = [None] * len(a)
-    for x in a:                                          # duyệt xuôi + vị trí tăng dần giữ thứ tự ban đầu
-        out[count[key(x)]] = x; count[key(x)] += 1
+    for x in a:                                     # đi xuôi: giữ thứ tự gốc, nên ổn định
+        out[start[key(x)]] = x; start[key(x)] += 1
     return out
 
 def radix_sort(a, base=256):
-    """LSD radix cho số nguyên không âm: counting sort từng 'chữ số' từ thấp lên cao."""
-    if not a: return a
     exp, m = 1, max(a)
     while m // exp > 0:
         a = counting_sort(a, base, key=lambda x, e=exp: (x // e) % base)
         exp *= base
     return a
 
-# 1) tính ổn định: sắp theo cấp, các bản ghi cùng cấp giữ nguyên thứ tự trước đó
-people = [("An", 3), ("Binh", 1), ("Chi", 3), ("Dung", 2), ("Em", 1), ("Phuc", 3)]
-print("trước:", people)
-print("sort theo cấp (ổn định): ", counting_sort(people, 4, key=lambda p: p[1]))
+print(counting_sort([3, 0, 2, 3, 1, 0], 4))
+```
 
-# 2) đúng sai và thời gian
+```text
+[0, 0, 1, 2, 3, 3]
+```
+
+**Đoán trước:** radix sort là `O(n)`, `sorted()` là `O(n log n)`. Với một triệu số nguyên, cái nào nhanh hơn trong Python?
+
+```python
 random.seed(21)
-print()
-print(f"{'n':>9} {'giá trị tối đa':>15} | {'radix (base 256)':>17} {'sorted()':>10}")
-for n, hi in ((100_000, 10**6), (1_000_000, 10**6), (1_000_000, 10**9)):
-    a = [random.randrange(hi) for _ in range(n)]
+for cnt, hi in ((100_000, 10**6), (1_000_000, 10**9)):
+    a = [random.randrange(hi) for _ in range(cnt)]
     t = time.perf_counter(); r = radix_sort(a); t1 = time.perf_counter() - t
     t = time.perf_counter(); s = sorted(a); t2 = time.perf_counter() - t
     assert r == s
-    print(f"{n:>9} {hi:>15,} | {t1*1000:>14.0f} ms {t2*1000:>7.0f} ms")
+    print(f"{cnt:>9,} số < {hi:,}: radix {t1 * 1000:>5.0f} ms, sorted() {t2 * 1000:>4.0f} ms")
 ```
 
 ```text
-trước: [('An', 3), ('Binh', 1), ('Chi', 3), ('Dung', 2), ('Em', 1), ('Phuc', 3)]
-sort theo cấp (ổn định):  [('Binh', 1), ('Em', 1), ('Dung', 2), ('An', 3), ('Chi', 3), ('Phuc', 3)]
-
-        n  giá trị tối đa |  radix (base 256)   sorted()
-   100000       1,000,000 |             60 ms      11 ms
-  1000000       1,000,000 |            838 ms     163 ms
-  1000000   1,000,000,000 |           1210 ms     188 ms
+  100,000 số < 1,000,000: radix   190 ms, sorted()   25 ms
+1,000,000 số < 1,000,000,000: radix  3217 ms, sorted()  362 ms
 ```
 
-Phần ổn định: sắp theo cấp, ba người cấp 3 vẫn đứng đúng thứ tự `An, Chi, Phuc` như danh sách gốc, hai người cấp 1 đúng thứ tự `Binh, Em`. Không ổn định thì thứ tự trong nhóm là tuỳ ý.
+`sorted()` thắng khoảng 8 lần. Không phải vì thuật toán sai: `sorted()` chạy bằng C, còn radix sort ở đây là vòng lặp Python, mỗi bước tốn hàng chục lệnh thông dịch. Đây là **hằng số ẩn** trong bài [Big-O & Complexity](/docs/dsa/complexity): lợi thế tiệm cận chỉ thấy khi so trên cùng một nền cài đặt. Trong C hay trên GPU, radix sort trên khoá số nguyên thường thắng sắp xếp so sánh. Giới hạn của nó: khoá phải là số nguyên hoặc tách được thành chữ số; không dùng được cho "so hai bản ghi theo hàm tuỳ ý".
 
-Phần thời gian là bài học trung thực: radix sort **không cần so sánh nhưng vẫn thua** `sorted()` khoảng 5 đến 7 lần ở cả ba cỡ. Lý do không phải thuật toán sai: `sorted()` chạy bằng C (Timsort), còn radix sort ở đây là vòng lặp Python cho từng "chữ số" (3 lượt với số tới một triệu, 4 lượt với một tỉ). Đó là chuyện **hằng số ẩn** của bài [Big-O & Complexity](/docs/dsa/complexity): lợi thế tiệm cận chỉ lộ ra khi cùng một nền cài đặt. Trong C hoặc Rust, radix sort trên số nguyên hay khoá cố định thường nhanh hơn sắp xếp so sánh đáng kể, và nó là cách cơ sở dữ liệu và công cụ GPU sắp xếp các số lớn. Giới hạn: miền khoá phải nhỏ (counting) hoặc khoá phải phân rã được thành chữ số (radix); không dùng được cho "so sánh hai bản ghi theo hàm tuỳ ý".
+**Thử ngay:** sắp xếp 100 triệu bản ghi theo tuổi (0 tới 150). Dùng gì, và tốn bao nhiêu?
 
-## Thư viện chuẩn thật sự dùng gì
+<Expand title="Đáp án">
 
-### Timsort (Python, Java cho object)
+Counting sort với `k = 151`: `O(n + k)`, tức hai lượt qua dữ liệu. Sắp xếp so sánh cần khoảng `n log2 n ≈ 2,7 tỷ` lần so sánh.
 
-Tim Peters viết **Timsort** cho Python năm 2002 dựa trên một quan sát: dữ liệu thật hiếm khi ngẫu nhiên hoàn toàn; nó thường chứa sẵn các **đoạn đã tăng (hoặc giảm) dần** gọi là run. Timsort: (1) quét tìm các run tự nhiên (run giảm thì đảo lại), (2) nếu run ngắn hơn `minrun` (32 đến 64) thì nới ra bằng **insertion sort** nhị phân, (3) trộn các run bằng merge, với quy tắc chọn cặp nào trộn trước để giữ cây trộn cân bằng (từ Python 3.11 là chính sách "powersort"), và khi một run thắng liên tục thì chuyển sang chế độ **galloping** (nhảy theo luỹ thừa 2 để tìm chỗ chèn). Nó ổn định.
+</Expand>
 
-Hãy đếm số phép so sánh thực của `sorted()` theo hình dạng dữ liệu, bằng `cmp_to_key` bọc một bộ đếm:
+## Thư viện chuẩn: Timsort và introsort
+
+Dữ liệu thật hiếm khi ngẫu nhiên hoàn toàn: nó hay có sẵn các **run**, tức các đoạn đã tăng (hoặc giảm) dần. **Timsort**, do Tim Peters viết cho Python năm 2002, khai thác điều đó: quét tìm các run (run giảm thì đảo lại), nới run ngắn bằng insertion sort, rồi trộn các run như merge sort. Nó ổn định và dùng trong `sorted()`, `list.sort()` của Python và sắp xếp object của Java.
+
+**Đoán trước:** `sorted()` trên 100.000 số đã sắp xếp tốn bao nhiêu lần so sánh? Trên mảng ngược hoàn toàn?
 
 ```python
-import random, math
 from functools import cmp_to_key
 
 def comparisons(data):
-    cnt = [0]
+    cnt = 0
     def cmp(a, b):
-        cnt[0] += 1
-        return -1 if a < b else (1 if a > b else 0)
+        nonlocal cnt; cnt += 1
+        return (a > b) - (a < b)
     sorted(data, key=cmp_to_key(cmp))
-    return cnt[0]
+    return cnt
 
 random.seed(31)
-n = 100_000
-shapes = {
-    "ngẫu nhiên": [random.random() for _ in range(n)],
-    "đã sắp xếp": list(range(n)),
-    "ngược hoàn toàn": list(range(n, 0, -1)),
-    "10 đoạn tăng nối nhau": sum((sorted(random.random() for _ in range(n // 10)) for _ in range(10)), []),
-    "sắp xếp + 100 phần tử mới ở cuối": list(range(n - 100)) + [random.random() * n for _ in range(100)],
-    "toàn số giống nhau": [7] * n,
+N = 100_000
+tim_shapes = {
+    "ngẫu nhiên": [random.random() for _ in range(N)],
+    "đã sắp xếp": list(range(N)),
+    "ngược hoàn toàn": list(range(N, 0, -1)),
+    "10 đoạn tăng nối nhau": sum((sorted(random.random() for _ in range(N // 10)) for _ in range(10)), []),
+    "đã sắp xếp + 100 số mới ở cuối": list(range(N - 100)) + [random.random() * N for _ in range(100)],
 }
-print(f"n = {n}: n-1 = {n-1}, n log2 n = {n * math.log2(n):.0f}, log2(n!) ≈ {math.lgamma(n + 1) / math.log(2):.0f}")
-print(f"{'hình dạng dữ liệu':<36} {'số so sánh':>12} {'/ n':>7}")
-for name, d in shapes.items():
+print(f"n = {N:,}: log2(n!) ≈ {math.lgamma(N + 1) / math.log(2):,.0f}")
+for name, d in tim_shapes.items():
     c = comparisons(d)
-    print(f"{name:<36} {c:>12} {c / n:>7.2f}")
+    print(f"{name:<32} {c:>10,} lần so sánh  ({c / N:5.2f} mỗi phần tử)")
 ```
 
 ```text
-n = 100000: n-1 = 99999, n log2 n = 1660964, log2(n!) ≈ 1516704
-hình dạng dữ liệu                      số so sánh     / n
-ngẫu nhiên                                1531895   15.32
-đã sắp xếp                                  99999    1.00
-ngược hoàn toàn                             99999    1.00
-10 đoạn tăng nối nhau                      439989    4.40
-sắp xếp + 100 phần tử mới ở cuối           102509    1.03
-toàn số giống nhau                          99999    1.00
+n = 100,000: log2(n!) ≈ 1,516,704
+ngẫu nhiên                        1,531,895 lần so sánh  (15.32 mỗi phần tử)
+đã sắp xếp                           99,999 lần so sánh  ( 1.00 mỗi phần tử)
+ngược hoàn toàn                      99,999 lần so sánh  ( 1.00 mỗi phần tử)
+10 đoạn tăng nối nhau               439,989 lần so sánh  ( 4.40 mỗi phần tử)
+đã sắp xếp + 100 số mới ở cuối      102,509 lần so sánh  ( 1.03 mỗi phần tử)
 ```
 
-Dữ liệu ngẫu nhiên: 1.531.895 phép so sánh, sát cận dưới lý thuyết `log2(n!)` ≈ 1.516.704 (chỉ hơn 1%). Nhưng với dữ liệu có cấu trúc, nó xuống còn **tuyến tính**: đã sắp xếp hay **ngược hoàn toàn** chỉ tốn `n - 1` (một lần quét phát hiện một run duy nhất, run ngược được đảo tại chỗ); 10 đoạn tăng nối nhau tốn khoảng `4,4n` (gần `n log2 10 = 3,3n` cộng chi phí phát hiện run); thêm 100 phần tử vào cuối mảng đã sắp xếp tốn `1,03n`. Đây là thuật toán thích nghi đúng nghĩa: "dữ liệu có cấu trúc thì nhanh hơn `n log n`" là sự thật có thể đo.
+Dữ liệu ngẫu nhiên: sát cận dưới `log2(n!)`. Đã sắp xếp hay ngược: đúng `n - 1`, vì một lần quét thấy cả mảng là một run (run ngược được đảo tại chỗ). Thêm 100 số vào cuối một mảng đã sắp xếp: chỉ nhỉnh hơn `n`. Đây là lý do thêm vài phần tử rồi gọi lại `sort()` trong Python rất rẻ.
 
-### Introsort (C++ `std::sort`) và pdqsort
-
-C++ không yêu cầu ổn định cho `std::sort`, nên dùng quicksort vì nhanh nhất ở dữ liệu ngẫu nhiên, nhưng quicksort có điểm yếu như trên. **Introsort** (Musser, 1997) vá: chạy quicksort (pivot median-of-3), **theo dõi độ sâu đệ quy**, nếu vượt khoảng `2 log2 n` thì **đổi sang heap sort** cho đoạn đó (đảm bảo `O(n log n)` trong trường hợp xấu nhất), và với đoạn nhỏ (khoảng 16 phần tử) kết thúc bằng insertion sort. Ba thuật toán, mỗi cái làm phần nó giỏi nhất. `pdqsort` (pattern-defeating quicksort) tiếp tục theo hướng đó: nhận diện các mẫu xấu (đã sắp xếp, ngược, nhiều phần tử bằng nhau) và xử lý riêng; nhiều thư viện hiện đại (Go từ 1.19 và các thuật toán không ổn định của Rust) dùng thuật toán thuộc họ này.
+C++ không yêu cầu `std::sort` ổn định, nên dùng **introsort** (Musser, 1997): quicksort với pivot trung vị của ba phần tử; nếu độ sâu đệ quy vượt khoảng `2 log2 n` thì đổi sang heap sort cho đoạn đó để chặn `O(n^2)`; đoạn ngắn dưới khoảng 16 phần tử thì kết thúc bằng insertion sort. Mỗi thuật toán làm phần nó giỏi nhất.
 
 | Thư viện | Thuật toán | Ổn định |
 |---|---|---|
 | Python `sorted`, `list.sort` | Timsort | có |
-| Java `Arrays.sort(Object[])`, `Collections.sort` | Timsort | có |
-| Java `Arrays.sort(int[])` | dual-pivot quicksort | không (không cần với số nguyên) |
-| C++ `std::sort` | introsort | không |
-| C++ `std::stable_sort` | merge sort (cần bộ nhớ phụ) | có |
-| Go `sort.Slice` | pdqsort (từ 1.19) | không (`sort.SliceStable` thì có) |
-| Rust `slice::sort` / `sort_unstable` | driftsort / ipnsort (từ Rust 1.81) | có / không |
+| Java `Arrays.sort(Object[])` | Timsort | có |
+| Java `Arrays.sort(int[])` | dual-pivot quicksort | không (số nguyên không cần) |
+| C++ `std::sort` / `std::stable_sort` | introsort / merge sort | không / có |
+| Go `sort.Slice` / `sort.SliceStable` | pdqsort / insertion + merge | không / có |
+| Rust `sort` / `sort_unstable` | driftsort / ipnsort | có / không |
 
-Việc **thư viện chọn ổn định hay không** có hệ quả thực tế: nếu code của bạn phụ thuộc vào "sắp theo A rồi theo B" thì phải dùng bản ổn định.
+**Thử ngay:** code của bạn sắp danh sách theo hai khoá bằng hai lần gọi sort (như mục Ổn định). Chuyển từ Python sang C++, dùng `std::sort` hai lần. Kết quả có còn đúng không?
 
-## Sắp xếp ngoài: dữ liệu lớn hơn bộ nhớ
+<Expand title="Đáp án">
 
-Mọi thuật toán trên giả định dữ liệu nằm trong RAM. Khi dữ liệu lớn hơn, đơn vị chi phí đổi sang **số lần đọc ghi đĩa**, và **merge sort** trở thành lựa chọn tự nhiên vì nó đọc tuần tự:
+Không chắc: `std::sort` không ổn định, nên lần sắp thứ hai có thể xáo thứ tự của khoá thứ nhất trong mỗi nhóm. Dùng `std::stable_sort`, hoặc sắp một lần với hàm so sánh xét cả hai khoá.
 
-1. **Pha tạo run**: đọc từng mẻ vừa bộ nhớ, sắp xếp trong RAM, ghi ra file run.
-2. **Pha trộn `k` đường**: đọc đồng thời `k` run, dùng một min-heap `k` phần tử để luôn lấy được phần tử nhỏ nhất trong các đầu run, ghi kết quả ra.
+</Expand>
 
-Với `N` phần tử, bộ nhớ chứa `M` phần tử và khối đĩa `B`, số run là `N/M`; nếu trộn được `k` đường cùng lúc thì số lượt trộn là `⌈log_k(N/M)⌉`. Mỗi lượt đọc và ghi mọi phần tử đúng một lần. Thí nghiệm: 2 triệu số nguyên (15,3 MB) nhưng chỉ cho phép giữ 100.000 số (0,8 MB) trong bộ nhớ một lần:
+## Tự kiểm tra tổng hợp
+
+Các câu dưới trộn kiến thức của nhiều mục, nên khó hơn câu "Thử ngay". Nếu vướng, quay lại mục tương ứng.
+
+1. Một service giữ danh sách sự kiện đã sắp theo thời gian. Mỗi phút có vài chục sự kiện mới được nối vào cuối, rồi gọi `events.sort(key=lambda e: e.time)`. Đồng nghiệp lo rằng sort lại cả danh sách triệu phần tử mỗi phút là `O(n log n)` lãng phí. Đúng không?
+2. Một quicksort tự cài (pivot là phần tử đầu, đệ quy) chạy tốt trong test nhưng ném `RecursionError` trên production, nơi dữ liệu là ID tự tăng lấy từ database. Giải thích và đưa ra hai cách sửa.
+3. Vì sao Java dùng quicksort cho `int[]` nhưng Timsort cho `Object[]`?
+4. Bạn cần 100 phần tử nhỏ nhất của 10 triệu số, không cần thứ tự giữa chúng. Sắp xếp toàn bộ có phải cách tốt nhất không?
+5. Một bài báo khẳng định thuật toán sắp xếp mới của họ luôn dùng `n log2 n / 2` lần so sánh cho mọi đầu vào gồm `n` số khác nhau, chỉ bằng so sánh. Bạn tin không?
+
+<Expand title="Đáp án">
+
+1. Không lãng phí như lo. Timsort thấy phần đầu là một run dài và phần mới là một run ngắn (sau khi nới bằng insertion sort), rồi trộn hai run: khoảng `n` lần so sánh, như dòng "đã sắp xếp + 100 số mới" trong bảng.
+2. ID tự tăng nên dữ liệu đã sắp xếp: pivot đầu chia `0` và `n-1`, độ sâu đệ quy bằng `n`, vượt giới hạn khoảng 1000 của Python; đồng thời tốn `O(n^2)`. Sửa: chọn pivot ngẫu nhiên; và đệ quy vào đoạn ngắn hơn, lặp với đoạn dài hơn (độ sâu `O(log n)`), hoặc dùng stack như code trong bài. Tốt nhất là dùng `sorted()`.
+3. Với số nguyên, hai số bằng nhau không phân biệt được, nên ổn định không có ý nghĩa, và quicksort nhanh hơn. Với object, hai phần tử bằng khoá vẫn là hai object khác nhau, nên người dùng cần ổn định.
+4. Không. Max-heap 100 phần tử như câu 2 Tự kiểm tra ở bài [Tree](/docs/dsa/trees): `O(n log 100)`. Hoặc quickselect: phân hoạch như quicksort nhưng chỉ đi vào một phía, trung bình `O(n)`.
+5. Không. Mọi thuật toán chỉ dùng so sánh cần ít nhất `log2(n!) ≈ n log2 n − 1,44n` lần ở trường hợp xấu nhất, lớn hơn `n log2 n / 2` khi `n` đủ lớn. Họ chỉ có thể đúng cho một số đầu vào, hoặc đã dùng thông tin khác ngoài so sánh.
+
+</Expand>
+
+## Đi sâu hơn
+
+Các phần dưới không cần để đọc tiếp chặng DSA.
+
+<Expand title="Vì sao quicksort trung bình là O(n log n)">
+
+Giả sử pivot luôn chia theo tỉ lệ `1/10` và `9/10`, tệ hơn chia đôi nhiều. Recurrence `T(n) = T(n/10) + T(9n/10) + n`. Trong cây đệ quy, mỗi tầng tốn tối đa `n`, và đường dài nhất (luôn đi nhánh `9/10`) có `log_{10/9} n ≈ 6,6 log2 n` tầng. Tổng vẫn là `O(n log n)`, chỉ hằng số lớn hơn. Chỉ khi tỉ lệ chia là `0` và `n-1` thì mới thành `n^2`. Với pivot ngẫu nhiên, xác suất liên tục chọn trúng đầu mút nhỏ tới mức có thể bỏ qua; kỳ vọng số so sánh là khoảng `1,39 n log2 n`, khớp với bảng đo trong bài.
+
+Trung vị của ba phần tử (đầu, giữa, cuối) cho pivot tốt hơn ngẫu nhiên trên dữ liệu thường gặp, nhưng không loại bỏ trường hợp xấu: có những dãy được dựng riêng để đánh bại nó. Introsort đếm độ sâu để có bảo đảm; pdqsort (Go từ 1.19, `sort_unstable` của Rust trước 1.81) còn nhận diện các mẫu xấu như dãy đã sắp xếp hay nhiều phần tử bằng nhau để xử lý riêng.
+
+</Expand>
+
+<Expand title="Sắp xếp ngoài: khi dữ liệu lớn hơn RAM">
+
+Khi dữ liệu không vừa RAM, chi phí chính là số lượt đọc ghi đĩa, và merge sort hợp vì nó đọc tuần tự:
+
+1. **Tạo run**: đọc từng mẻ vừa RAM, sắp xếp trong RAM, ghi ra một file run.
+2. **Trộn `k` đường**: mở đồng thời `k` run, dùng min-heap `k` phần tử để luôn lấy phần tử nhỏ nhất trong các đầu run.
 
 ```python
-import os, random, struct, heapq, tempfile, time
-
-def write_run(path, nums):
-    with open(path, "wb") as f: f.write(struct.pack(f"{len(nums)}q", *nums))
+import os, struct, heapq, tempfile
 
 def read_run(path, chunk=4096):
     with open(path, "rb") as f:
-        while True:
-            b = f.read(8 * chunk)
-            if not b: return
+        while b := f.read(8 * chunk):
             yield from struct.unpack(f"{len(b) // 8}q", b)
 
 def external_sort(src, dst, mem_items):
-    tmp = tempfile.mkdtemp()
-    runs = []
-    with open(src, "rb") as f:                            # pha 1: đọc từng mẻ vừa bộ nhớ, sắp xếp, ghi run
-        while True:
-            b = f.read(8 * mem_items)
-            if not b: break
+    tmp, runs = tempfile.mkdtemp(), []
+    with open(src, "rb") as f:                  # pha 1: tạo run vừa RAM
+        while b := f.read(8 * mem_items):
             nums = sorted(struct.unpack(f"{len(b) // 8}q", b))
-            p = os.path.join(tmp, f"run{len(runs)}.bin"); write_run(p, nums); runs.append(p)
-    with open(dst, "wb") as out:                          # pha 2: trộn k run bằng heapq.merge (min-heap k phần tử)
+            p = os.path.join(tmp, f"run{len(runs)}.bin")
+            with open(p, "wb") as g: g.write(struct.pack(f"{len(nums)}q", *nums))
+            runs.append(p)
+    with open(dst, "wb") as out:                # pha 2: trộn mọi run một lượt bằng heap
         buf = []
         for x in heapq.merge(*(read_run(p) for p in runs)):
             buf.append(x)
             if len(buf) == 4096: out.write(struct.pack("4096q", *buf)); buf.clear()
-        if buf: out.write(struct.pack(f"{len(buf)}q", *buf))
+        out.write(struct.pack(f"{len(buf)}q", *buf))
     for p in runs: os.remove(p)
     os.rmdir(tmp)
     return len(runs)
 
-N, MEM = 2_000_000, 100_000
+TOTAL, MEM = 2_000_000, 100_000
 random.seed(5)
 d = tempfile.mkdtemp(); src, dst = os.path.join(d, "in.bin"), os.path.join(d, "out.bin")
 with open(src, "wb") as f:
-    for _ in range(N // 100_000): f.write(struct.pack("100000q", *[random.randrange(10**12) for _ in range(100_000)]))
-print(f"{N:,} số nguyên 8 byte = {os.path.getsize(src) / 2**20:.1f} MB; bộ nhớ cho phép giữ {MEM:,} số ({MEM * 8 / 2**20:.1f} MB) mỗi lần")
-t = time.perf_counter(); k = external_sort(src, dst, MEM); dt = time.perf_counter() - t
+    for _ in range(TOTAL // MEM):
+        f.write(struct.pack(f"{MEM}q", *[random.randrange(10**12) for _ in range(MEM)]))
+k = external_sort(src, dst, MEM)
 res = list(read_run(dst))
-assert res == sorted(read_run(src)) and len(res) == N
-print(f"pha 1 tạo {k} run, pha 2 trộn {k} đường; tổng {dt:.1f} giây; kết quả đúng")
+assert res == sorted(read_run(src)) and len(res) == TOTAL
+print(f"{TOTAL:,} số ({os.path.getsize(src) / 2**20:.1f} MB), RAM giữ {MEM:,} số: {k} run, trộn {k} đường trong một lượt, kết quả đúng")
+for p in (src, dst): os.remove(p)
+os.rmdir(d)
 ```
 
 ```text
-2,000,000 số nguyên 8 byte = 15.3 MB; bộ nhớ cho phép giữ 100,000 số (0.8 MB) mỗi lần
-pha 1 tạo 20 run, pha 2 trộn 20 đường; tổng 1.3 giây; kết quả đúng
+2,000,000 số (15.3 MB), RAM giữ 100,000 số: 20 run, trộn 20 đường trong một lượt, kết quả đúng
 ```
 
-Hai triệu số được chia thành 20 run, trộn một lượt 20 đường, và kết quả được kiểm tra trùng với `sorted()` trong bộ nhớ. Vì `20` run trộn được trong một lượt, dữ liệu chỉ qua đĩa hai lần (một lượt ghi run, một lượt trộn), tức `log_20(20) = 1` lượt trộn. Một lượt trộn cho `k = 1000` run nghĩa là dữ liệu cỡ `1000 × bộ nhớ` vẫn chỉ qua đĩa hai lượt; vì thế sắp xếp ngoài hầu như luôn là hai lượt trong thực tế.
+Một lượt trộn `k` đường xử lý được dữ liệu cỡ `k × RAM`, nên thực tế dữ liệu hầu như chỉ qua đĩa hai lần. `ORDER BY` của cơ sở dữ liệu khi vượt bộ nhớ làm việc (`Sort Method: external merge` trong `EXPLAIN` của PostgreSQL) và lệnh `sort` của Unix đều làm như vậy.
 
-Nguyên tắc này nằm sau `ORDER BY` của cơ sở dữ liệu khi kết quả không vừa `work_mem`, lệnh `sort` của Unix (sắp xếp tạm ra file trong `/tmp`) và giai đoạn shuffle-sort của MapReduce. Cách làm trộn nhiều đường cũng là lý do heap (xem [Tree](/docs/dsa/trees)) có mặt trong trộn `k` danh sách.
-
-## Quan sát và chẩn đoán
-
-- Python: `sorted(data, key=...)` sắp xếp theo khoá trong một lần gọi hàm khoá cho mỗi phần tử (decorate-sort-undecorate tự động); chọn `key` thay vì `cmp` vì nhanh hơn nhiều.
-- Sắp xếp nhiều khoá: dùng tuple làm khoá `key=lambda r: (r.a, r.b)`, hoặc gọi `sort` nhiều lần theo thứ tự khoá **ngược** (vì Timsort ổn định).
-- Muốn biết thuật toán dùng bao nhiêu so sánh: bọc phép so sánh trong bộ đếm như ở phần Timsort.
-- Trong `EXPLAIN` của cơ sở dữ liệu, `Sort Method: external merge  Disk: ...` nghĩa là sắp xếp đã tràn ra đĩa (chặng cơ sở dữ liệu sẽ nói về cách đọc).
-
-| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
-|---|---|---|
-| Sắp xếp tự cài chậm bất thường với dữ liệu đã sắp xếp | quicksort pivot đầu hoặc cuối | pivot ngẫu nhiên hoặc median-of-3, hoặc dùng sort của thư viện |
-| Thứ tự các bản ghi bằng nhau thay đổi sau khi sort | thuật toán không ổn định (`std::sort`, quicksort, heap sort) | dùng bản ổn định, hoặc thêm chỉ số ban đầu làm khoá phụ |
-| `RecursionError` khi sắp xếp mảng lớn bằng đệ quy | quicksort đệ quy trên dữ liệu xấu | đệ quy nhánh nhỏ, lặp nhánh lớn (độ sâu `O(log n)`) như code trên |
-| Hết bộ nhớ khi sắp xếp | merge sort cần bộ nhớ phụ `O(n)` | sắp xếp tại chỗ (heap, quick) hoặc sắp xếp ngoài |
-| Sắp xếp `ORDER BY` chậm khi tập kết quả lớn | tràn ra đĩa | tăng bộ nhớ làm việc, hoặc dùng chỉ mục đã sẵn thứ tự (xem chặng cơ sở dữ liệu) |
-
-## Lưu ý
-
-- `n log n` là giới hạn cho thuật toán **dựa trên so sánh**; counting và radix sort thoát được bằng cách dùng giá trị khoá làm chỉ số, đổi lại bị ràng buộc về miền khoá.
-- Quicksort `O(n log n)` là trung bình; trường hợp xấu là `O(n^2)` và dễ chạm với pivot cố định và dữ liệu có cấu trúc. Median-of-3 không loại bỏ nó (bảng trên: 501.002 phép ở dữ liệu ngược); introsort mới là câu trả lời có đảm bảo.
-- Merge sort ổn định, đáng tin cậy, sát giới hạn dưới nhưng tốn `O(n)` bộ nhớ phụ; heap sort tại chỗ và có chặn trên nhưng chậm hơn trong thực tế vì truy cập bộ nhớ nhảy cóc.
-- Insertion sort không chỉ là "thuật toán chậm cho bài tập": nó `O(n)` trên dữ liệu gần sắp xếp và thắng ở đoạn nhỏ, vì vậy nằm bên trong Timsort và introsort.
-- Tính ổn định quyết định đúng sai của sắp xếp nhiều khoá. Biết thư viện bạn đang dùng ổn định hay không.
-- `sorted()` của Python tuyến tính trên dữ liệu đã có run: đừng "sắp xếp lại" để cho chắc nhưng cũng đừng lo nếu nó đã sẵn thứ tự.
-- Radix sort tuyến tính theo lý thuyết nhưng hằng số và bộ nhớ có thể thắng: trong Python thuần nó thua `sorted()` vài lần; so sánh phải trên cùng nền cài đặt.
-- Dữ liệu không vừa RAM thì sắp xếp ngoài (tạo run rồi trộn `k` đường); số lượt đọc ghi đĩa mới là chi phí chính.
+</Expand>

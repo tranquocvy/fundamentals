@@ -1,20 +1,20 @@
 ---
 title: Data Structures & Algorithms
-description: Độ phức tạp, array và linked list, hash table, tree, sorting, graph, dynamic programming.
+description: Độ phức tạp, array và linked list, hash table, tree, sorting, graph, dynamic programming, strings.
 tags: [dsa]
 ---
 
-Phần này ghi chú cách tổ chức dữ liệu và đo chi phí của thuật toán, nền cho mọi môn phía sau. Mỗi bài tự cài cấu trúc hoặc thuật toán đang nói tới bằng Python, kiểm tra kết quả và đo trên máy thật (đếm thao tác khi có thể, vì số đếm không phụ thuộc máy), để thấy vì sao cấu trúc chạy như vậy chứ không chỉ biết tên. Đọc theo thứ tự dưới đây vì bài sau dùng khái niệm của bài trước.
+Phần này ghi chú cách tổ chức dữ liệu và đo chi phí của thuật toán, nền cho mọi môn phía sau. Mỗi bài trả lời một câu hỏi nền tảng: tự cài cấu trúc hoặc thuật toán bằng Python, cho bạn đoán trước rồi xem kết quả chạy thật (đếm thao tác khi có thể, vì số đếm không phụ thuộc máy), và kết bằng câu hỏi tự kiểm tra. Đọc theo thứ tự dưới đây vì bài sau dùng khái niệm của bài trước.
 
 | Bài | Trả lời câu hỏi |
 |---|---|
-| [Big-O & Complexity](/docs/dsa/complexity) | Làm sao biết thuật toán chậm đi bao nhiêu khi dữ liệu lớn lên? Đọc độ phức tạp từ vòng lặp và đệ quy thế nào? |
-| [Array & Linked List](/docs/dsa/arrays-linked-lists) | Mảng và danh sách liên kết bố trí bộ nhớ khác nhau thế nào? Dynamic array co giãn ra sao? Vì sao mảng thường thắng, và stack, queue, ring buffer dựng trên chúng thế nào? |
-| [Hash Table](/docs/dsa/hash-tables) | Tra cứu `O(1)` nhờ hàm băm hoạt động ra sao? Chaining, linear probing, Robin Hood khác nhau chỗ nào? Hash flooding là gì, và consistent hashing giải quyết điều gì? |
-| [Tree & Binary Search Tree](/docs/dsa/trees) | Vì sao BST có thể thoái hoá, và AVL, red-black giữ cây thấp bằng phép xoay thế nào? Heap, B-tree, B+ tree và trie dùng để làm gì? |
-| [Sorting](/docs/dsa/sorting) | Các thuật toán sắp xếp đánh đổi ra sao? Vì sao `n log n` là giới hạn, và Timsort cùng introsort ghép các thuật toán thế nào? |
-| [Graph](/docs/dsa/graphs) | Biểu diễn đồ thị thế nào? BFS, DFS, sắp xếp topo, Dijkstra, Bellman-Ford, union-find và cây khung nhỏ nhất dùng khi nào? |
-| [Dynamic Programming](/docs/dsa/dynamic-programming) | Nhận ra bài con chồng lấp thế nào? Đổi tiền, knapsack, LCS, edit distance giải ra sao, và khi nào tham lam là đủ? |
-| [Strings](/docs/dsa/strings) | Chuỗi thực sự là byte, code point hay ký tự hiển thị (Unicode tiếng Việt)? KMP, Rabin-Karp, Horspool, suffix array và regex bằng NFA hoạt động ra sao, và vì sao regex backtracking có thể chậm theo cấp số mũ? |
+| [Big-O & Complexity](/docs/dsa/complexity) | Làm sao biết một thuật toán sẽ chậm đi bao nhiêu khi dữ liệu lớn lên, mà không cần chạy thử trên mọi máy? |
+| [Array & Linked List](/docs/dsa/arrays-linked-lists) | Nên giữ một dãy phần tử bằng mảng hay danh sách liên kết, và vì sao trên máy thật mảng gần như luôn thắng? |
+| [Hash Table](/docs/dsa/hash-tables) | Làm sao tra một khoá (tên, URL, mã đơn hàng) trong hàng triệu phần tử mà thời gian gần như không đổi khi dữ liệu lớn lên, và khi nào lời hứa O(1) đó bị phá? |
+| [Tree & Binary Search Tree](/docs/dsa/trees) | Làm sao giữ dữ liệu luôn có thứ tự mà vẫn tìm, chèn, xoá nhanh, và vì sao cây phải được giữ thấp? |
+| [Sorting](/docs/dsa/sorting) | Sắp xếp n phần tử nhanh nhất được tới đâu, và vì sao thư viện chuẩn không dùng một thuật toán duy nhất? |
+| [Graph](/docs/dsa/graphs) | Làm sao tìm đường đi ngắn nhất, thứ tự làm việc khi có phụ thuộc, và các nhóm liên thông trong một mạng quan hệ, mà không đi vòng mãi? |
+| [Dynamic Programming](/docs/dsa/dynamic-programming) | Làm sao giải những bài toán mà đệ quy thẳng phải gọi hàm hàng triệu lần, chỉ bằng cách nhớ lại kết quả đã tính? |
+| [Strings](/docs/dsa/strings) | Vì sao hai chuỗi nhìn giống hệt nhau lại có thể không bằng nhau, và làm sao tìm một chuỗi trong văn bản lớn mà không bị chậm bất thường? |
 
-Cấu trúc ở bài [Tree](/docs/dsa/trees) (B-tree) là nền của chỉ mục cơ sở dữ liệu, và các khái niệm ở bài [Hash Table](/docs/dsa/hash-tables) quay lại khi nói về bộ nhớ đệm và phân mảnh dữ liệu. Chặng này nằm trong [roadmap CS Fundamentals](/roadmaps/cs-fundamentals).
+Cấu trúc ở bài [Tree](/docs/dsa/trees) (B-tree) là nền của chỉ mục cơ sở dữ liệu ở bài [Indexing](/docs/databases/indexing), và các khái niệm ở bài [Hash Table](/docs/dsa/hash-tables) quay lại khi nói về bộ nhớ đệm và phân mảnh dữ liệu. Chặng này nằm trong [roadmap CS Fundamentals](/roadmaps/cs-fundamentals).

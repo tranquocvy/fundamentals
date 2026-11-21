@@ -1,623 +1,585 @@
 ---
 title: Tree & Binary Search Tree
-description: Cây nhị phân và các kiểu duyệt, BST tự cài và chuyện mất cân bằng, AVL và red-black với phép xoay, heap và priority queue, B-tree và B+ tree cho dữ liệu trên đĩa, và trie, mỗi cấu trúc có code chạy thật và số đo.
+description: Làm sao giữ dữ liệu luôn có thứ tự mà vẫn tìm, chèn, xoá nhanh, và vì sao cây phải được giữ thấp?
 status: draft
 tags: [dsa, tree]
 authors: [tranquocvy]
 references:
-  - title: "Open Data Structures — Chapter 6: Binary Trees; Chapter 7: Random Binary Search Trees; Chapter 9: Red-Black Trees; Chapter 10: Heaps; Chapter 14: External Memory Searching"
+  - title: "CLRS (ấn bản 4) — Chapter 12: Binary Search Trees; Chapter 6: Heapsort; Chapter 18: B-Trees"
+    kind: book
+    note: BST, heap nhị phân và heapify O(n), B-tree
+  - title: "Open Data Structures — Chapter 6: Binary Trees; Chapter 10: Heaps; Chapter 14: External Memory Searching"
     url: https://opendatastructures.org/ods-python/6_Binary_Trees.html
     kind: book
-    note: BST, treap, 2-4 tree, red-black tree, heap nhị phân và B-tree
-  - title: "CLRS (ấn bản 4) — Chapter 12: Binary Search Trees; Chapter 6: Heapsort; Chapter 17: Augmenting Data Structures (red-black); Chapter 18: B-Trees"
-    kind: book
-    note: định nghĩa chuẩn, chứng minh chiều cao, thuật toán chèn xoá
+    note: duyệt cây, BST, heap nhị phân trên mảng, B-tree
   - title: "Sedgewick & Wayne — Algorithms, Section 3.3: Balanced Search Trees"
     url: https://algs4.cs.princeton.edu/33balanced/
     kind: web
-    note: 2-3 tree và red-black nghiêng trái (nguồn của phần cài đặt LLRB trong bài)
+    note: 2-3 tree và red-black nghiêng trái (LLRB)
   - title: "Adelson-Velsky & Landis — An algorithm for the organization of information (1962)"
     kind: paper
     note: cây AVL, cây tìm kiếm tự cân bằng đầu tiên
   - title: "Bayer & McCreight — Organization and Maintenance of Large Ordered Indexes (1972)"
     kind: paper
     note: bài báo gốc của B-tree
-  - title: "Comer — The Ubiquitous B-Tree (ACM Computing Surveys, 1979)"
-    kind: paper
-    note: B-tree, B+ tree và vì sao chúng thành chuẩn cho chỉ mục
-  - title: "Jeff Erickson — Algorithms, Chapter 3: Binary Search Trees (Scapegoat, Splay, Treaps)"
-    url: https://jeffe.cs.illinois.edu/teaching/algorithms/
-    kind: book
-    note: cách khác để giữ cây thấp
   - title: "Linux kernel documentation — Red-black Trees (rbtree)"
     url: https://docs.kernel.org/core-api/rbtree.html
     kind: web
-    note: rbtree trong kernel, dùng cho CFS và nhiều nơi khác
+    note: rbtree trong kernel, cho phần đi sâu hơn
 ---
+
+**Cần biết trước:** Big-O và tìm nhị phân ở bài [Big-O & Complexity](/docs/dsa/complexity); mảng và con trỏ ở bài [Array & Linked List](/docs/dsa/arrays-linked-lists); vì sao bảng băm không có thứ tự ở bài [Hash Table](/docs/dsa/hash-tables).
+
+**Cách đọc bài:** mỗi mục có một câu **Đoán trước** và kết bằng một câu **Thử ngay**. Hãy tự trả lời trong đầu (hoặc ra giấy) rồi mới xem đáp án. Việc tự nhớ lại và tự đoán giúp nhớ lâu hơn nhiều so với chỉ đọc.
 
 ## Ý chính
 
-Mảng cho tra cứu theo chỉ số nhanh; bảng băm cho tra cứu theo khoá nhanh nhưng **không có thứ tự**: không hỏi được "khoá nhỏ nhất", "khoá ngay sau `k`", "mọi khoá trong khoảng `[a, b]`". Mảng đã sắp xếp có thứ tự nhưng chèn vào giữa tốn `O(n)`. <Term>Tree</Term> giải bài toán này bằng cách tổ chức dữ liệu thành cây: mỗi lần so sánh loại bỏ một nhánh, nên nếu cây **thấp** thì tìm, chèn, xoá, tìm khoảng đều tốn `O(log n)` và thứ tự được giữ nguyên.
+Bảng băm tra theo khoá rất nhanh nhưng không có thứ tự: không hỏi được "khoá nhỏ nhất", "các khoá từ 100 tới 200". Mảng đã sắp xếp thì có thứ tự và tìm nhị phân được, nhưng chèn vào giữa tốn `O(n)`. <Term>Binary search tree</Term> (BST) có cả hai: mỗi nút chia các khoá thành nhỏ hơn (bên trái) và lớn hơn (bên phải), nên mỗi lần so sánh bỏ đi một nhánh, giống tìm nhị phân, mà chèn chỉ là gắn thêm một nút.
 
-Chữ "nếu cây thấp" là toàn bộ câu chuyện của bài. Một cây tìm kiếm nhị phân chèn theo thứ tự sai sẽ thoái hoá thành danh sách liên kết (`O(n)`). Các cấu trúc phía sau đều là cách giữ chiều cao thấp: **phép xoay** (AVL, red-black), **rộng ra thay vì cao lên** (B-tree), hoặc **bỏ yêu cầu thứ tự toàn phần để đổi lấy cấu trúc đơn giản hơn** (heap). Cuối bài là trie, cây theo ký tự của khoá thay vì theo so sánh.
+Mọi thao tác của BST đi theo một đường từ gốc xuống, nên chi phí bằng **chiều cao** của cây. Cây thấp thì `O(log n)`; cây lệch thì thành danh sách liên kết, `O(n)`. Phần còn lại của bài là các cách giữ cây thấp: phép xoay (AVL, red-black), nới lỏng thứ tự để có cấu trúc đơn giản hơn (heap), và làm cây rộng ra thay vì cao lên (B-tree, nền của chỉ mục cơ sở dữ liệu).
 
-Bài đi theo trình tự: cây nhị phân và các kiểu duyệt; BST tự cài, đo chiều cao khi chèn ngẫu nhiên và khi chèn tăng dần; AVL và red-black với phép xoay có kiểm chứng bất biến; heap và việc xây heap trong `O(n)`; B-tree và B+ tree, nền của chỉ mục cơ sở dữ liệu; trie. Mọi code là Python 3.13 chạy thật. Bài này cần [Array & Linked List](/docs/dsa/arrays-linked-lists) và [Big-O & Complexity](/docs/dsa/complexity), và là nền cho [Graph](/docs/dsa/graphs) cũng như chỉ mục B-tree của chặng cơ sở dữ liệu.
+## Cây nhị phân và bốn cách duyệt
 
-## Cây nhị phân và các kiểu duyệt
+Một <Term>tree</Term> là các **nút** nối thành phân cấp: một nút **gốc**, mỗi nút có thể có con, không có vòng. **Cây nhị phân** cho mỗi nút tối đa hai con, trái và phải. Nút không có con là **lá**. **Chiều cao** là số nút trên đường dài nhất từ gốc tới lá.
 
-Một cây là tập các **nút** nối với nhau thành phân cấp: một nút **gốc**, mỗi nút có con (có thể không có), không có vòng. Ở **cây nhị phân** mỗi nút có tối đa hai con, gọi là con trái và con phải. Vài từ cần thống nhất:
-
-- **Độ sâu** của nút: số cạnh từ gốc tới nó (gốc có độ sâu 0). **Chiều cao** của cây: số tầng (bài này đếm số nút trên đường dài nhất từ gốc tới lá, nên cây một nút có chiều cao 1).
-- **Lá**: nút không có con.
-- Cây nhị phân có `n` nút thì chiều cao nhỏ nhất là `⌈log2(n+1)⌉` (cây đầy) và lớn nhất là `n` (cây thành một đường thẳng).
-
-Một cấu trúc có hai con trỏ như vậy cho bốn cách đi qua mọi nút, gọi là **duyệt**. Ba cách đầu đệ quy (chỉ khác thời điểm "thăm" nút so với hai nhánh), cách thứ tư dùng hàng đợi:
-
-| Kiểu duyệt | Thứ tự | Dùng để |
-|---|---|---|
-| preorder | nút, trái, phải | sao chép cây, ghi cây ra file (gốc đi trước) |
-| inorder | trái, nút, phải | với BST cho ra dãy khoá **tăng dần** |
-| postorder | trái, phải, nút | xoá cây, tính kích thước (con xong trước cha) |
-| levelorder | từng tầng, trái sang phải | duyệt theo BFS (xem [Graph](/docs/dsa/graphs)) |
-
-## Cây tìm kiếm nhị phân (BST)
-
-<Term>Binary search tree</Term> thêm một quy tắc vào cây nhị phân: với **mọi** nút, các khoá ở cây con trái đều **nhỏ hơn** khoá của nút, các khoá ở cây con phải đều **lớn hơn**. Hệ quả: tìm một khoá bắt đầu ở gốc, mỗi bước so sánh rồi rẽ trái hoặc phải, bỏ cả một nhánh. Duyệt inorder cho dãy đã sắp xếp.
-
-Dưới đây là BST tự cài: `insert` và `find` bằng vòng lặp (để cây lệch không làm tràn stack đệ quy), `delete` xử lý ba trường hợp, bốn kiểu duyệt, và hàm in cây xoay 90 độ (con phải ở trên, con trái ở dưới).
+**Duyệt** là đi qua mọi nút. Ba cách đầu chỉ khác ở thời điểm ghi nút hiện tại so với hai nhánh con; cách thứ tư đi theo từng tầng.
 
 ```python
-import random, sys
-from collections import deque
-sys.setrecursionlimit(10000)
-
 class Node:
     __slots__ = ("key", "left", "right")
-    def __init__(self, key): self.key, self.left, self.right = key, None, None
+    def __init__(self, key, left=None, right=None):
+        self.key, self.left, self.right = key, left, right
 
+#         8
+#       /   \
+#      3     10
+#     / \      \
+#    1   6      14
+root = Node(8, Node(3, Node(1), Node(6)), Node(10, None, Node(14)))
+
+def preorder(n):                      # nút, trái, phải
+    return [n.key] + preorder(n.left) + preorder(n.right) if n else []
+def inorder(n):                       # trái, nút, phải
+    return inorder(n.left) + [n.key] + inorder(n.right) if n else []
+def postorder(n):                     # trái, phải, nút
+    return postorder(n.left) + postorder(n.right) + [n.key] if n else []
+def levelorder(n):                    # từng tầng, trái sang phải
+    out, level = [], [n]
+    while level:
+        out += [x.key for x in level]
+        level = [c for x in level for c in (x.left, x.right) if c]
+    return out
+```
+
+**Đoán trước:** với cây trên, `inorder` cho dãy nào?
+
+```python
+for f in (preorder, inorder, postorder, levelorder):
+    print(f"{f.__name__:<10}: {f(root)}")
+```
+
+```text
+preorder  : [8, 3, 1, 6, 10, 14]
+inorder   : [1, 3, 6, 8, 10, 14]
+postorder : [1, 6, 3, 14, 10, 8]
+levelorder: [8, 3, 10, 1, 6, 14]
+```
+
+`inorder` cho dãy **tăng dần**. Không phải trùng hợp: cây này là một BST, và với BST, đi trái hết rồi mới ghi nút rồi mới đi phải chính là đọc các khoá theo thứ tự. Mỗi cách duyệt có chỗ dùng riêng:
+
+| Cách duyệt | Dùng để |
+|---|---|
+| preorder | chép cây hay ghi cây ra file: cha phải có trước con |
+| inorder | đọc các khoá của BST theo thứ tự tăng dần |
+| postorder | xoá cây, tính kích thước thư mục: con xong trước cha |
+| levelorder | đi theo tầng, chính là BFS ở bài [Graph](/docs/dsa/graphs) |
+
+**Thử ngay:** muốn tính tổng dung lượng của một thư mục, trong đó dung lượng mỗi thư mục bằng tổng các thư mục con cộng file của nó, nên duyệt theo cách nào?
+
+<Expand title="Đáp án">
+
+Postorder: phải tính xong mọi thư mục con rồi mới cộng được cho thư mục cha.
+
+</Expand>
+
+## Cây tìm kiếm nhị phân
+
+BST là cây nhị phân thêm một quy tắc: với **mọi** nút, mọi khoá ở cây con trái nhỏ hơn khoá của nút, mọi khoá ở cây con phải lớn hơn. Tìm một khoá: bắt đầu ở gốc, bằng thì thấy, nhỏ hơn thì rẽ trái, lớn hơn thì rẽ phải, gặp chỗ trống thì không có. Chèn đi đúng đường đó và gắn nút mới vào chỗ trống cuối đường.
+
+```python
 class BST:
-    def __init__(self): self.root, self.n = None, 0
-    def insert(self, key):                       # vòng lặp: không sợ tràn stack khi cây lệch
-        if self.root is None: self.root = Node(key); self.n = 1; return 1
-        cur, steps = self.root, 1
-        while True:
-            steps += 1
-            if key == cur.key: return steps
-            side = "left" if key < cur.key else "right"
-            nxt = getattr(cur, side)
-            if nxt is None:
-                setattr(cur, side, Node(key)); self.n += 1; return steps
-            cur = nxt
-    def find(self, key):
+    def __init__(self): self.root = None
+    def insert(self, key):                    # vòng lặp, không đệ quy, để cây lệch không tràn stack
+        if self.root is None: self.root = Node(key); return
         cur = self.root
-        while cur and cur.key != key:
+        while key != cur.key:
+            side = "left" if key < cur.key else "right"
+            if getattr(cur, side) is None:
+                setattr(cur, side, Node(key)); return
+            cur = getattr(cur, side)
+    def find(self, key):                      # trả về (có không, số nút đã thăm)
+        cur, steps = self.root, 0
+        while cur:
+            steps += 1
+            if key == cur.key: return True, steps
             cur = cur.left if key < cur.key else cur.right
-        return cur
-    def delete(self, key):
-        self.root = self._delete(self.root, key)
-    def _delete(self, node, key):
-        if node is None: return None
-        if key < node.key: node.left = self._delete(node.left, key)
-        elif key > node.key: node.right = self._delete(node.right, key)
-        else:
-            self.n -= 1
-            if node.left is None: return node.right          # 0 hoặc 1 con (phải)
-            if node.right is None: return node.left          # 1 con (trái)
-            succ = node.right                                 # 2 con: lấy kế nhiệm (nhỏ nhất bên phải)
-            while succ.left: succ = succ.left
-            node.key = succ.key
-            self.n += 1                                       # _delete bên dưới sẽ trừ lại 1
-            node.right = self._delete(node.right, succ.key)
-        return node
-    # bốn kiểu duyệt
-    def inorder(self, n=None, first=True):
-        n = self.root if first else n
-        if n: yield from self.inorder(n.left, False); yield n.key; yield from self.inorder(n.right, False)
-    def preorder(self, n=None, first=True):
-        n = self.root if first else n
-        if n: yield n.key; yield from self.preorder(n.left, False); yield from self.preorder(n.right, False)
-    def postorder(self, n=None, first=True):
-        n = self.root if first else n
-        if n: yield from self.postorder(n.left, False); yield from self.postorder(n.right, False); yield n.key
-    def levelorder(self):
-        q = deque([self.root] if self.root else [])
-        while q:
-            n = q.popleft(); yield n.key
-            if n.left: q.append(n.left)
-            if n.right: q.append(n.right)
-    def height(self):                                         # vòng lặp theo tầng
+        return False, steps
+    def height(self):
         h, level = 0, [self.root] if self.root else []
         while level:
-            h += 1
-            level = [c for n in level for c in (n.left, n.right) if c]
+            h += 1; level = [c for n in level for c in (n.left, n.right) if c]
         return h
 
-def show(node, prefix="", is_left=None):
-    if node is None: return
-    if node.right: show(node.right, prefix + ("│   " if is_left else "    "), False)
-    print(prefix + ("└── " if is_left else "┌── " if is_left is False else "") + str(node.key))
-    if node.left: show(node.left, prefix + ("    " if is_left is not False else "│   "), True)
+def show(n, indent=0):                        # in cây nằm ngang: nhánh phải ở trên, nhánh trái ở dưới
+    if n:
+        show(n.right, indent + 4); print(" " * indent + str(n.key)); show(n.left, indent + 4)
+```
 
+**Đoán trước:** chèn `50, 30, 70, 20, 40, 60, 80`. Tìm `60` thăm mấy nút? Tìm `65` (không có) thì sao?
+
+```python
 t = BST()
-for k in (50, 30, 70, 20, 40, 60, 80, 35):
+for k in (50, 30, 70, 20, 40, 60, 80):
     t.insert(k)
 show(t.root)
-print("inorder   :", list(t.inorder()), "(luôn tăng dần)")
-print("preorder  :", list(t.preorder()))
-print("postorder :", list(t.postorder()))
-print("levelorder:", list(t.levelorder()))
-t.delete(20);  print("xoá 20 (lá)        ->", list(t.levelorder()))
-t.delete(30);  print("xoá 30 (1 con)     ->", list(t.levelorder()))
-t.delete(50);  print("xoá 50 (2 con, gốc)->", list(t.levelorder()), "| n =", t.n)
+print("inorder:", inorder(t.root))
+print("find(60):", t.find(60), "| find(65):", t.find(65))
 ```
 
 ```text
-        ┌── 80
-    ┌── 70
-    │   └── 60
+        80
+    70
+        60
 50
-    │   ┌── 40
-    │   │   └── 35
-    └── 30
-        └── 20
-inorder   : [20, 30, 35, 40, 50, 60, 70, 80] (luôn tăng dần)
-preorder  : [50, 30, 20, 40, 35, 70, 60, 80]
-postorder : [20, 35, 40, 30, 60, 80, 70, 50]
-levelorder: [50, 30, 70, 20, 40, 60, 80, 35]
-xoá 20 (lá)        -> [50, 30, 70, 40, 60, 80, 35]
-xoá 30 (1 con)     -> [50, 40, 70, 35, 60, 80]
-xoá 50 (2 con, gốc)-> [60, 40, 70, 35, 80] | n = 5
+        40
+    30
+        20
+inorder: [20, 30, 40, 50, 60, 70, 80]
+find(60): (True, 3) | find(65): (False, 3)
 ```
 
-Đọc hình: gốc 50, nhánh phải (80, 70, 60) ở trên, nhánh trái (40, 35, 30, 20) ở dưới. Ba trường hợp xoá:
+Đọc hình bằng cách nghiêng đầu sang trái: `50` là gốc, `70` ở trên là con phải, `30` ở dưới là con trái. Tìm `60`: `50`, rẽ phải sang `70`, rẽ trái sang `60`, ba nút. Tìm `65` cũng đi ba nút rồi gặp chỗ trống bên phải `60`. Bảy khoá, ba tầng: số bước bằng chiều cao, khoảng `log2 n`.
 
-- **Xoá lá** (20): chỉ cần cắt nó.
-- **Xoá nút một con** (30, lúc này chỉ còn con 40 sau khi 20 đã mất): nối con của nó lên thế chỗ.
-- **Xoá nút hai con** (gốc 50): không thể cắt, vì sẽ mất cả hai cây con. Thay khoá của nó bằng khoá **kế nhiệm** (nhỏ nhất của cây con phải, ở đây là 60, nút trái nhất đi từ con phải), rồi xoá nút kế nhiệm đó, mà theo định nghĩa nó không có con trái nên rơi về hai trường hợp đầu. Có thể dùng **tiền nhiệm** (lớn nhất của cây con trái) với cùng hiệu quả.
+**Thử ngay:** trong BST, khoá nhỏ nhất nằm ở đâu? Tìm nó tốn bao nhiêu?
 
-### BST phụ thuộc thứ tự chèn
+<Expand title="Đáp án">
 
-Mọi thao tác của BST đi theo một đường từ gốc xuống, nên chi phí tỉ lệ với **chiều cao**, và chiều cao lại phụ thuộc vào thứ tự chèn. Chèn các khoá ngẫu nhiên thì cây "nặng bụng" tự nhiên; chèn các khoá đã sắp xếp thì mỗi khoá mới đi sang phải mãi, cây thành một đường thẳng. Đo:
+Đi trái mãi từ gốc tới khi không còn con trái. Tốn đúng bằng chiều cao của nhánh đó, tức `O(chiều cao)`. Bảng băm không làm được việc này nhanh hơn `O(n)`.
+
+</Expand>
+
+## Xoá khỏi BST: ba ví dụ
+
+Xoá khó hơn chèn, vì không được làm mất các nút con của nút bị xoá. Có ba trường hợp: nút là lá thì cắt đi; nút có một con thì cho con đó lên thế chỗ; nút có hai con thì không cắt được, mà thay khoá của nó bằng **kế nhiệm** (khoá nhỏ nhất của cây con phải: sang phải một bước rồi đi trái mãi), rồi xoá nút kế nhiệm. Nút kế nhiệm không có con trái, nên việc xoá nó rơi về một trong hai trường hợp đầu.
 
 ```python
-import random, math
-random.seed(2)
-print(f"{'n':>7} | {'chèn ngẫu nhiên: cao':>21} {'2·log2 n':>9} | {'chèn đã sắp xếp: cao':>22} | {'tìm TB (ngẫu nhiên)':>20}")
-for n in (1_000, 10_000, 100_000):
-    keys = random.sample(range(10 * n), n)
-    a = BST(); total = sum(a.insert(k) for k in keys)
-    b = BST()
-    for k in sorted(keys[:min(n, 4000)]): b.insert(k)           # 4000 để khỏi chờ lâu
-    print(f"{n:>7} | {a.height():>21} {2*math.log2(n):>9.1f} | {b.height():>13} (n={min(n,4000)}) | {total/n:>20.2f}")
-```
-
-```text
-      n |  chèn ngẫu nhiên: cao  2·log2 n |  chèn đã sắp xếp: cao |  tìm TB (ngẫu nhiên)
-   1000 |                    22      19.9 |          1000 (n=1000) |                12.58
-  10000 |                    31      26.6 |          4000 (n=4000) |                16.03
- 100000 |                    42      33.2 |          4000 (n=4000) |                21.41
-```
-
-Chèn ngẫu nhiên giữ cây ở chiều cao cỡ `2 đến 3 · log2 n` (22, 31, 42 tầng cho 1.000, 10.000, 100.000 khoá), và một lần chèn thăm trung bình 12 đến 21 nút. Chèn đã sắp xếp cho chiều cao **bằng đúng `n`**: BST thoái hoá thành danh sách liên kết, và mỗi thao tác là `O(n)`. Đó không phải trường hợp hiếm: dữ liệu thật hay đã sắp sẵn (ID tăng dần, dấu thời gian, tên theo thứ tự chữ cái). Mọi cấu trúc dưới đây tồn tại để loại bỏ hiểm hoạ này.
-
-## Tự cân bằng bằng phép xoay: AVL
-
-**Phép xoay** là thao tác cục bộ đổi hình dạng cây mà **giữ nguyên thứ tự inorder**: con trỏ của hai nút được đảo, `O(1)`.
-
-```text
-xoay phải tại y             xoay trái tại x
-      y            x             x               y
-     / \          / \           / \             / \
-    x   C   ->   A   y         A   y     ->    x   C
-   / \              / \           / \         / \
-  A   B            B   C         B   C       A   B
-```
-
-Cả hai phía của hình đều giữ A, B, C theo đúng thứ tự trái sang phải, nên là cùng một BST hợp lệ; chỉ khác chiều cao: xoay phải kéo `x` lên, đưa cây trái xuống một tầng cho cây phải.
-
-**AVL** (Adelson-Velsky và Landis, 1962) là cây tự cân bằng đầu tiên. Bất biến: tại **mọi** nút, chiều cao hai cây con lệch nhau **tối đa 1**. Sau mỗi lần chèn hoặc xoá, đi ngược lên từ chỗ thay đổi, tính lại chiều cao, và nếu một nút bị lệch 2 thì sửa bằng một hoặc hai phép xoay. Có bốn trường hợp:
-
-| Trường hợp | Hình dạng | Cách sửa |
-|---|---|---|
-| LL | lệch trái, con trái cũng lệch trái (hoặc cân bằng) | một phép xoay phải |
-| RR | đối xứng | một phép xoay trái |
-| LR | lệch trái, nhưng con trái lệch phải | xoay trái ở con trái, rồi xoay phải |
-| RL | đối xứng | xoay phải ở con phải, rồi xoay trái |
-
-```python
-import random, math, sys
-sys.setrecursionlimit(10000)
-
-class N:
-    __slots__ = ("key", "left", "right", "h")
-    def __init__(self, key): self.key, self.left, self.right, self.h = key, None, None, 1
-
-def h(n): return n.h if n else 0
-def upd(n): n.h = 1 + max(h(n.left), h(n.right))
-def bal(n): return h(n.left) - h(n.right)
-
-rotations = {"LL": 0, "RR": 0, "LR": 0, "RL": 0}
-
-def rot_right(y):
-    x = y.left
-    y.left, x.right = x.right, y
-    upd(y); upd(x)
-    return x
-def rot_left(x):
-    y = x.right
-    x.right, y.left = y.left, x
-    upd(x); upd(y)
-    return y
-
-def rebalance(n):
-    upd(n)
-    b = bal(n)
-    if b > 1:                                   # lệch trái
-        if bal(n.left) < 0: n.left = rot_left(n.left); rotations["LR"] += 1
-        else: rotations["LL"] += 1
-        return rot_right(n)
-    if b < -1:                                  # lệch phải
-        if bal(n.right) > 0: n.right = rot_right(n.right); rotations["RL"] += 1
-        else: rotations["RR"] += 1
-        return rot_left(n)
-    return n
-
-def insert(n, key):
-    if n is None: return N(key)
-    if key < n.key: n.left = insert(n.left, key)
-    elif key > n.key: n.right = insert(n.right, key)
-    else: return n
-    return rebalance(n)
-
-def delete(n, key):
+def delete(n, key):                           # trả về gốc mới của cây con n
     if n is None: return None
     if key < n.key: n.left = delete(n.left, key)
     elif key > n.key: n.right = delete(n.right, key)
     else:
-        if n.left is None: return n.right
-        if n.right is None: return n.left
-        s = n.right
+        if n.left is None: return n.right     # lá, hoặc chỉ có con phải
+        if n.right is None: return n.left     # chỉ có con trái
+        s = n.right                           # hai con: tìm kế nhiệm
         while s.left: s = s.left
-        n.key = s.key
-        n.right = delete(n.right, s.key)
-    return rebalance(n)
-
-def check(n):                                   # kiểm tra bất biến AVL và thứ tự BST
-    if n is None: return 0, math.inf, -math.inf
-    hl, lo_l, hi_l = check(n.left); hr, lo_r, hi_r = check(n.right)
-    assert abs(hl - hr) <= 1, "lệch quá 1"
-    assert hi_l < n.key < lo_r, "sai thứ tự BST"
-    return 1 + max(hl, hr), min(lo_l, n.key), max(hi_r, n.key)
-
-def levels(root):
-    out, cur = [], [root]
-    while any(cur):
-        out.append([x.key if x else "·" for x in cur])
-        cur = [c for x in cur if x for c in (x.left, x.right)]
-        if all(c is None for c in cur): break
-    return out
-
-print("chèn 10, 20, 30 vào BST thường sẽ thành một đường thẳng; AVL xoay:")
-root = None
-for k in (10, 20, 30):
-    root = insert(root, k)
-print("  các tầng:", levels(root), "| xoay:", {k: v for k, v in rotations.items() if v})
-for k in rotations: rotations[k] = 0
-root = None
-for k in (30, 10, 20):
-    root = insert(root, k)
-print("chèn 30, 10, 20 (lệch trái-phải, cần xoay đôi):", levels(root), "| xoay:", {k: v for k, v in rotations.items() if v})
-
-print()
-print(f"{'n':>8} | {'chèn tăng dần: cao':>19} {'1.44·log2(n+2)':>15} | {'chèn ngẫu nhiên: cao':>21} | {'số lần xoay / n':>16}")
-for n in (1_000, 10_000, 100_000):
-    for k in rotations: rotations[k] = 0
-    root = None
-    for k in range(n): root = insert(root, k)
-    check(root); h_sorted = h(root); rot = sum(rotations.values())
-    random.seed(4); keys = random.sample(range(10 * n), n); r2 = None
-    for k in keys: r2 = insert(r2, k)
-    check(r2)
-    print(f"{n:>8} | {h_sorted:>19} {1.44 * math.log2(n + 2):>15.1f} | {h(r2):>21} | {rot / n:>16.2f}")
-
-# xoá một nửa số khoá, vẫn cân bằng
-for k in keys[: n // 2]: r2 = delete(r2, k)
-check(r2)
-print(f"sau khi xoá một nửa ({n // 2} khoá còn lại): vẫn hợp lệ AVL, chiều cao = {h(r2)}")
+        n.key = s.key                         # chép khoá kế nhiệm lên
+        n.right = delete(n.right, s.key)      # rồi xoá nút kế nhiệm
+    return n
 ```
 
-```text
-chèn 10, 20, 30 vào BST thường sẽ thành một đường thẳng; AVL xoay:
-  các tầng: [[20], [10, 30]] | xoay: {'RR': 1}
-chèn 30, 10, 20 (lệch trái-phải, cần xoay đôi): [[20], [10, 30]] | xoay: {'LR': 1}
+### Ví dụ 1 (giải sẵn)
 
-       n |  chèn tăng dần: cao  1.44·log2(n+2) |  chèn ngẫu nhiên: cao |  số lần xoay / n
-    1000 |                  10            14.4 |                    12 |             0.99
-   10000 |                  14            19.1 |                    16 |             1.00
-  100000 |                  17            23.9 |                    20 |             1.00
-sau khi xoá một nửa (50000 khoá còn lại): vẫn hợp lệ AVL, chiều cao = 19
-```
+Từ cây `50, 30, 70, 20, 40, 60, 80` ở trên, xoá lần lượt `20`, `30`, `50`.
 
-Ví dụ nhỏ hai dòng đầu minh hoạ hai trường hợp: chèn 10, 20, 30 làm cây lệch phải ba tầng nên một phép xoay trái (RR) kéo 20 lên gốc; chèn 30, 10, 20 tạo ra hình gấp khúc (30 có con trái 10, 10 có con phải 20) nên cần xoay đôi (LR), và cả hai cùng cho cây cân bằng `[20] / [10, 30]`.
-
-Bảng thứ hai là phần quan trọng: `check` chạy xác nhận bất biến AVL và thứ tự BST còn đúng sau mọi chèn và xoá, và chiều cao nằm sát đáy lý thuyết: chèn **tăng dần** 100.000 khoá cho chiều cao **17** (so với `n = 100000` của BST thường), trong khi cận lý thuyết của AVL là `1,44·log2(n+2)` = 23,9. Mỗi lần chèn tăng dần tốn khoảng một phép xoay. Xoá một nửa số khoá, cây vẫn là AVL hợp lệ.
-
-## Red-black tree
-
-AVL giữ cây rất cân bằng nên tìm nhanh, nhưng cái giá là phải cập nhật chiều cao và xoay nhiều khi xoá. **Red-black tree** nới lỏng cân bằng để sửa ít hơn: mỗi nút có một bit màu đỏ hoặc đen, thoả các luật
-
-1. gốc đen; nút đỏ không có con đỏ;
-2. mọi đường từ một nút xuống các lá (rỗng) của nó đều đi qua **cùng số nút đen** (chiều cao đen).
-
-Hai luật này cho cận chiều cao `≤ 2·log2(n+1)`: đường dài nhất xen kẽ đỏ-đen và không dài hơn **gấp đôi** đường ngắn nhất (toàn đen). Cây cao hơn AVL một chút (cận 2 so với 1,44) nhưng mỗi lần chèn hay xoá cần tối đa vài phép xoay và đổi màu.
-
-Cách dễ hiểu nhất là xem red-black như một **2-3-4 tree** (mỗi nút giữ 1 tới 3 khoá) mã hoá bằng nhị phân: một nút 3 hoặc 4 của 2-3-4 là các nút đen với con đỏ nối liền. Biến thể **left-leaning red-black** (LLRB, Sedgewick) thêm luật "liên kết đỏ luôn nghiêng trái", giúp phép chèn chỉ còn ba dòng sửa:
+1. `20` là lá: cắt đi.
+2. `30` lúc này chỉ còn một con là `40`: cho `40` lên thế chỗ `30`.
+3. `50` có hai con. Kế nhiệm: sang phải tới `70`, đi trái tới `60`, `60` không có con trái nên dừng. Chép `60` lên gốc, rồi xoá nút `60` cũ (một lá).
 
 ```python
-import math, random, sys
-sys.setrecursionlimit(10000)
-RED, BLACK = True, False
-
-class N:
-    __slots__ = ("key", "left", "right", "color")
-    def __init__(self, key, color): self.key, self.left, self.right, self.color = key, None, None, color
-
-def is_red(n): return n is not None and n.color == RED
-def rotate_left(h):
-    x = h.right; h.right, x.left = x.left, h
-    x.color, h.color = h.color, RED
-    return x
-def rotate_right(h):
-    x = h.left; h.left, x.right = x.right, h
-    x.color, h.color = h.color, RED
-    return x
-def flip(h):                      # nút có hai con đỏ ~ nút 4 trong 2-3-4 tree: tách, đẩy màu đỏ lên
-    h.color = RED; h.left.color = BLACK; h.right.color = BLACK
-
-def insert(h, key):
-    if h is None: return N(key, RED)
-    if key < h.key: h.left = insert(h.left, key)
-    elif key > h.key: h.right = insert(h.right, key)
-    if is_red(h.right) and not is_red(h.left): h = rotate_left(h)
-    if is_red(h.left) and is_red(h.left.left): h = rotate_right(h)
-    if is_red(h.left) and is_red(h.right): flip(h)
-    return h
-
-def check(h):                     # trả về (chiều cao đen, chiều cao thật)
-    if h is None: return 1, 0
-    assert not (is_red(h) and (is_red(h.left) or is_red(h.right))), "đỏ có con đỏ"
-    assert not is_red(h.right), "đỏ nghiêng phải"
-    bl, hl = check(h.left); br, hr = check(h.right)
-    assert bl == br, "chiều cao đen khác nhau"
-    return bl + (0 if is_red(h) else 1), 1 + max(hl, hr)
-
-print(f"{'n':>8} | {'chèn tăng dần: cao':>19} {'cận 2·log2(n+1)':>16} | {'chèn ngẫu nhiên: cao':>21} | {'chiều cao đen':>14}")
-for n in (1_000, 10_000, 100_000):
-    root = None
-    for k in range(n):
-        root = insert(root, k); root.color = BLACK
-    bh, ht = check(root)
-    random.seed(9); r2 = None
-    for k in random.sample(range(10 * n), n):
-        r2 = insert(r2, k); r2.color = BLACK
-    bh2, ht2 = check(r2)
-    print(f"{n:>8} | {ht:>19} {2 * math.log2(n + 1):>16.1f} | {ht2:>21} | {bh:>6} / {bh2:<5}")
+for k in (20, 30, 50):
+    t.root = delete(t.root, k)
+    print(f"xoá {k}: inorder = {inorder(t.root)}")
+show(t.root)
 ```
 
 ```text
-       n |  chèn tăng dần: cao  cận 2·log2(n+1) |  chèn ngẫu nhiên: cao |  chiều cao đen
-    1000 |                  10             19.9 |                    13 |     10 / 9    
-   10000 |                  14             26.6 |                    19 |     14 / 12   
-  100000 |                  17             33.2 |                    23 |     17 / 15
+xoá 20: inorder = [30, 40, 50, 60, 70, 80]
+xoá 30: inorder = [40, 50, 60, 70, 80]
+xoá 50: inorder = [40, 60, 70, 80]
+        80
+    70
+60
+    40
 ```
 
-Ba lệnh `if` trong `insert` chính là toàn bộ logic cân bằng, và `check` xác nhận cả ba luật sau mỗi lần chèn. Chèn tăng dần 100.000 khoá cho chiều cao 17 (sát log2 n ≈ 16,6), chèn ngẫu nhiên 23; cả hai đều rất xa cận 33,2. Chiều cao đen bằng `10, 14, 17` cho thấy khi chèn tăng dần, cây gần như chỉ gồm nút đen. Bản xoá của LLRB dài hơn nên bài không cài; các cài đặt thực tế (như trong C++ STL, Java và kernel Linux) dùng red-black tổng quát với các thao tác xoá được chứng minh kỹ.
+Sau mỗi lần xoá, `inorder` vẫn tăng dần: quy tắc BST được giữ.
 
-### AVL hay red-black
+### Ví dụ 2 (giải một nửa)
+
+Cây chèn theo thứ tự `50, 30, 70, 20, 40, 60, 80, 65`. Xoá `50`. Điền vào chỗ trống:
+
+1. `50` có ___ con, nên phải tìm kế nhiệm.
+2. Kế nhiệm: sang phải tới `70`, đi trái tới ___, nút này không có con trái. Kế nhiệm là ___.
+3. Chép kế nhiệm lên gốc. Nút kế nhiệm cũ có một con phải là ___, nên khi xoá nó, con đó lên thế chỗ.
+
+<Expand title="Đáp án">
+
+1. Hai con.
+2. `60`; kế nhiệm là `60`.
+3. `65` lên thế chỗ `60` dưới `70`.
+
+```python
+t2 = BST()
+for k in (50, 30, 70, 20, 40, 60, 80, 65): t2.insert(k)
+t2.root = delete(t2.root, 50)
+show(t2.root)
+```
+
+```text
+        80
+    70
+        65
+60
+        40
+    30
+        20
+```
+
+</Expand>
+
+### Ví dụ 3 (tự làm)
+
+Cây chèn theo thứ tự `50, 30, 70, 20, 40, 35, 45`. Xoá `30`. Gốc của cây con trái sau khi xoá là khoá nào, và cây con đó trông thế nào?
+
+<Expand title="Đáp án">
+
+`30` có hai con. Kế nhiệm: sang phải tới `40`, đi trái tới `35`, dừng. Chép `35` lên chỗ `30`, rồi xoá lá `35` cũ. Cây con trái có gốc `35`, con trái `20`, con phải `40`, và `40` còn con phải `45`.
+
+```python
+t3 = BST()
+for k in (50, 30, 70, 20, 40, 35, 45): t3.insert(k)
+t3.root = delete(t3.root, 30)
+show(t3.root)
+```
+
+```text
+    70
+50
+            45
+        40
+    35
+        20
+```
+
+</Expand>
+
+## Chiều cao phụ thuộc thứ tự chèn
+
+BST không tự sắp xếp lại hình dạng của nó. Khoá đầu tiên luôn là gốc, và mỗi khoá sau nằm ở đâu là do các khoá trước quyết định.
+
+**Đoán trước:** chèn 4.000 khoá theo thứ tự tăng dần `0, 1, 2, ...`. Cây cao bao nhiêu? Nếu chèn cùng các khoá đó theo thứ tự ngẫu nhiên thì sao?
+
+```python
+import random, math
+random.seed(2)
+print(f"{'n':>7} | {'chèn ngẫu nhiên: cao':>20} | {'log2 n':>6} | {'chèn tăng dần: cao':>18}")
+for n in (1_000, 4_000):
+    keys = list(range(n))
+    a = BST(); random.shuffle(keys)
+    for k in keys: a.insert(k)
+    b = BST()
+    for k in sorted(keys): b.insert(k)
+    print(f"{n:>7} | {a.height():>20} | {math.log2(n):>6.1f} | {b.height():>18}")
+```
+
+```text
+      n | chèn ngẫu nhiên: cao | log2 n | chèn tăng dần: cao
+   1000 |                   23 |   10.0 |               1000
+   4000 |                   28 |   12.0 |               4000
+```
+
+Chèn ngẫu nhiên cho cây cao khoảng hai tới ba lần `log2 n`, vẫn là `O(log n)`. Chèn tăng dần thì mỗi khoá mới lớn hơn mọi khoá cũ, luôn đi sang phải tới cuối: cây thành một đường thẳng cao đúng `n`, tức một danh sách liên kết, và mọi thao tác thành `O(n)`.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ BST luôn cho `O(log n)`. Thật ra BST thường chỉ cho `O(chiều cao)`, và chiều cao có thể bằng `n`. Dữ liệu đến theo thứ tự lại rất hay gặp: ID tự tăng, dấu thời gian, tên đã sắp theo bảng chữ cái. Cần một cây **tự cân bằng**.
+
+**Thử ngay:** chèn `1, 2, 3, ..., 1.000.000` vào BST thường, rồi tìm `1.000.000`. Thăm bao nhiêu nút?
+
+<Expand title="Đáp án">
+
+Một triệu nút: cây là một đường thẳng sang phải, và `1.000.000` nằm ở cuối. Cây cân bằng chỉ cần khoảng 20.
+
+</Expand>
+
+## Giữ cây thấp bằng phép xoay: AVL
+
+**Phép xoay** đổi hình dạng một đoạn cây mà giữ nguyên thứ tự inorder, chỉ bằng cách đổi vài con trỏ:
+
+```text
+   xoay phải tại y                 xoay trái tại x
+       y             x                x                y
+      / \           / \              / \              / \
+     x   C   ->    A   y            A   y     ->     x   C
+    / \               / \              / \          / \
+   A   B             B   C            B   C        A   B
+```
+
+Hai phía đều đọc ra `A, x, B, y, C` khi duyệt inorder, nên đều là BST hợp lệ, nhưng chiều cao khác nhau. Xoay phải kéo `x` lên một tầng, đẩy `y` xuống.
+
+<Term>AVL tree</Term> (Adelson-Velsky và Landis, 1962) giữ một bất biến: tại **mọi** nút, chiều cao cây con trái và cây con phải lệch nhau **tối đa 1**. Sau mỗi lần chèn, đi ngược lên từ chỗ vừa chèn; nút nào lệch 2 thì sửa bằng một phép xoay, hoặc hai phép nếu nhánh lệch bị gấp khúc.
+
+```python
+class AVLNode:
+    __slots__ = ("key", "left", "right", "h")
+    def __init__(self, key): self.key, self.left, self.right, self.h = key, None, None, 1
+
+def ht(n): return n.h if n else 0
+def upd(n): n.h = 1 + max(ht(n.left), ht(n.right))
+def bal(n): return ht(n.left) - ht(n.right)
+
+rotations = 0
+def rot_right(y):
+    global rotations; rotations += 1
+    x = y.left; y.left, x.right = x.right, y; upd(y); upd(x); return x
+def rot_left(x):
+    global rotations; rotations += 1
+    y = x.right; x.right, y.left = y.left, x; upd(x); upd(y); return y
+
+def avl_insert(n, key):
+    if n is None: return AVLNode(key)
+    if key < n.key: n.left = avl_insert(n.left, key)
+    elif key > n.key: n.right = avl_insert(n.right, key)
+    else: return n
+    upd(n)
+    if bal(n) > 1:                            # lệch trái
+        if bal(n.left) < 0: n.left = rot_left(n.left)      # gấp khúc trái-phải: xoay đôi
+        return rot_right(n)
+    if bal(n) < -1:                           # lệch phải
+        if bal(n.right) > 0: n.right = rot_right(n.right)  # gấp khúc phải-trái: xoay đôi
+        return rot_left(n)
+    return n
+
+def check_avl(n, lo=-math.inf, hi=math.inf):  # kiểm bất biến AVL và thứ tự BST, trả về chiều cao
+    if n is None: return 0
+    assert lo < n.key < hi, "sai thứ tự BST"
+    hl, hr = check_avl(n.left, lo, n.key), check_avl(n.right, n.key, hi)
+    assert abs(hl - hr) <= 1, "lệch quá 1"
+    return 1 + max(hl, hr)
+```
+
+**Đoán trước:** chèn `1, 2, 3, 4, 5, 6, 7` tăng dần vào AVL. Cây trông thế nào?
+
+```python
+r = None
+for k in range(1, 8):
+    r = avl_insert(r, k)
+show(r)
+print("số lần xoay:", rotations)
+```
+
+```text
+        7
+    6
+        5
+4
+        3
+    2
+        1
+số lần xoay: 4
+```
+
+Bảy khoá tăng dần, thứ tự tệ nhất với BST thường, cho ra cây đầy ba tầng với `4` ở gốc. Mỗi lần chèn làm nhánh phải dài thêm, và một phép xoay trái kéo nút giữa lên.
+
+Với dữ liệu lớn, `check_avl` kiểm cả hai bất biến sau khi chèn xong:
+
+```python
+print(f"{'n':>8} | {'AVL, chèn tăng dần: cao':>24} | {'AVL, chèn ngẫu nhiên: cao':>26} | {'log2 n':>6}")
+for n in (1_000, 100_000):
+    rotations = 0; r = None
+    for k in range(n): r = avl_insert(r, k)
+    h_sorted = check_avl(r)
+    keys = random.sample(range(10 * n), n); r2 = None
+    for k in keys: r2 = avl_insert(r2, k)
+    print(f"{n:>8} | {h_sorted:>24} | {check_avl(r2):>26} | {math.log2(n):>6.1f}")
+```
+
+```text
+       n |  AVL, chèn tăng dần: cao |  AVL, chèn ngẫu nhiên: cao | log2 n
+    1000 |                       10 |                         12 |   10.0
+  100000 |                       17 |                         20 |   16.6
+```
+
+Chèn tăng dần 100.000 khoá, cây vẫn chỉ cao 17, sát `log2 n`. Bất biến "lệch tối đa 1" bảo đảm chiều cao không quá khoảng `1,44 × log2 n`, nên mọi thao tác là `O(log n)` dù dữ liệu đến theo thứ tự nào.
+
+**Red-black tree** là lựa chọn phổ biến hơn trong thư viện chuẩn (`std::map` của C++, `TreeMap` của Java, kernel Linux). Nó cho mỗi nút một bit màu và nới lỏng điều kiện cân bằng: cây có thể cao tới `2 × log2 n`, đổi lại mỗi lần chèn hay xoá cần ít phép xoay hơn.
 
 | | AVL | Red-black |
 |---|---|---|
-| Cận chiều cao | `~1,44 log2 n` | `~2 log2 n` |
-| Tìm kiếm | nhanh hơn một chút (cây thấp hơn) | hơi chậm hơn |
-| Chèn, xoá | nhiều xoay hơn, mỗi lần đi ngược lên cập nhật chiều cao | tối đa vài xoay, đổi màu |
-| Dùng khi | đọc nhiều, ghi ít | đọc và ghi lẫn lộn (lựa chọn mặc định của thư viện chuẩn) |
+| Chiều cao tối đa | khoảng `1,44 log2 n` | khoảng `2 log2 n` |
+| Tìm | nhanh hơn một chút | chậm hơn một chút |
+| Chèn, xoá | xoay nhiều hơn | tối đa vài phép xoay và đổi màu |
+| Hợp với | đọc nhiều, ghi ít | đọc ghi lẫn lộn |
 
-Cả hai đều `O(log n)` cho mọi thao tác. Trong thực tế khác biệt hiệu năng nhỏ, và đa số thư viện chọn red-black.
+Cả hai đều `O(log n)` cho mọi thao tác. Bản cài red-black nằm ở phần Đi sâu hơn.
 
-Ghi chú trung thực về đo đạc: Python thuần mỗi thao tác bị chi phí thông dịch lấn át, nên bài này đo **chiều cao và số xoay**, không đo thời gian.
+**Thử ngay:** chèn `3, 1, 2` vào AVL. Cây lệch kiểu gì, và cần mấy phép xoay?
 
-## Heap và priority queue
+<Expand title="Đáp án">
 
-Một số bài toán không cần toàn bộ thứ tự, chỉ cần **phần tử nhỏ nhất ngay lúc này**: scheduler chọn task có hạn chót sớm nhất, Dijkstra chọn đỉnh gần nhất, trộn `k` danh sách đã sắp xếp, "top k" của một dòng dữ liệu. <Term>Priority queue</Term> là giao diện cho yêu cầu đó: `push(x)` và `pop()` lấy phần tử nhỏ nhất. <Term>Heap</Term> nhị phân là cách cài thường dùng.
+`3` có con trái `1`, `1` có con phải `2`: lệch trái nhưng gấp khúc. Cần hai phép xoay: xoay trái tại `1` để duỗi thẳng thành `3 → 2 → 1`, rồi xoay phải tại `3`. Kết quả: `2` ở gốc, `1` và `3` hai bên.
 
-Heap nhị phân (min-heap) là cây nhị phân **đầy tới tầng áp chót** (tầng cuối điền từ trái) thoả **tính chất heap**: khoá của mỗi nút `≤` khoá của hai con. Không có thứ tự giữa hai anh em hay giữa các tầng, nên nó "lỏng" hơn BST: chỉ gốc là nhỏ nhất.
+</Expand>
 
-Vì cây luôn "đầy từ trái", ta không cần con trỏ: lưu thẳng vào một **mảng**, nút `i` có cha ở `(i-1) // 2` và hai con ở `2i+1` và `2i+2`. Đây là lần nữa mảng thắng con trỏ (xem [Array & Linked List](/docs/dsa/arrays-linked-lists)): heap liền khối, thân thiện cache, không tốn bộ nhớ cho con trỏ.
+## Heap: chỉ cần phần tử nhỏ nhất
 
-- **`push`**: thêm vào cuối mảng, rồi **sift-up**: đổi chỗ với cha chừng nào còn nhỏ hơn cha. Cây cao `log2 n` nên tối đa `log2 n` bước.
-- **`pop`**: lấy gốc, đưa phần tử cuối lên gốc, rồi **sift-down**: đổi chỗ với con **nhỏ hơn** chừng nào còn lớn hơn nó. Tối đa `log2 n` bước.
+Nhiều bài toán không cần toàn bộ thứ tự, chỉ cần **phần tử nhỏ nhất lúc này**: bộ lập lịch lấy việc có hạn chót sớm nhất, Dijkstra lấy đỉnh gần nhất, lấy top 10 trong một dòng dữ liệu. <Term>Priority queue</Term> là giao diện cho việc đó: `push(x)` và `pop()` trả về phần tử nhỏ nhất. Cách cài thường dùng là <Term>heap</Term> nhị phân.
+
+Min-heap là cây nhị phân thoả hai điều: **mỗi nút nhỏ hơn hoặc bằng hai con của nó**, và cây **đầy từ trái sang**, chỉ tầng cuối được thiếu ở bên phải. Nó lỏng hơn BST nhiều: hai anh em không có thứ tự gì với nhau, chỉ biết chắc gốc là nhỏ nhất.
+
+Vì cây luôn đầy từ trái, không cần con trỏ: lưu thẳng theo tầng vào một mảng. Nút ở vị trí `i` có cha ở `(i-1) // 2` và hai con ở `2i+1`, `2i+2`.
+
+- **`push`**: thêm vào cuối mảng, rồi đổi chỗ với cha chừng nào còn nhỏ hơn cha (sift-up).
+- **`pop`**: lấy gốc ra, đưa phần tử cuối lên gốc, rồi đổi chỗ với con **nhỏ hơn** chừng nào còn lớn hơn nó (sift-down).
+
+Cây đầy có chiều cao `log2 n`, nên cả hai thao tác là `O(log n)`.
 
 ```python
-import random, heapq, math
-
 class MinHeap:
-    def __init__(self): self.a, self.cmp = [], 0
+    def __init__(self, items=()):
+        self.a, self.cmp = list(items), 0     # cmp đếm số lần so sánh
     def push(self, x):
         a = self.a; a.append(x); i = len(a) - 1
-        while i > 0:                              # sift-up
+        while i > 0:                          # sift-up
             p = (i - 1) // 2; self.cmp += 1
             if a[p] <= a[i]: break
             a[p], a[i] = a[i], a[p]; i = p
+    def _sift_down(self, i):
+        a, n = self.a, len(self.a)
+        while True:
+            l, r, m = 2 * i + 1, 2 * i + 2, i
+            if l < n:
+                self.cmp += 1
+                if a[l] < a[m]: m = l
+            if r < n:
+                self.cmp += 1
+                if a[r] < a[m]: m = r
+            if m == i: return
+            a[i], a[m] = a[m], a[i]; i = m
     def pop(self):
         a = self.a; top = a[0]; last = a.pop()
-        if a:
-            a[0] = last; i, n = 0, len(a)
-            while True:                           # sift-down
-                l, r, m = 2 * i + 1, 2 * i + 2, i
-                if l < n:
-                    self.cmp += 1
-                    if a[l] < a[m]: m = l
-                if r < n:
-                    self.cmp += 1
-                    if a[r] < a[m]: m = r
-                if m == i: break
-                a[i], a[m] = a[m], a[i]; i = m
+        if a: a[0] = last; self._sift_down(0)
         return top
-    @classmethod
-    def heapify(cls, items):                      # xây từ dưới lên: O(n)
-        h = cls(); h.a = list(items); n = len(h.a)
-        for start in range(n // 2 - 1, -1, -1):
-            i = start
-            while True:
-                l, r, m = 2 * i + 1, 2 * i + 2, i
-                if l < n:
-                    h.cmp += 1
-                    if h.a[l] < h.a[m]: m = l
-                if r < n:
-                    h.cmp += 1
-                    if h.a[r] < h.a[m]: m = r
-                if m == i: break
-                h.a[i], h.a[m] = h.a[m], h.a[i]; i = m
-        return h
-
-random.seed(8)
-h = MinHeap()
-for x in (5, 3, 8, 1, 9, 2, 7): h.push(x)
-print("sau khi push 5,3,8,1,9,2,7 mảng heap =", h.a)
-print("pop lần lượt:", [h.pop() for _ in range(7)])
-
-print()
-print(f"{'n':>8} | {'push n lần: so sánh':>20} | {'heapify: so sánh':>17} {'2n':>9} | {'n log2 n':>10}")
-for n in (1_000, 10_000, 100_000, 1_000_000):
-    data = [random.random() for _ in range(n)]
-    a = MinHeap()
-    for x in data: a.push(x)
-    b = MinHeap.heapify(data)
-    assert b.a[0] == min(data)
-    print(f"{n:>8} | {a.cmp:>20} | {b.cmp:>17} {2*n:>9} | {n * math.log2(n):>10.0f}")
-
-data = [random.random() for _ in range(200_000)]
-h = MinHeap.heapify(data); out = [h.pop() for _ in range(len(data))]
-assert out == sorted(data)
 ```
 
-```text
-sau khi push 5,3,8,1,9,2,7 mảng heap = [1, 3, 2, 5, 9, 8, 7]
-pop lần lượt: [1, 2, 3, 5, 7, 8, 9]
-
-       n |  push n lần: so sánh |  heapify: so sánh        2n |   n log2 n
-    1000 |                 2216 |              1858      2000 |       9966
-   10000 |                22641 |             18791     20000 |     132877
-  100000 |                227726 |            187774    200000 |    1660964
- 1000000 |              2279792 |           1880963   2000000 |   19931569
-```
-
-Mảng `[1, 3, 2, 5, 9, 8, 7]` là heap: gốc 1; hai con của nó (vị trí 1 và 2) là 3 và 2; hai con của 3 (vị trí 3 và 4) là 5 và 9, hai con của 2 (vị trí 5 và 6) là 8 và 7. Mọi nút nhỏ hơn con của nó; `pop` 7 lần cho ra dãy tăng dần (đó là **heapsort**: `n` lần `pop` tốn `O(n log n)`, kèm bài kiểm tra cuối đoạn code trên với 200.000 số).
-
-### Xây heap trong O(n)
-
-Hai cách đưa `n` phần tử vào heap. Cách một: `push` từng phần tử, `n log n` trong trường hợp xấu nhất. Cách hai: bỏ cả mảng vào rồi **heapify** (sift-down từ nút cha cuối cùng ngược về gốc). Bảng trên cho thấy heapify tốn **dưới `2n`** so sánh (1858, 18791, 187774, 1880963; xấp xỉ `1,88n`) trong khi `n log2 n` là 9966 đến 19,9 triệu: tuyến tính thật chứ không phải `n log n`.
-
-Vì sao `O(n)`? Phần lớn nút ở gần đáy, nơi sift-down chạy rất ít bước. Một nửa số nút là lá (0 bước), một phần tư cách lá một tầng (tối đa 1 bước), một phần tám cách hai tầng (tối đa 2 bước), v.v. Tổng số bước tối đa là
-
-```text
-n/4 * 1 + n/8 * 2 + n/16 * 3 + ...  =  n * (1/4 + 2/8 + 3/16 + ...)  =  n * sum(k / 2^(k+1))  <  n
-```
-
-vì chuỗi `sum k/2^k = 2`. Mỗi bước tốn hai so sánh nên tổng `< 2n`, khớp số đo. (Còn `push` từng phần tử trên dữ liệu **ngẫu nhiên** thực ra cũng chỉ tốn khoảng `2,28n` so sánh, vì phần tử mới thường dừng sớm; cận `n log n` chỉ xảy ra với dữ liệu đưa vào theo thứ tự giảm dần.)
-
-Python có sẵn `heapq` (min-heap trên `list`, API `heappush`, `heappop`, `heapify`, `nsmallest`); với max-heap thì đổi dấu khoá. Heapsort và các ứng dụng khác của heap được dùng lại ở [Sorting](/docs/dsa/sorting) và [Graph](/docs/dsa/graphs).
-
-## B-tree và B+ tree: cây cho dữ liệu trên đĩa
-
-BST và AVL giữ cây cân bằng nhưng mỗi nút chỉ có một khoá và hai con. Với `n = 10^9`, cây thấp nhất cũng 30 tầng, và mỗi tầng là một lần nhảy tới một vùng nhớ khác (một cache miss, hoặc tệ hơn một lần đọc đĩa). Trên đĩa, chi phí được đo bằng **số trang phải đọc** chứ không phải số phép so sánh: đọc một trang 4 KB tốn gần như bằng đọc một byte (xem [File Systems](/docs/os/file-systems) và [I/O Devices](/docs/os/io-devices)). Vậy hãy làm mỗi nút **vừa đúng một trang**, chứa hàng trăm khoá.
-
-<Term>B-tree</Term> (Bayer và McCreight, 1972) làm đúng thế. Bậc `t`: mỗi nút (trừ gốc) có từ `t-1` đến `2t-1` khoá, nút trong có số con bằng số khoá cộng một, khoá trong nút được sắp xếp và chia khoảng cho các cây con, và **mọi lá nằm cùng độ sâu** (cây luôn cân bằng hoàn hảo). Tìm khoá: trong mỗi nút tìm nhị phân vị trí rồi đi xuống con tương ứng; mỗi nút là một lần đọc trang.
-
-Chèn: đi xuống tới lá và chèn. Nếu nút đã đầy (`2t-1` khoá), **tách** nó làm hai nút `t-1` khoá và đẩy khoá giữa lên cha. Nếu cha cũng đầy, tách tiếp lên trên; chỉ khi gốc bị tách thì cây **cao thêm một tầng**. Cây không bao giờ mất cân bằng vì chỉ lớn lên ở gốc, mọi lá luôn cùng độ sâu.
+**Đoán trước:** `push` lần lượt `5, 3, 8, 1, 9, 2, 7`. Phần tử đầu mảng là gì? Mảng có được sắp xếp không?
 
 ```python
-import random, math, bisect
+h = MinHeap()
+for x in (5, 3, 8, 1, 9, 2, 7): h.push(x)
+print("mảng heap:", h.a)
+print("pop lần lượt:", [h.pop() for _ in range(7)])
+```
+
+```text
+mảng heap: [1, 3, 2, 5, 9, 8, 7]
+pop lần lượt: [1, 2, 3, 5, 7, 8, 9]
+```
+
+`a[0] = 1` là nhỏ nhất, nhưng mảng **không** được sắp xếp: `3` ở vị trí 1 lớn hơn `2` ở vị trí 2. Chỉ cần mỗi nút nhỏ hơn con của nó: hai con của `1` là `3` và `2`; hai con của `3` (vị trí 3 và 4) là `5` và `9`; hai con của `2` (vị trí 5 và 6) là `8` và `7`. `pop` liên tục thì ra dãy tăng dần; đó là **heapsort**, `O(n log n)`.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ heap là cấu trúc có thứ tự như BST, nên tìm một khoá bất kỳ cũng nhanh. Thật ra heap chỉ biết gốc nhỏ nhất. Tìm một khoá bất kỳ phải duyệt cả mảng, `O(n)`, và duyệt mảng heap không cho dãy tăng dần.
+
+Còn một điều bất ngờ: xây heap từ `n` phần tử có sẵn không cần `n` lần `push`. Đặt cả mảng vào rồi gọi sift-down từ nút cha cuối cùng ngược về gốc (heapify).
+
+**Đoán trước:** heapify một triệu phần tử tốn khoảng bao nhiêu lần so sánh: cỡ `2n`, hay cỡ `n log2 n` (khoảng 20 triệu)?
+
+```python
+def heapify(items):
+    h = MinHeap(items)
+    for i in range(len(h.a) // 2 - 1, -1, -1):
+        h._sift_down(i)
+    return h
+
+for n in (1_000, 100_000, 1_000_000):
+    data = [random.random() for _ in range(n)]
+    hp = heapify(data)
+    assert hp.a[0] == min(data)
+    print(f"n={n:>9,}: heapify {hp.cmp:>9,} lần so sánh  (2n = {2 * n:>9,}, n·log2 n = {round(n * math.log2(n)):>10,})")
+```
+
+```text
+n=    1,000: heapify     1,885 lần so sánh  (2n =     2,000, n·log2 n =      9,966)
+n=  100,000: heapify   187,809 lần so sánh  (2n =   200,000, n·log2 n =  1,660,964)
+n=1,000,000: heapify 1,882,201 lần so sánh  (2n = 2,000,000, n·log2 n = 19,931,569)
+```
+
+Dưới `2n`: heapify là `O(n)`. Lý do: một nửa số nút là lá, không phải sift gì; một phần tư chỉ sift tối đa một tầng; một phần tám tối đa hai tầng. Phần lớn nút nằm sát đáy, nơi sift-down rất ngắn. Python có sẵn `heapq` (min-heap trên `list`) với `heappush`, `heappop`, `heapify`.
+
+**Thử ngay:** phần tử ở vị trí 6 của mảng heap có cha ở vị trí nào? Mảng `[2, 5, 3, 4, 6]` có phải min-heap không?
+
+<Expand title="Đáp án">
+
+Cha ở `(6 - 1) // 2 = 2`. Mảng `[2, 5, 3, 4, 6]` không phải heap: vị trí 3 (giá trị `4`) có cha ở vị trí 1 (giá trị `5`), mà `5 > 4`.
+
+</Expand>
+
+## B-tree: cây rộng cho dữ liệu trên đĩa
+
+Cây AVL một tỷ khoá cao khoảng 30 tầng. Trong RAM thì ổn. Trên đĩa thì không: mỗi tầng là một lần đọc một **trang** (thường 4 hay 8 KB) ở vị trí khác, và đọc một trang tốn gần như bằng đọc một byte. Chi phí đo bằng **số trang phải đọc**, không phải số phép so sánh. Vậy hãy cho mỗi nút chứa đầy một trang, tức hàng trăm khoá, để cây rộng ra và thấp xuống.
+
+<Term>B-tree</Term> (Bayer và McCreight, 1972) với bậc `t` cho mỗi nút (trừ gốc) từ `t-1` tới `2t-1` khoá đã sắp xếp; nút trong có số con bằng số khoá cộng một, và các khoá chia khoảng cho các con. **Mọi lá nằm cùng độ sâu.** Chèn vào lá; nút đầy thì **tách** làm đôi và đẩy khoá giữa lên cha. Cây chỉ cao thêm khi gốc bị tách, nên không bao giờ lệch.
+
+```python
+import bisect
 
 class BNode:
     def __init__(self, leaf): self.keys, self.kids, self.leaf = [], [], leaf
 
 class BTree:
     def __init__(self, t):
-        self.t = t; self.root = BNode(True); self.reads = 0
+        self.t, self.root, self.reads = t, BNode(True), 0
     def search(self, key):
         n = self.root
         while True:
-            self.reads += 1                           # mỗi nút = một trang đĩa
+            self.reads += 1                           # mỗi nút là một trang đọc từ đĩa
             i = bisect.bisect_left(n.keys, key)
             if i < len(n.keys) and n.keys[i] == key: return True
             if n.leaf: return False
             n = n.kids[i]
     def insert(self, key):
         r = self.root
-        if len(r.keys) == 2 * self.t - 1:             # gốc đầy: tách, cây cao thêm 1
-            s = BNode(False); s.kids = [r]; self.root = s
-            self._split(s, 0); r = s
-        self._insert_nonfull(r, key)
-    def _split(self, parent, i):
-        t = self.t; y = parent.kids[i]; z = BNode(y.leaf)
-        mid = y.keys[t - 1]
-        z.keys, y.keys = y.keys[t:], y.keys[:t - 1]
-        if not y.leaf: z.kids, y.kids = y.kids[t:], y.kids[:t]
-        parent.keys.insert(i, mid); parent.kids.insert(i + 1, z)
-    def _insert_nonfull(self, n, key):
+        if len(r.keys) == 2 * self.t - 1:             # gốc đầy: tách, cây cao thêm 1 tầng
+            s = BNode(False); s.kids = [r]; self.root = s; self._split(s, 0)
+        n = self.root
         while True:
             i = bisect.bisect_left(n.keys, key)
             if i < len(n.keys) and n.keys[i] == key: return
             if n.leaf: n.keys.insert(i, key); return
-            if len(n.kids[i].keys) == 2 * self.t - 1:
+            if len(n.kids[i].keys) == 2 * self.t - 1: # tách con đầy trước khi đi xuống
                 self._split(n, i)
                 if key > n.keys[i]: i += 1
                 elif key == n.keys[i]: return
             n = n.kids[i]
+    def _split(self, parent, i):
+        t, y = self.t, parent.kids[i]; z = BNode(y.leaf)
+        mid = y.keys[t - 1]
+        z.keys, y.keys = y.keys[t:], y.keys[:t - 1]
+        if not y.leaf: z.kids, y.kids = y.kids[t:], y.kids[:t]
+        parent.keys.insert(i, mid); parent.kids.insert(i + 1, z)
     def height(self):
         h, n = 1, self.root
         while not n.leaf: n = n.kids[0]; h += 1
         return h
-    def count(self, n=None):
-        n = n or self.root
-        return 1 + sum(self.count(k) for k in n.kids)
-    def check(self, n=None, lo=-math.inf, hi=math.inf, depth=1, leaf_depths=None):
-        first = n is None
-        n = n or self.root; leaf_depths = leaf_depths if leaf_depths is not None else set()
-        assert n.keys == sorted(n.keys) and all(lo < k < hi for k in n.keys)
-        if n is not self.root: assert self.t - 1 <= len(n.keys) <= 2 * self.t - 1
-        if n.leaf: leaf_depths.add(depth)
-        else:
-            assert len(n.kids) == len(n.keys) + 1
-            b = [lo] + n.keys + [hi]
-            for i, k in enumerate(n.kids): self.check(k, b[i], b[i + 1], depth + 1, leaf_depths)
-        if first: assert len(leaf_depths) == 1, "mọi lá phải cùng độ sâu"
 
-t = BTree(2)
-for k in range(1, 11): t.insert(k)
 def dump(n, d=0):
     print("  " * d + str(n.keys))
     for k in n.kids: dump(k, d + 1)
-print("B-tree t=2 sau khi chèn 1..10:"); dump(t.root); t.check()
 
-print()
-random.seed(6)
-N = 200_000
-keys = random.sample(range(10 * N), N)
-print(f"{'bậc t':>6} {'khoá/nút tối đa':>16} {'chiều cao':>10} {'số nút':>8} {'số trang đọc TB / lần tìm':>26}")
-for tt in (2, 8, 64, 256):
-    bt = BTree(tt)
-    for k in keys: bt.insert(k)
-    bt.check()
-    bt.reads = 0
-    for k in keys[:20_000]: bt.search(k)
-    print(f"{tt:>6} {2*tt-1:>16} {bt.height():>10} {bt.count():>8} {bt.reads / 20_000:>26.2f}")
-print(f"(so sánh: BST nhị phân cân bằng cho {N:,} khoá cao khoảng {math.ceil(math.log2(N + 1))} tầng)")
+bt = BTree(2)                                     # mỗi nút 1 tới 3 khoá
+for k in range(1, 11): bt.insert(k)
+dump(bt.root)
 ```
 
 ```text
-B-tree t=2 sau khi chèn 1..10:
 [4]
   [2]
     [1]
@@ -626,45 +588,52 @@ B-tree t=2 sau khi chèn 1..10:
     [5]
     [7]
     [9, 10]
-
- bậc t  khoá/nút tối đa  chiều cao   số nút  số trang đọc TB / lần tìm
-     2                3         14   113857                      12.00
-     8               15          6    19594                       5.68
-    64              127          3     2282                       2.96
-   256              511          3      519                       2.99
-(so sánh: BST nhị phân cân bằng cho 200,000 khoá cao khoảng 18 tầng)
 ```
 
-Ví dụ nhỏ với `t = 2` (mỗi nút 1 đến 3 khoá, tức cây 2-3-4): sau 10 lần chèn tăng dần, gốc `[4]` chia hai nhánh; tất cả lá (`[1]`, `[3]`, `[5]`, `[7]`, `[9, 10]`) nằm cùng độ sâu 3. Bảng sau cho thấy tác dụng của bậc: với 200.000 khoá, bậc `t = 2` cao 14 tầng (tìm tốn 12 trang), nhưng bậc `t = 64` (mỗi nút tối đa 127 khoá) chỉ **3 tầng**, và mỗi lần tìm đọc **trung bình 2,96 trang**, so với gần 18 tầng của cây nhị phân cân bằng. Đây cũng là lý do số nút thu từ 113.857 xuống 2282: nút chứa nhiều khoá nên cần ít nút hơn.
+Mười khoá chèn tăng dần, nhưng mọi lá (`[1]`, `[3]`, `[5]`, `[7]`, `[9, 10]`) nằm cùng độ sâu: B-tree cân bằng hoàn hảo nhờ chỉ lớn lên ở gốc.
 
-Với trang thực 4 KB, khoá 8 byte cộng con trỏ 8 byte cho khoảng 256 khoá mỗi nút. Tính chiều cao theo `⌈log_fanout(n)⌉` (đã chạy):
-
-| Kích thước khoá + con trỏ | Khoá mỗi trang 4 KB | 10^6 khoá | 10^9 khoá | 10^12 khoá |
-|---|---|---|---|---|
-| 8 B + 8 B | khoảng 256 | 3 tầng | 4 tầng | 5 tầng |
-| 16 B + 8 B | khoảng 170 | 3 tầng | 5 tầng | 6 tầng |
-| 64 B + 8 B | khoảng 56 | 4 tầng | 6 tầng | 7 tầng |
-
-Một chỉ mục có **một nghìn tỉ khoá** chỉ cao 5 đến 7 tầng, và vài tầng trên cùng thường nằm sẵn trong bộ nhớ. Vì vậy một lần tra trên bảng khổng lồ chỉ tốn vài lần đọc đĩa. Đó là lý do B-tree (và biến thể) là cấu trúc chỉ mục chuẩn của gần như mọi hệ quản trị cơ sở dữ liệu và file system.
-
-### B+ tree
-
-Hầu hết hệ thống dùng biến thể **B+ tree**: chỉ **lá** mới chứa dữ liệu (hoặc con trỏ tới dòng dữ liệu), các nút trong chỉ chứa khoá dẫn đường. Hai hệ quả:
-
-- Nút trong **không mang dữ liệu** nên nhồi được nhiều khoá dẫn đường hơn trong một trang, fan-out cao hơn, cây thấp hơn.
-- Các lá được nối thành **danh sách liên kết**, nên truy vấn khoảng `[a, b]` chỉ cần tìm `a` rồi đi ngang qua các lá, không phải leo lên xuống cây.
-
-Đây là hình dạng của chỉ mục trong PostgreSQL, MySQL InnoDB, SQLite và của cấu trúc thư mục trong nhiều file system (XFS, btrfs, NTFS). Chặng cơ sở dữ liệu sẽ quay lại cấu trúc này để nói về chỉ mục clustered, composite và chi phí ghi.
-
-## Trie
-
-Mọi cây ở trên so sánh **cả khoá** ở mỗi nút. Với khoá là chuỗi, cách khác là đi theo **từng ký tự**: <Term>trie</Term> có mỗi cạnh gắn một ký tự, đường từ gốc tới một nút "kết thúc" là một từ. Tìm một chuỗi dài `m` đi `m` cạnh, `O(m)`, **không phụ thuộc số từ** trong tập, và mọi từ chung tiền tố dùng chung đoạn đường. Ba việc trie làm tự nhiên: kiểm tra có từ nào, liệt kê mọi từ với tiền tố cho trước (autocomplete), và tìm tiền tố **dài nhất** khớp với một chuỗi (cách router chọn route, xem trie cho longest prefix match ở [IP & Routing](/docs/networking/ip-routing)).
-
-Bộ từ để thử là 1.602 tên thuộc tính của một số module chuẩn của Python (không có file từ điển sẵn trên máy viết bài này):
+**Đoán trước:** 200.000 khoá, mỗi nút chứa tối đa 127 khoá (`t = 64`). Tìm một khoá đọc trung bình bao nhiêu trang? Cây nhị phân cân bằng cần khoảng 18.
 
 ```python
-import sys, importlib, builtins, time, bisect
+random.seed(6)
+N = 200_000
+keys = random.sample(range(10 * N), N)
+print(f"{'t':>4} {'khoá/nút tối đa':>16} {'chiều cao':>10} {'trang đọc TB mỗi lần tìm':>25}")
+for t in (2, 8, 64, 256):
+    b = BTree(t)
+    for k in keys: b.insert(k)
+    b.reads = 0
+    for k in keys[:20_000]: b.search(k)
+    print(f"{t:>4} {2 * t - 1:>16} {b.height():>10} {b.reads / 20_000:>25.2f}")
+```
 
+```text
+   t  khoá/nút tối đa  chiều cao  trang đọc TB mỗi lần tìm
+   2                3         14                     12.00
+   8               15          6                      5.68
+  64              127          3                      2.96
+ 256              511          3                      2.99
+```
+
+Với 127 khoá mỗi nút, cây chỉ cao 3 tầng và mỗi lần tìm đọc khoảng 3 trang, thay vì 18. Trang thật 8 KB chứa vài trăm khoá, nên một tỷ khoá cũng chỉ 4 tới 5 tầng, và vài tầng trên cùng thường nằm sẵn trong RAM.
+
+Cơ sở dữ liệu và file system dùng biến thể **B+ tree**: chỉ lá chứa dữ liệu (hoặc con trỏ tới dòng dữ liệu), nút trong chỉ chứa khoá dẫn đường nên nhồi được nhiều khoá hơn; và các lá nối với nhau thành danh sách, nên tìm khoảng `[a, b]` chỉ cần tìm `a` rồi đi ngang qua các lá. Bài [Indexing](/docs/databases/indexing) đo B+ tree thật trong PostgreSQL: bảng một triệu dòng, chỉ mục 3 tầng.
+
+**Thử ngay:** vì sao một chỉ mục trên đĩa không dùng cây AVL, dù AVL cũng `O(log n)`?
+
+<Expand title="Đáp án">
+
+`O(log n)` của AVL là `log2 n` lần đọc, mỗi lần một nút nhỏ ở một chỗ khác trên đĩa: một tỷ khoá là khoảng 30 lần đọc trang. B-tree có cơ số log là số khoá mỗi nút (hàng trăm), nên chỉ 4 tới 5 lần đọc. Big-O như nhau, nhưng hằng số chênh nhau sáu tới bảy lần, và mỗi lần đọc đĩa rất đắt.
+
+</Expand>
+
+## Trie: cây theo từng ký tự
+
+Mọi cây ở trên so sánh **cả khoá** tại mỗi nút. Khi khoá là chuỗi, <Term>trie</Term> đi theo **từng ký tự**: mỗi cạnh mang một ký tự, đường từ gốc tới một nút có đánh dấu "kết thúc" là một từ. Các từ chung tiền tố dùng chung đoạn đường. Tìm một chuỗi dài `m` đi đúng `m` cạnh, không phụ thuộc có bao nhiêu từ.
+
+**Đoán trước:** 8 từ dưới đây có tổng 26 ký tự. Trie của chúng có nhiều nút hơn hay ít hơn 26?
+
+```python
 class TrieNode:
     __slots__ = ("kids", "end")
     def __init__(self): self.kids, self.end = {}, False
@@ -674,105 +643,166 @@ class Trie:
     def insert(self, w):
         n = self.root
         for ch in w:
-            nxt = n.kids.get(ch)
-            if nxt is None: nxt = n.kids[ch] = TrieNode(); self.nodes += 1
-            n = nxt
+            if ch not in n.kids:
+                n.kids[ch] = TrieNode(); self.nodes += 1
+            n = n.kids[ch]
         n.end = True
-    def _walk(self, p):
+    def with_prefix(self, p):                 # mọi từ bắt đầu bằng p, theo thứ tự chữ cái
         n = self.root
         for ch in p:
             n = n.kids.get(ch)
-            if n is None: return None
-        return n
-    def contains(self, w):
-        n = self._walk(w); return bool(n and n.end)
-    def with_prefix(self, p, limit=10**9):
-        out, n = [], self._walk(p)
-        if n is None: return out
-        stack = [(n, p)]
-        while stack and len(out) < limit:
+            if n is None: return []
+        out, stack = [], [(n, p)]
+        while stack:
             n, s = stack.pop()
             if n.end: out.append(s)
             for ch in sorted(n.kids, reverse=True): stack.append((n.kids[ch], s + ch))
         return out
 
-words = set(dir(builtins))
-for m in ("os", "sys", "re", "json", "math", "itertools", "collections", "functools", "socket", "threading", "subprocess", "pathlib", "string", "random", "time", "datetime", "typing", "asyncio", "logging", "http.client"):
-    words.update(dir(importlib.import_module(m)))
-words = sorted(w for w in words if w.isidentifier())
-T = Trie()
-for w in words: T.insert(w)
-
-total_chars = sum(len(w) for w in words)
-print(f"{len(words)} từ, tổng {total_chars} ký tự; trie có {T.nodes} nút (dùng chung tiền tố tiết kiệm {1 - T.nodes/total_chars:.0%} so với số ký tự)")
-for p in ("thread", "os.", "is_", "__ge", "zzz"):
-    r = T.with_prefix(p)
-    print(f"  tiền tố {p!r:<9}: {len(r):>3} từ  {r[:4]}")
-print("contains('threading') =", T.contains("threading"), "| contains('threadin') =", T.contains("threadin"))
-
-def prefix_sorted(p):
-    i = bisect.bisect_left(words, p); out = []
-    while i < len(words) and words[i].startswith(p): out.append(words[i]); i += 1
-    return out
-for p in ("thread", "is_", "__ge"):
-    assert sorted(T.with_prefix(p)) == prefix_sorted(p)
-def t(fn, reps=2000):
-    s = time.perf_counter()
-    for _ in range(reps): fn()
-    return (time.perf_counter() - s) / reps * 1e6
-print(f"truy vấn tiền tố 'thread': trie {t(lambda: T.with_prefix('thread')):.1f} µs | mảng sắp xếp + bisect {t(lambda: prefix_sorted('thread')):.1f} µs")
-print(f"bộ nhớ đối tượng trie (ước lượng): ~{T.nodes * (sys.getsizeof(TrieNode()) + sys.getsizeof({})) / 2**20:.1f} MB cho {len(words)} từ (mảng chuỗi: ~{(sum(sys.getsizeof(w) for w in words) + 8*len(words)) / 2**20:.2f} MB)")
+tr = Trie()
+words = ["car", "card", "care", "cart", "cat", "do", "dog", "dot"]
+for w in words: tr.insert(w)
+print(f"{len(words)} từ, {sum(map(len, words))} ký tự, trie có {tr.nodes} nút (kể cả gốc)")
+for p in ("car", "ca", "do", "x"):
+    print(f"tiền tố {p!r}: {tr.with_prefix(p)}")
 ```
 
 ```text
-1602 từ, tổng 17737 ký tự; trie có 12120 nút (dùng chung tiền tố tiết kiệm 32% so với số ký tự)
-  tiền tố 'thread':   5 từ  ['thread_info', 'thread_time', 'thread_time_ns', 'threading']
-  tiền tố 'os.'    :   0 từ  []
-  tiền tố 'is_'    :   4 từ  ['is_finalizing', 'is_protocol', 'is_stack_trampoline_active', 'is_typeddict']
-  tiền tố '__ge'   :   1 từ  ['__getattr__']
-  tiền tố 'zzz'    :   0 từ  []
-contains('threading') = True | contains('threadin') = False
-truy vấn tiền tố 'thread': trie 3.9 µs | mảng sắp xếp + bisect 0.5 µs
-bộ nhớ đối tượng trie (ước lượng): ~1.3 MB cho 1602 từ (mảng chuỗi: ~0.09 MB)
+8 từ, 26 ký tự, trie có 12 nút (kể cả gốc)
+tiền tố 'car': ['car', 'card', 'care', 'cart']
+tiền tố 'ca': ['car', 'card', 'care', 'cart', 'cat']
+tiền tố 'do': ['do', 'dog', 'dot']
+tiền tố 'x': []
 ```
 
-Hai điều trung thực rút ra từ bảng số, không "vẽ" cho đẹp:
+Ít hơn nhiều so với số ký tự, vì `car`, `card`, `care`, `cart`, `cat` dùng chung đoạn `c → a`. Trie hợp với việc gợi ý khi người dùng gõ từng ký tự, và với **khớp tiền tố dài nhất**: router chọn route cụ thể nhất cho một địa chỉ IP bằng một dạng trie (xem [IP & Routing](/docs/networking/ip-routing)).
 
-- Trie dùng chung tiền tố: 12.120 nút cho 17.737 ký tự (tiết kiệm 32% so với số ký tự). Nhưng nút trie trong Python là object kèm dict, nên **bộ nhớ thực lớn gấp khoảng 14 lần** mảng chuỗi (1,3 MB so với 0,09 MB).
-- Với truy vấn tiền tố trên một tập **tĩnh**, **mảng đã sắp xếp cộng `bisect`** nhanh hơn trie khoảng 8 lần (0,5 µs so với 3,9 µs) vì tìm nhị phân trên mảng liền khối và liệt kê các phần tử liền kề.
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ cứ tìm theo tiền tố là nên dùng trie. Thật ra với một tập từ **ít thay đổi**, mảng đã sắp xếp cộng tìm nhị phân (`bisect`) tìm được vị trí đầu rồi đọc liền các từ kế tiếp, thường nhanh hơn và tốn ít bộ nhớ hơn nhiều, vì trie cài bằng một object và một dict cho mỗi nút. Trie thắng khi tập từ thay đổi liên tục, hoặc khi cần đi từng ký tự.
 
-Vậy trie thắng khi nào? Khi tập từ **thay đổi liên tục** (mảng sắp xếp chèn tốn `O(n)`), khi cần **khớp tiền tố dài nhất** hoặc **đi tới từng ký tự một** (bộ gõ gợi ý khi người dùng gõ, bộ định tuyến), hoặc khi cài đặt tiết kiệm bộ nhớ hơn bằng mảng (không phải dict cho mỗi nút) hoặc nén (radix tree / Patricia trie, nút gộp đường không rẽ nhánh). Nó không phải là lựa chọn mặc định cho "tìm theo tiền tố".
+**Thử ngay:** thêm từ `"ca"` vào trie trên. Có thêm nút nào không?
 
-## Trong hệ thống thật
+<Expand title="Đáp án">
 
-- **Cây tìm kiếm cân bằng trong thư viện chuẩn**: `std::map` và `std::set` của C++ (thường là red-black), `TreeMap` của Java (red-black), `std::collections::BTreeMap` của Rust (B-tree, vì B-tree thân thiện cache hơn cây nhị phân ngay cả trong bộ nhớ). Python chuẩn **không có** cây cân bằng; người ta dùng `bisect` trên list đã sắp xếp hoặc thư viện ngoài như `sortedcontainers` (danh sách các khối, một dạng "B-tree nông").
-- **Kernel Linux** dùng red-black tree (`rbtree`) ở nhiều nơi: scheduler CFS giữ các task sắp xếp theo `vruntime` để lấy ngay task đã chạy ít nhất bên trái nhất (xem [CPU Scheduling](/docs/os/cpu-scheduling)), và bộ lập lịch I/O. Các vùng nhớ ảo của process (VMA, xem [Virtual Memory](/docs/os/virtual-memory)) từng nằm trong red-black tree; từ Linux 6.1 chúng chuyển sang một cấu trúc cây khác là maple tree.
-- **Cơ sở dữ liệu và file system**: B+ tree cho chỉ mục (PostgreSQL, MySQL InnoDB, SQLite) và cho thư mục trong file system (XFS, btrfs). Xem [File Systems](/docs/os/file-systems).
-- **Redis sorted set** dùng **skip list** thay vì cây cân bằng: danh sách liên kết nhiều tầng với "đường cao tốc" chọn ngẫu nhiên, cho `O(log n)` kỳ vọng với cài đặt đơn giản hơn và dễ hơn cho tìm khoảng.
-- **Heap**: `heapq` của Python, `priority_queue` của C++, `container/heap` của Go; timer của các runtime (hạn gần nhất ở gốc) và scheduler đều dựa vào heap.
+Không. Đường `c → a` đã có sẵn; chỉ cần đánh dấu `end = True` ở nút `a`.
 
-## Quan sát và chẩn đoán
+</Expand>
 
-- Đo **chiều cao** và **phân bố độ sâu** của cây của bạn: chiều cao vượt xa `2 log2 n` là dấu hiệu mất cân bằng.
-- Với B-tree trong cơ sở dữ liệu, các công cụ riêng cho thấy số trang đã đọc (ví dụ `EXPLAIN (ANALYZE, BUFFERS)` của PostgreSQL ở chặng cơ sở dữ liệu).
-- Khi một thao tác trên cấu trúc có thứ tự "tự dưng" chậm, hỏi: dữ liệu vào có sắp sẵn không, và cấu trúc có tự cân bằng không?
+## Tự kiểm tra tổng hợp
 
-| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
-|---|---|---|
-| BST tự cài chậm dần, tràn stack khi đệ quy | dữ liệu đến theo thứ tự, cây thoái hoá thành danh sách | dùng cây tự cân bằng, hoặc xáo trộn đầu vào |
-| Chèn dữ liệu tăng dần vào chỉ mục rất chậm hoặc chỉ mục phình to | trang bị tách liên tục, mật độ lá thấp | nạp hàng loạt (bulk load) theo thứ tự rồi mới tạo chỉ mục |
-| Tìm khoảng chậm trên cấu trúc băm | bảng băm không có thứ tự | dùng cây cân bằng hoặc B+ tree |
-| `pop` của heap trả về thứ không đúng thứ tự mong muốn | tính chất heap chỉ bảo đảm gốc nhỏ nhất, không phải toàn thứ tự | duyệt heap không cho dãy sắp xếp; `pop` lần lượt mới cho |
-| Autocomplete tốn quá nhiều RAM | trie dùng dict hoặc object cho mỗi nút | dùng mảng, radix tree, hoặc mảng đã sắp xếp cộng bisect |
+Các câu dưới trộn kiến thức của nhiều mục, nên khó hơn câu "Thử ngay". Nếu vướng, quay lại mục tương ứng.
 
-## Lưu ý
+1. Một dịch vụ ghi log vào một BST tự cài, khoá là dấu thời gian. Chạy vài giờ thì mỗi lần chèn chậm dần, rồi chương trình lỗi tràn stack khi duyệt đệ quy. Vì sao? Sửa thế nào?
+2. Lấy 10 số nhỏ nhất trong một dòng một tỷ số, RAM chỉ đủ giữ vài nghìn số. Dùng cấu trúc nào, và chi phí bao nhiêu?
+3. Bạn cần một cấu trúc trong RAM hỗ trợ: tìm khoá, chèn, xoá, và liệt kê mọi khoá trong khoảng `[a, b]`. So sánh bảng băm, heap và cây cân bằng.
+4. Đoạn dưới muốn in các phần tử của heap theo thứ tự tăng dần. Nó sai ở đâu?
 
-- Chi phí `O(log n)` của BST chỉ đúng khi cây **thấp**. BST thường không tự cân bằng: chèn dữ liệu đã sắp xếp cho chiều cao bằng `n` và mọi thao tác `O(n)`.
-- Phép xoay giữ thứ tự inorder, chỉ đổi hình dạng. AVL cân bằng chặt hơn (đọc nhanh), red-black cân bằng lỏng hơn (ghi ít xoay hơn); cả hai `O(log n)`.
-- Heap chỉ cho biết phần tử nhỏ nhất, **không** phải cấu trúc có thứ tự toàn phần. Không thể tìm một khoá bất kỳ trong heap nhanh hơn `O(n)`.
-- Xây heap từ mảng bằng `heapify` là `O(n)`, nhanh hơn `push` từng phần tử trong trường hợp xấu nhất.
-- Trên đĩa, đơn vị chi phí là **trang đọc**, không phải phép so sánh; vì vậy B-tree chọn fan-out hàng trăm, không phải 2.
-- B+ tree đặt dữ liệu ở lá và nối lá thành danh sách để tìm khoảng nhanh; đây là hình dạng của hầu hết chỉ mục thực tế.
-- Trie không tự động tốt hơn mảng đã sắp xếp: thắng ở tập thay đổi liên tục và ở khớp tiền tố dài nhất; thua về bộ nhớ nếu cài bằng dict mỗi nút.
-- Khoá của mọi cây có thứ tự phải so sánh được và quan hệ thứ tự phải **nhất quán** (quên điều này thì cây hỏng im lặng).
-- Duyệt đệ quy một cây cao có thể tràn stack (xem phần space complexity ở [Big-O & Complexity](/docs/dsa/complexity)); dùng vòng lặp hoặc stack tường minh cho cây có thể lệch.
+   ```python
+   import heapq
+   h = [5, 3, 8, 1, 9]
+   heapq.heapify(h)
+   print(h)
+   ```
+
+5. Một B-tree mỗi nút tối đa 255 khoá chứa 16 triệu khoá. Tìm một khoá đọc khoảng bao nhiêu trang? Nếu hai tầng trên cùng luôn nằm trong RAM thì còn bao nhiêu lần đọc đĩa?
+
+<Expand title="Đáp án">
+
+1. Dấu thời gian luôn tăng, nên mỗi khoá mới đi sang phải tới cuối: cây thành đường thẳng, chèn `O(n)` và độ sâu bằng `n`, làm đệ quy tràn stack. Dùng cây tự cân bằng (AVL, red-black, hoặc thư viện như `sortedcontainers`), và duyệt bằng vòng lặp.
+2. Max-heap kích thước 10 (trong Python: min-heap với giá trị đổi dấu). Với mỗi số mới, nếu nhỏ hơn đỉnh heap thì thay đỉnh. Mỗi số tốn `O(log 10)`, tổng `O(n)`, bộ nhớ `O(10)`. `heapq.nsmallest` làm đúng việc này.
+3. Bảng băm: tìm, chèn, xoá `O(1)` trung bình, nhưng tìm khoảng phải duyệt cả bảng. Heap: chỉ lấy nhỏ nhất nhanh, tìm khoá bất kỳ `O(n)`. Cây cân bằng: mọi thao tác `O(log n)`, tìm khoảng `O(log n + số kết quả)` nhờ duyệt inorder từ `a`. Chọn cây cân bằng.
+4. `heapify` chỉ sắp mảng thành heap, không sắp xếp: in ra `[1, 3, 8, 5, 9]`, chưa tăng dần. Phải `heappop` liên tục, hoặc dùng `sorted(h)`.
+5. Mỗi nút tối đa 256 con, và `256^3 ≈ 16,8 triệu`, nên cây khoảng 3 tới 4 tầng (nút thường không đầy hẳn): đọc 3 tới 4 trang. Hai tầng trên trong RAM thì chỉ còn 1 tới 2 lần đọc đĩa.
+
+</Expand>
+
+## Đi sâu hơn
+
+Các phần dưới không cần để đọc tiếp chặng DSA.
+
+<Expand title="Red-black tree nghiêng trái (LLRB) trong 20 dòng">
+
+Red-black tree tương đương với **2-3-4 tree** (mỗi nút giữ 1 tới 3 khoá) viết bằng cây nhị phân: nút đen cùng các con đỏ nối liền tạo thành một nút lớn. Luật: gốc đen; nút đỏ không có con đỏ; mọi đường từ một nút xuống lá rỗng đi qua cùng số nút đen. Hai luật cuối cho chiều cao tối đa `2 log2(n+1)`. Biến thể **left-leaning** của Sedgewick thêm luật "cạnh đỏ luôn nghiêng trái", và phần cân bằng khi chèn chỉ còn ba câu `if`:
+
+```python
+RED, BLACK = True, False
+
+class RB:
+    __slots__ = ("key", "left", "right", "color")
+    def __init__(self, key): self.key, self.left, self.right, self.color = key, None, None, RED
+
+def red(n): return n is not None and n.color == RED
+def rl(h):
+    x = h.right; h.right, x.left = x.left, h; x.color, h.color = h.color, RED; return x
+def rr(h):
+    x = h.left; h.left, x.right = x.right, h; x.color, h.color = h.color, RED; return x
+def flip(h):
+    h.color, h.left.color, h.right.color = RED, BLACK, BLACK
+
+def rb_insert(h, key):
+    if h is None: return RB(key)
+    if key < h.key: h.left = rb_insert(h.left, key)
+    elif key > h.key: h.right = rb_insert(h.right, key)
+    if red(h.right) and not red(h.left): h = rl(h)
+    if red(h.left) and red(h.left.left): h = rr(h)
+    if red(h.left) and red(h.right): flip(h)
+    return h
+
+def rb_check(h):                               # trả về (chiều cao đen, chiều cao)
+    if h is None: return 1, 0
+    assert not (red(h) and (red(h.left) or red(h.right))) and not red(h.right)
+    (bl, hl), (br, hr) = rb_check(h.left), rb_check(h.right)
+    assert bl == br, "chiều cao đen khác nhau"
+    return bl + (0 if red(h) else 1), 1 + max(hl, hr)
+
+for n in (1_000, 100_000):
+    r = None
+    for k in range(n): r = rb_insert(r, k); r.color = BLACK
+    r2 = None
+    for k in random.sample(range(10 * n), n): r2 = rb_insert(r2, k); r2.color = BLACK
+    print(f"n={n:>7,}: chèn tăng dần cao {rb_check(r)[1]}, chèn ngẫu nhiên cao {rb_check(r2)[1]}, cận 2·log2(n+1) = {2 * math.log2(n + 1):.1f}")
+```
+
+```text
+n=  1,000: chèn tăng dần cao 10, chèn ngẫu nhiên cao 13, cận 2·log2(n+1) = 19.9
+n=100,000: chèn tăng dần cao 17, chèn ngẫu nhiên cao 23, cận 2·log2(n+1) = 33.2
+```
+
+Bản xoá của LLRB dài hơn nhiều nên không cài ở đây. Kernel Linux dùng red-black tree (`rbtree`) cho scheduler CFS, nơi các task xếp theo thời gian đã chạy để lấy ngay task chạy ít nhất (xem [CPU Scheduling](/docs/os/cpu-scheduling)).
+
+</Expand>
+
+<Expand title="Vì sao heapify là O(n): tổng chuỗi">
+
+Với `n` nút, có khoảng `n/4` nút cách lá một tầng, `n/8` nút cách hai tầng, và cứ thế. Sift-down từ nút cách lá `k` tầng tốn tối đa `k` bước. Tổng số bước:
+
+```text
+n/4·1 + n/8·2 + n/16·3 + ... = n · Σ k/2^(k+1) = n · 1 = n
+```
+
+Mỗi bước tốn tối đa hai phép so sánh, nên tổng dưới `2n`, khớp với số đo ở mục Heap.
+
+</Expand>
+
+<Expand title="Chiều cao B-tree với trang 4 KB">
+
+Số khoá mỗi nút quyết định chiều cao: `⌈log_{fan-out} n⌉`.
+
+| Khoá + con trỏ | Khoá mỗi trang 4 KB | `10^6` khoá | `10^9` khoá | `10^12` khoá |
+|---|---|---|---|---|
+| 8 B + 8 B | khoảng 256 | 3 tầng | 4 tầng | 5 tầng |
+| 16 B + 8 B | khoảng 170 | 3 tầng | 5 tầng | 6 tầng |
+| 64 B + 8 B | khoảng 56 | 4 tầng | 6 tầng | 7 tầng |
+
+Khoá dài làm cây cao thêm; đây là một lý do chỉ mục trên cột chuỗi dài tốn hơn chỉ mục trên số nguyên. Bài [Indexing](/docs/databases/indexing) tính đúng số khoá mỗi trang của PostgreSQL từ kích thước tuple.
+
+</Expand>
+
+<Expand title="Cây có thứ tự trong các hệ thống thật">
+
+- **Thư viện chuẩn**: `std::map`, `std::set` của C++ và `TreeMap` của Java là red-black tree; `BTreeMap` của Rust là B-tree, vì B-tree thân thiện cache hơn cây nhị phân ngay cả trong RAM. Python không có cây cân bằng trong thư viện chuẩn; người ta dùng `bisect` trên list đã sắp xếp hoặc `sortedcontainers`.
+- **Redis sorted set** dùng **skip list**: danh sách liên kết nhiều tầng với các "đường tắt" chọn ngẫu nhiên, cho `O(log n)` kỳ vọng với code đơn giản hơn cây cân bằng.
+- **Kernel Linux**: red-black tree cho scheduler CFS và nhiều nơi khác; các vùng nhớ ảo của process (xem [Virtual Memory](/docs/os/virtual-memory)) chuyển từ red-black sang maple tree từ Linux 6.1.
+- **File system**: XFS, btrfs và NTFS dùng B+ tree cho thư mục và extent (xem [File Systems](/docs/os/file-systems)).
+- **Heap**: `heapq` của Python, `priority_queue` của C++; bộ hẹn giờ của các runtime giữ hạn gần nhất ở gốc heap.
+
+</Expand>
