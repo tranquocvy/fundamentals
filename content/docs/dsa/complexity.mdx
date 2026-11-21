@@ -1,56 +1,47 @@
 ---
 title: Big-O & Complexity
-description: Đo chi phí của thuật toán bằng cách đếm thao tác, ký hiệu O, Omega, Theta, phân tích vòng lặp và đệ quy với Master theorem, amortized analysis của dynamic array, và những chỗ hằng số và cache làm lý thuyết lệch với thực tế.
+description: Làm sao biết một thuật toán sẽ chậm đi bao nhiêu khi dữ liệu lớn lên, mà không cần chạy thử trên mọi máy?
 status: draft
 tags: [dsa, complexity]
 authors: [tranquocvy]
 references:
+  - title: "CLRS (ấn bản 4) — Chapter 3: Characterizing Running Times"
+    kind: book
+    note: định nghĩa chặt của O, Omega, Theta
   - title: "Jeff Erickson — Algorithms, Chapter 1: Recursion"
     url: https://jeffe.cs.illinois.edu/teaching/algorithms/
     kind: book
-    note: tư duy đệ quy và cách giải recurrence bằng cây đệ quy
-  - title: "CLRS (ấn bản 4) — Chapter 3: Characterizing Running Times, Chapter 4: Divide-and-Conquer"
-    kind: book
-    note: định nghĩa chặt của O, Omega, Theta; Master theorem và chứng minh
-  - title: "CLRS (ấn bản 4) — Chapter 16: Amortized Analysis"
-    kind: book
-    note: ba phương pháp aggregate, accounting, potential; ví dụ dynamic table
+    note: cây đệ quy và cách giải recurrence
   - title: "Sedgewick & Wayne — Algorithms, Section 1.4: Analysis of Algorithms"
     url: https://algs4.cs.princeton.edu/14analysis/
     kind: web
-    note: đo thực nghiệm, doubling test, ước lượng hệ số mũ
+    note: đo thực nghiệm và doubling test
   - title: "MIT 6.006 Introduction to Algorithms (Spring 2020)"
     url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
     kind: video
-    note: bài giảng đầu về mô hình tính toán và asymptotic notation
-  - title: "Open Data Structures — Chapter 2: Array-Based Lists"
-    url: https://opendatastructures.org/ods-python/2_Array_Based_Lists.html
+    note: bài giảng đầu về asymptotic notation
+  - title: "CLRS (ấn bản 4) — Chapter 4: Divide-and-Conquer, Chapter 16: Amortized Analysis"
     kind: book
-    note: phân tích amortized của ArrayStack khi resize
-  - title: "Knuth — Big Omicron and Big Omega and Big Theta (1976)"
-    kind: paper
-    note: nguồn gốc cách dùng ba ký hiệu trong tin học
+    note: Master theorem và amortized analysis, cho phần đi sâu hơn
   - title: "Python wiki — TimeComplexity"
     url: https://wiki.python.org/moin/TimeComplexity
     kind: web
-    note: độ phức tạp của thao tác trên list, dict, set của CPython
-  - title: "Ulrich Drepper — What Every Programmer Should Know About Memory"
-    url: https://people.freebsd.org/~lstewart/articles/cpumemory.pdf
-    kind: paper
-    note: phần về cache và cách truy cập bộ nhớ ảnh hưởng tốc độ
+    note: độ phức tạp của thao tác trên list, dict, set
 ---
+
+**Cần biết trước:** đọc được Python cơ bản (vòng lặp `for`, `while`, hàm). Đây là bài mở đầu của chặng; các bài [Array & Linked List](/docs/dsa/arrays-linked-lists), [Hash Table](/docs/dsa/hash-tables) và về sau đều dùng ngôn ngữ của bài này.
+
+**Cách đọc bài:** mỗi mục có một câu **Đoán trước** và kết bằng một câu **Thử ngay**. Hãy tự trả lời trong đầu (hoặc ra giấy) rồi mới xem đáp án. Việc tự nhớ lại và tự đoán giúp nhớ lâu hơn nhiều so với chỉ đọc.
 
 ## Ý chính
 
-Khi viết một đoạn code, câu hỏi đầu tiên không phải "nó chạy mất bao nhiêu giây" mà là "nếu dữ liệu to gấp 10 lần thì nó chậm đi bao nhiêu lần". Giây phụ thuộc máy, ngôn ngữ, lúc đo; còn **cách chi phí lớn lên theo kích thước đầu vào** là tính chất của chính thuật toán. <Term>Big-O</Term> là ngôn ngữ để nói về tính chất đó: bỏ hằng số, bỏ số hạng nhỏ, giữ lại hình dạng của đường cong.
+Câu hỏi đúng khi đánh giá một đoạn code không phải "nó chạy mất bao nhiêu giây", mà là "dữ liệu to gấp đôi thì nó chậm đi bao nhiêu lần". Số giây phụ thuộc máy và ngôn ngữ; còn **chi phí lớn lên thế nào theo kích thước đầu vào `n`** là tính chất của chính thuật toán.
 
-Một đường cong tốt hơn không phải lúc nào cũng nhanh hơn. Dưới một kích thước nào đó, thuật toán "tệ" về lý thuyết lại thắng vì hằng số nhỏ và bộ nhớ thân thiện với cache; còn trên kích thước đó, khác biệt giữa `n log n` và `n^2` là khác biệt giữa 20 mili giây và 17 phút. Bài này đi từ dưới lên: đếm thao tác, rút ra ký hiệu, phân tích vòng lặp và đệ quy, đo thực nghiệm, rồi hai chỗ lý thuyết hay bị hiểu sai là <Term>amortized analysis</Term> và hằng số ẩn.
+<Term>Big-O</Term> là cách viết gọn tính chất đó: đếm số thao tác, bỏ hằng số và các số hạng nhỏ, chỉ giữ hình dạng tăng trưởng. Nhờ vậy ta đọc được độ phức tạp ngay từ code: vòng lặp lồng thì nhân, vòng lặp nối tiếp thì cộng, chia đôi mỗi bước thì ra `log n`.
 
-Mọi số trong bài lấy từ code Python 3.13 chạy trên máy viết bài. Số đếm thao tác thì máy nào cũng ra y hệt; số mili giây thì chỉ có tỉ lệ giữa các dòng là có nghĩa. Bài này là nền cho cả chặng: [Array & Linked List](/docs/dsa/arrays-linked-lists), [Hash Table](/docs/dsa/hash-tables) và các bài sau đều dùng các khái niệm ở đây.
+## Vì sao đếm thao tác thay vì đo giây
 
-## Đếm thao tác, không đo giây
-
-Bắt đầu với thứ chắc chắn nhất: đếm. Mỗi hàm dưới đây tự đếm số lần thân vòng lặp chạy, và ta xem con số đó thay đổi thế nào khi `n` tăng.
+Cùng một đoạn code, chạy trên laptop và trên server sẽ ra số giây khác nhau, chạy hai lần trên cùng máy cũng lệch. Đếm số thao tác thì máy nào cũng ra giống hệt. Hai hàm dưới đây đếm số lần thân vòng lặp chạy:
 
 ```python
 def linear(n):
@@ -66,6 +57,106 @@ def quadratic(n):
             ops += 1
     return ops
 
+for n in (1000, 2000, 4000):
+    print(f"n={n:>5}  linear={linear(n):>5}  quadratic={quadratic(n):>9}")
+```
+
+**Đoán trước:** khi `n` gấp đôi (1000 lên 2000), mỗi cột tăng bao nhiêu lần?
+
+```text
+n= 1000  linear= 1000  quadratic=  1000000
+n= 2000  linear= 2000  quadratic=  4000000
+n= 4000  linear= 4000  quadratic= 16000000
+```
+
+`linear` gấp đôi theo `n`. `quadratic` thì gấp **bốn**, vì vòng ngoài gấp đôi và mỗi vòng trong cũng gấp đôi: `2 × 2 = 4`. Tỉ lệ này đúng trên mọi máy, và nó mới là thứ ta cần biết: khi dữ liệu tăng, code chậm đi theo kiểu nào.
+
+**Thử ngay:** nếu `n` tăng 10 lần thì `quadratic` tăng bao nhiêu lần?
+
+<Expand title="Đáp án">
+
+100 lần, vì `10 × 10 = 100`. Hàm nào có số thao tác bằng `n^2` thì `n` nhân `k` lần, chi phí nhân `k^2` lần.
+
+</Expand>
+
+## Big-O: giữ lại hình dạng, bỏ chi tiết
+
+Đếm chính xác thường ra một biểu thức lằng nhằng. Giả sử một hàm tốn `T(n) = 3n^2 + 5n + 2` thao tác. **Đoán trước:** với `n = 1000`, phần `5n + 2` chiếm bao nhiêu phần trăm tổng?
+
+- `3n^2` = 3.000.000
+- `5n + 2` = 5.002, chưa tới 0,2% tổng
+
+Số hạng nhỏ gần như không đáng kể khi `n` lớn. Hệ số 3 chỉ phản ánh "mỗi vòng tốn ba lệnh máy", thứ thay đổi theo trình biên dịch. Phần bền vững là `n^2`, nên ta viết `T(n) = O(n^2)`.
+
+Có ba ký hiệu, mỗi cái nói một chiều:
+
+| Ký hiệu | Đọc là | Nghĩa |
+|---|---|---|
+| `O(g)` | Big-O | không tăng nhanh hơn `g` (cận trên) |
+| `Ω(g)` | Big-Omega | không tăng chậm hơn `g` (cận dưới) |
+| `Θ(g)` | Big-Theta | tăng đúng như `g` (cả hai cận) |
+
+Khi nói chuyện, dân lập trình thường viết `O` nhưng ngụ ý `Θ`. Ví dụ "sắp xếp là `O(n log n)`" thường được hiểu là "đúng bậc `n log n`".
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ bỏ hằng số nghĩa là hằng số không quan trọng. Thật ra `100n` và `n^2` cắt nhau ở `n = 100`: dưới mức đó, thuật toán "bình phương" lại nhanh hơn. Big-O chỉ cho biết ai thắng **khi `n` đủ lớn**.
+
+<Expand title="Định nghĩa chặt và cách chứng minh 3n² + 5n + 2 = Θ(n²)">
+
+`f(n) = O(g(n))` nghĩa là tồn tại hằng số `c > 0` và `n0` sao cho `f(n) <= c * g(n)` với mọi `n >= n0`. `Ω` thì đổi dấu thành `>=`. `Θ` là có cả hai.
+
+Với `n >= 1` thì `5n <= 5n^2` và `2 <= 2n^2`, nên `3n^2 + 5n + 2 <= 10n^2`. Chọn `c = 10`, `n0 = 1` là có `O(n^2)`. Chiều kia: `3n^2 + 5n + 2 >= 3n^2`, chọn `c = 3` là có `Ω(n^2)`. Có cả hai nên là `Θ(n^2)`.
+
+Cũng từ định nghĩa: `n = O(n^2)` là đúng (cận trên lỏng), nhưng `n = Θ(n^2)` là sai.
+
+</Expand>
+
+**Thử ngay:** viết Big-O của `7n + 3n log n + 20`.
+
+<Expand title="Đáp án">
+
+`O(n log n)`. Trong ba số hạng, `3n log n` tăng nhanh nhất (vì `log n` lớn dần), nên giữ nó và bỏ hệ số 3.
+
+</Expand>
+
+## Các lớp thường gặp
+
+Phần lớn thuật toán rơi vào vài lớp: `O(1)`, `O(log n)`, `O(n)`, `O(n log n)`, `O(n^2)`, `O(n^3)`, `O(2^n)`. Con số trừu tượng khó hình dung, nên khung dưới quy số thao tác ra thời gian, giả sử mỗi thao tác mất 1 nanosecond.
+
+**Đoán trước:** với `n = 1.000.000`, lớp nào còn chạy xong dưới 1 giây? Còn `O(2^n)` thì đến `n` bằng bao nhiêu là quá 1 giây?
+
+<GrowthChart initial={1000} />
+
+Kéo thanh và để ý ba điều:
+
+1. Với `n` nhỏ (dưới vài chục), lớp nào cũng nhanh. Khác biệt chỉ lộ ra khi `n` lớn: ở một triệu phần tử, `n log n` mất khoảng 20 ms còn `n^2` mất khoảng 17 phút.
+2. `2^n` vượt 1 giây từ `n = 30` và ở `n = 60` đã là hàng chục năm. Thuật toán mũ chỉ dùng được với đầu vào rất nhỏ, máy nhanh gấp 100 lần cũng chỉ cho thêm khoảng 7 phần tử.
+3. Dòng "so với n/2" chính là phép thử ở mục trước: `n` cho ×2, `n^2` cho ×4, `n^3` cho ×8, còn `log n` gần như không đổi.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ `O(1)` là nhanh. Thật ra `O(1)` chỉ có nghĩa là **không đổi khi `n` tăng**; một lần gọi mạng tốn 50 ms vẫn là `O(1)`. Tương tự, cơ số của log không quan trọng: `log2 n` và `log10 n` chỉ khác nhau một hằng số, nên đều viết là `O(log n)`.
+
+**Thử ngay:** có 1 giây và `n = 1.000.000`. Những lớp nào dùng được?
+
+<Expand title="Đáp án">
+
+`O(1)`, `O(log n)`, `O(n)` (1 ms) và `O(n log n)` (khoảng 20 ms). `O(n^2)` đã là 17 phút. Đây là lý do khi đề bài cho `n` cỡ một triệu, người ta biết ngay phải tìm lời giải `n log n` hoặc tốt hơn.
+
+</Expand>
+
+## Đọc độ phức tạp từ code
+
+Ba quy tắc đủ cho phần lớn code hằng ngày:
+
+| Cấu trúc code | Chi phí |
+|---|---|
+| hai khối nối tiếp | **cộng**, giữ khối lớn hơn: `O(n) + O(n^2) = O(n^2)` |
+| vòng lặp lồng nhau | **nhân**: vòng ngoài `n` lần, vòng trong `n` lần, ra `O(n^2)` |
+| biến chạy bị nhân hoặc chia đôi mỗi bước | **`log n`** bước |
+
+Ba ví dụ dưới đi từ giải sẵn hoàn toàn tới tự làm.
+
+### Ví dụ 1 (giải sẵn): vòng trong phụ thuộc vòng ngoài
+
+```python
 def triangular(n):
     ops = 0
     for i in range(n):
@@ -73,22 +164,70 @@ def triangular(n):
             ops += 1
     return ops
 
-def logarithmic(n):
-    ops = 0
-    while n > 1:
-        n //= 2
-        ops += 1
-    return ops
+for n in (8, 1000, 2000):
+    print(f"n={n:>5}  đếm được={triangular(n):>7}  n(n-1)/2={n * (n - 1) // 2:>7}")
+```
 
+1. Vòng ngoài cho `i` chạy từ `0` tới `n-1`.
+2. Với mỗi `i`, vòng trong chạy `i` lần.
+3. Tổng là `0 + 1 + 2 + ... + (n-1) = n(n-1)/2`.
+4. Bỏ hệ số `1/2` và số hạng `-n/2`, còn lại `O(n^2)`.
+5. Kiểm tra bằng số:
+
+```text
+n=    8  đếm được=     28  n(n-1)/2=     28
+n= 1000  đếm được= 499500  n(n-1)/2= 499500
+n= 2000  đếm được=1999000  n(n-1)/2=1999000
+```
+
+Công thức khớp. Và từ 1000 lên 2000, số thao tác gấp khoảng 4 lần, đúng dấu hiệu của `n^2`, dù nó chỉ bằng một nửa `quadratic`.
+
+### Ví dụ 2 (giải một nửa): vòng ngoài nhân đôi
+
+```python
 def nested_log(n):
     ops = 0
     i = 1
-    while i < n:          # i nhân đôi: log n vòng
-        for _ in range(n):  # n vòng
+    while i < n:
+        for _ in range(n):
             ops += 1
         i *= 2
     return ops
+```
 
+Hai vòng lồng nhau, nhưng đừng vội kết luận `n^2`. Điền vào chỗ trống:
+
+1. Vòng ngoài: `i` lần lượt là `1, 2, 4, 8, ...` cho tới khi chạm `n`, vậy nó chạy ___ lần.
+2. Vòng trong: mỗi lần chạy ___ lần.
+3. Tổng: ___.
+
+<Expand title="Đáp án">
+
+1. `log2 n` lần, vì nhân đôi từ 1 tới `n` mất `log2 n` bước.
+2. `n` lần.
+3. `n × log2 n`, tức `O(n log n)`.
+
+Kiểm tra bằng số:
+
+```python
+import math
+for n in (8, 1024, 4096):
+    print(f"n={n:>5}  đếm được={nested_log(n):>6}  n*log2(n)={n * int(math.log2(n)):>6}")
+```
+
+```text
+n=    8  đếm được=    24  n*log2(n)=    24
+n= 1024  đếm được= 10240  n*log2(n)= 10240
+n= 4096  đếm được= 49152  n*log2(n)= 49152
+```
+
+</Expand>
+
+Đây là hiểu lầm hay gặp nhất khi đọc code: **"hai vòng lồng nhau luôn là `n^2`"**. Phải xem mỗi vòng thật sự chạy bao nhiêu lần.
+
+### Ví dụ 3 (tự làm)
+
+```python
 def sqrt_loop(n):
     ops = 0
     i = 1
@@ -96,243 +235,115 @@ def sqrt_loop(n):
         ops += 1
         i += 1
     return ops
+```
 
-print(f"{'n':>8} {'loop n':>8} {'n^2':>12} {'n(n-1)/2':>12} {'log2 n':>7} {'n log n':>10} {'sqrt':>6}")
-for n in (8, 16, 32, 1024, 4096):
-    print(f"{n:>8} {linear(n):>8} {quadratic(n):>12} {triangular(n):>12} {logarithmic(n):>7} {nested_log(n):>10} {sqrt_loop(n):>6}")
+Hàm này chạy bao nhiêu vòng theo Big-O? Gợi ý: vòng dừng khi `i * i` vượt `n`.
+
+<Expand title="Đáp án">
+
+`O(√n)`. Vòng dừng khi `i` vượt `√n`, và `i` tăng mỗi lần 1, nên chạy khoảng `√n` vòng:
+
+```python
+for n in (16, 100, 10_000, 1_000_000):
+    print(f"n={n:>9}  đếm được={sqrt_loop(n):>5}")
 ```
 
 ```text
-       n   loop n          n^2     n(n-1)/2  log2 n    n log n   sqrt
-       8        8           64           28       3         24      2
-      16       16          256          120       4         64      4
-      32       32         1024          496       5        160      5
-    1024     1024      1048576       523776      10      10240     32
-    4096     4096     16777216      8386560      12      49152     64
+n=       16  đếm được=    4
+n=      100  đếm được=   10
+n=    10000  đếm được=  100
+n=  1000000  đếm được= 1000
 ```
 
-Đọc bảng theo hàng ngang. Từ `n = 1024` lên `4096` (gấp 4 lần):
+Vòng kiểu này hay gặp khi kiểm tra số nguyên tố: chỉ cần thử ước tới `√n`.
 
-- vòng lặp đơn tăng 4 lần;
-- hai vòng lồng đầy đủ tăng 16 lần, vì `4^2`;
-- vòng lồng tam giác `i` từ 0 tới `n-1`, trong chạy `i` lần, cho `0 + 1 + ... + (n-1) = n(n-1)/2`. Tăng gần 16 lần (523776 lên 8386560), và đã bằng khoảng một nửa vòng lồng đầy đủ. **Bỏ hệ số 1/2** là điều Big-O làm;
-- `log2 n` chỉ nhích từ 10 lên 12 khi `n` gấp 4: nhân đôi `n` chỉ thêm đúng 1 bước. Đó là sức mạnh của "chia đôi";
-- `sqrt` tăng gấp đôi (32 lên 64) khi `n` gấp 4;
-- `n log n` tăng 4,8 lần (10240 lên 49152): hơi hơn tuyến tính, xa so với bình phương.
+</Expand>
 
-Quy tắc thực dụng từ bảng: **vòng lặp lồng nhau thì nhân, vòng lặp nối tiếp nhau thì cộng, vòng lặp mà biến chạy bị nhân hoặc chia đôi thì cho `log`.**
+Một bẫy khác: **"không thấy vòng lặp thì là `O(1)`"**. Lệnh `x in danh_sach` trong Python là `O(n)`, vì nó duyệt cả list. Đặt nó trong một vòng lặp `n` lần là ra `O(n^2)` dù code chỉ có một vòng `for`.
 
-## Từ số đếm tới ký hiệu O, Omega, Theta
+### Tìm nhị phân: thấy `log n` từng bước
 
-Giả sử đếm chính xác một hàm cho `T(n) = 3n^2 + 5n + 2` phép tính. Khi `n = 1000`, số hạng `3n^2` là 3.000.000, còn `5n + 2` chỉ là 5.002: thêm bớt chúng không đổi bức tranh. Hệ số 3 cũng chỉ phản ánh "mỗi vòng tốn ba lệnh máy", thứ phụ thuộc trình biên dịch. Cái bền vững là `n^2`.
-
-### Định nghĩa
-
-Ba ký hiệu là ba cách nói về quan hệ giữa hai hàm `f` và `g` khi `n` đủ lớn:
-
-| Ký hiệu | Nghĩa | Định nghĩa |
-|---|---|---|
-| `f(n) = O(g(n))` | `f` **không lớn hơn** `g` quá một hằng số (cận trên) | tồn tại `c > 0`, `n0` sao cho `f(n) <= c * g(n)` với mọi `n >= n0` |
-| `f(n) = Ω(g(n))` | `f` **không nhỏ hơn** `g` quá một hằng số (cận dưới) | tồn tại `c > 0`, `n0` sao cho `f(n) >= c * g(n)` với mọi `n >= n0` |
-| `f(n) = Θ(g(n))` | `f` **cùng bậc** với `g` (cả hai cận) | vừa `O(g)` vừa `Ω(g)` |
-
-Ví dụ chứng minh `3n^2 + 5n + 2 = O(n^2)`. Với `n >= 1` thì `5n <= 5n^2` và `2 <= 2n^2`, nên `3n^2 + 5n + 2 <= 3n^2 + 5n^2 + 2n^2 = 10n^2`. Chọn `c = 10`, `n0 = 1` là xong. Chứng minh `Ω(n^2)` còn dễ hơn: `3n^2 + 5n + 2 >= 3n^2`, chọn `c = 3`. Cả hai cận cùng bậc nên `3n^2 + 5n + 2 = Θ(n^2)`.
-
-Cũng từ định nghĩa: `n = O(n^2)` đúng (cận trên lỏng) nhưng `n = Θ(n^2)` sai. Vì vậy câu "thuật toán này là `O(n^2)`" chỉ nói **cận trên**, và nói `O(n^3)` cho cùng thuật toán đó cũng đúng. Khi người ta muốn nói chặt, họ nói `Θ`; trong đời thường dân lập trình thường dùng `O` với nghĩa của `Θ`.
-
-### Hiểu lầm hay gặp về ba ký hiệu
-
-- **`O` không phải "trường hợp xấu nhất"**. Trường hợp xấu nhất, tốt nhất, trung bình là chuyện *đầu vào nào*; `O`, `Ω`, `Θ` là chuyện *cận nào cho hàm chi phí đó*. Bạn có thể nói "tìm kiếm tuyến tính có `O(n)` trong trường hợp xấu nhất và `Ω(1)` trong trường hợp tốt nhất", cả hai đều đúng.
-- **Bỏ hằng số không có nghĩa là hằng số vô nghĩa.** `1000n` và `n^2` có đường cắt nhau ở `n = 1000`. Dưới 1000 phần tử, thuật toán "bình phương" thắng. Phần "Hằng số ẩn" bên dưới đo trường hợp này.
-- **Cơ số logarit không quan trọng**: `log2 n` và `log10 n` khác nhau một hằng số (`log2 n = log10 n / log10 2`), nên cùng là `Θ(log n)`.
-- **`O(1)` không có nghĩa là nhanh**, chỉ là không đổi theo `n`. Một lệnh gọi mạng cố định vẫn là `O(1)` và chậm hơn triệu lần một phép cộng.
-
-### Các lớp thường gặp, nhìn bằng thời gian
-
-Con số trừu tượng khó cảm nhận, nên dưới đây là bảng thời gian nếu mỗi thao tác mất đúng 1 nanosecond (10^9 thao tác mỗi giây), tính bằng code:
+Mảng đã sắp xếp thì không cần duyệt từ đầu. Xét phần tử giữa: nếu nó nhỏ hơn giá trị cần tìm thì bỏ nửa trái, ngược lại bỏ nửa phải. **Đoán trước:** với 10 triệu phần tử, cần khoảng bao nhiêu lần so sánh: vài chục, vài nghìn, hay vài triệu?
 
 ```python
-import math
-
-def human(sec):
-    for unit, size in (("năm", 365.25*86400), ("ngày", 86400), ("giờ", 3600), ("phút", 60)):
-        if sec >= size:
-            return f"{sec/size:,.1f} {unit}"
-    if sec >= 1: return f"{sec:.1f} giây"
-    if sec >= 1e-3: return f"{sec*1e3:.1f} ms"
-    if sec >= 1e-6: return f"{sec*1e6:.1f} µs"
-    return f"{sec*1e9:.0f} ns"
-
-classes = [
-    ("log n",   lambda n: math.log2(n)),
-    ("n",       lambda n: n),
-    ("n log n", lambda n: n * math.log2(n)),
-    ("n^2",     lambda n: n ** 2),
-    ("n^3",     lambda n: n ** 3),
-    ("2^n",     lambda n: 2.0 ** n if n < 1000 else float('inf')),
-]
-sizes = [10, 60, 1000, 10**6]
-print(f"{'':>8}" + "".join(f"{('n=' + format(n, ',')):>16}" for n in sizes))
-for name, f in classes:
-    row = []
-    for n in sizes:
-        v = f(n)
-        row.append("quá lớn" if v == float('inf') else human(v * 1e-9))
-    print(f"{name:>8}" + "".join(f"{c:>16}" for c in row))
-```
-
-```text
-                    n=10            n=60         n=1,000     n=1,000,000
-   log n            3 ns            6 ns           10 ns           20 ns
-       n           10 ns           60 ns          1.0 µs          1.0 ms
- n log n           33 ns          354 ns         10.0 µs         19.9 ms
-     n^2          100 ns          3.6 µs          1.0 ms       16.7 phút
-     n^3          1.0 µs        216.0 µs        1.0 giây        31.7 năm
-     2^n          1.0 µs        36.5 năm         quá lớn         quá lớn
-```
-
-Hai điều rút ra:
-
-1. Với `n` nhỏ, mọi lớp đều "nhanh". Sự phân hoá chỉ lộ ra khi `n` lớn, và từ `n^2` trở lên, `n` cỡ triệu là bài toán không giải được bằng cách chờ máy mạnh hơn.
-2. `2^n` ở `n = 60` đã là 36,5 năm. Thuật toán mũ chỉ dùng được cho đầu vào cực nhỏ (tìm kiếm vét cạn trên vài chục phần tử). Phần tối ưu bằng [Dynamic Programming](/docs/dsa/dynamic-programming) chủ yếu là biến lớp mũ thành lớp đa thức.
-
-## Phân tích vòng lặp
-
-Phân tích một đoạn code là gán chi phí cho từng khối rồi cộng hoặc nhân. Ba tình huống đủ cho phần lớn thực tế.
-
-**Vòng lặp lồng nhau mà vòng trong phụ thuộc vòng ngoài.** Ở `triangular` bên trên, vòng trong chạy `i` lần, nên tổng là `0 + 1 + ... + (n-1) = n(n-1)/2`. Tính tay với `n = 8`: `8 * 7 / 2 = 28`, khớp bảng. Đây là `Θ(n^2)`: bỏ hệ số `1/2` và số hạng `-n/2`.
-
-**Vòng lặp mà biến chạy nhân đôi.** Ở `nested_log`, `i` đi qua `1, 2, 4, ..., 2^k` cho tới khi `i >= n`, tức `k = ⌈log2 n⌉` vòng, mỗi vòng ngoài làm `n` việc: `Θ(n log n)`. Với `n = 1024` là `10 * 1024 = 10240`, khớp bảng.
-
-**Vòng lặp mà điều kiện dừng là bình phương.** Ở `sqrt_loop`, `i * i <= n` dừng khi `i` chạm `√n`, nên chạy `Θ(√n)` lần. Test nguyên tố bằng cách thử chia cho các số tới `√n` chính là vòng lặp này.
-
-Một bẫy hay gặp: nhìn vào hai vòng lồng mà kết luận `n^2` mà không xem vòng trong có thật sự chạy `n` lần không. Tìm hai phần tử trong mảng có tổng bằng `k` bằng hai vòng lồng là `Θ(n^2)`; nhưng nếu mảng đã sắp xếp, hai con trỏ chạy từ hai đầu vào giữa chỉ tốn `Θ(n)`. Độ phức tạp là tính chất của **cách làm**, không phải của bài toán.
-
-### Tìm tuyến tính và tìm nhị phân
-
-Ví dụ kinh điển cho `log n`. Code dưới đây đếm số phép so sánh trong trường hợp xấu nhất của hai cách tìm:
-
-```python
-def linear(a, x):
-    c = 0
-    for v in a:
-        c += 1
-        if v == x: break
-    return c
-def binary(a, x):
+def binary(a, x, trace=False):
     lo, hi, c = 0, len(a) - 1, 0
     while lo <= hi:
         mid = (lo + hi) // 2
         c += 1
-        if a[mid] == x: return c
-        if a[mid] < x: lo = mid + 1
-        else: hi = mid - 1
+        if trace:
+            print(f"  lần {c}: xét a[{lo}..{hi}], còn {hi - lo + 1} phần tử, mid = {mid}")
+        if a[mid] == x:
+            return c
+        if a[mid] < x:
+            lo = mid + 1
+        else:
+            hi = mid - 1
     return c
+
+print("Tìm 15 trong [0, 1, ..., 15]:")
+binary(list(range(16)), 15, trace=True)
 for n in (10**3, 10**6, 10**7):
-    a = list(range(n))
-    print(f"n={n:>10}  tuyến tính (xấu nhất): {linear(a, n-1):>9}   nhị phân (xấu nhất): {binary(a, -1):>3}")
+    print(f"n={n:>10,}  nhị phân, xấu nhất: {binary(list(range(n)), -1):>2} lần so sánh")
 ```
 
 ```text
-n=      1000  tuyến tính (xấu nhất):      1000   nhị phân (xấu nhất):   9
-n=   1000000  tuyến tính (xấu nhất):   1000000   nhị phân (xấu nhất):  19
-n=  10000000  tuyến tính (xấu nhất):  10000000   nhị phân (xấu nhất):  23
+Tìm 15 trong [0, 1, ..., 15]:
+  lần 1: xét a[0..15], còn 16 phần tử, mid = 7
+  lần 2: xét a[8..15], còn 8 phần tử, mid = 11
+  lần 3: xét a[12..15], còn 4 phần tử, mid = 13
+  lần 4: xét a[14..15], còn 2 phần tử, mid = 14
+  lần 5: xét a[15..15], còn 1 phần tử, mid = 15
+n=     1,000  nhị phân, xấu nhất:  9 lần so sánh
+n= 1,000,000  nhị phân, xấu nhất: 19 lần so sánh
+n=10,000,000  nhị phân, xấu nhất: 23 lần so sánh
 ```
 
-Mười triệu phần tử chỉ cần 23 lần so sánh, vì mỗi lần so sánh loại một nửa không gian tìm. Cái giá: mảng phải đã sắp xếp. Đây là mẫu "bỏ một phần cố định sau mỗi bước" sẽ gặp lại ở cây tìm kiếm trong bài [Tree](/docs/dsa/trees).
+Phần trên cho thấy vùng tìm kiếm co 16, 8, 4, 2, 1: mỗi lần so sánh bỏ đi một nửa, nên chỉ cần khoảng `log2 n` lần. Mười triệu phần tử chỉ cần 23 lần, trong khi tìm tuyến tính có thể phải xét cả mười triệu. Cái giá phải trả: mảng phải được sắp xếp trước. Ý "bỏ một nửa sau mỗi bước" sẽ gặp lại ở cây tìm kiếm trong bài [Tree](/docs/dsa/trees).
 
-## Đệ quy: recurrence và Master theorem
+**Thử ngay:** vòng `while i > 0: i //= 3`, với `i` bắt đầu bằng `n`, chạy bao nhiêu lần theo Big-O?
 
-Với hàm đệ quy, chi phí được viết dưới dạng **recurrence**, một phương trình định nghĩa `T(n)` qua chính nó. Merge sort chia mảng làm đôi, sắp xếp từng nửa, rồi trộn hai nửa bằng thời gian tuyến tính:
+<Expand title="Đáp án">
+
+`O(log n)`, cụ thể khoảng `log3 n` lần. Chia ba hay chia đôi thì cũng chỉ khác cơ số, và cơ số không quan trọng trong Big-O.
+
+</Expand>
+
+## Đệ quy: vẽ cây rồi cộng
+
+Hàm đệ quy không có vòng lặp để đếm, nên ta vẽ các lời gọi thành cây rồi cộng chi phí từng tầng. Merge sort chia mảng làm đôi, sắp xếp từng nửa, rồi trộn lại tốn `n` bước:
 
 ```text
-T(n) = 2 T(n/2) + n
-```
-
-### Cây đệ quy
-
-Vẽ ra thì thấy ngay. Gốc làm `n` việc, rồi tách thành hai bài toán cỡ `n/2`, mỗi bài làm `n/2` việc, cộng lại vẫn là `n`; tầng tiếp theo bốn bài cỡ `n/4`, cộng lại vẫn `n`:
-
-```text
-tầng 0:        n                      -> n
-tầng 1:    n/2     n/2                -> n
-tầng 2:  n/4 n/4 n/4 n/4              -> n
+tầng 0:        n                      -> tổng n
+tầng 1:    n/2     n/2                -> tổng n
+tầng 2:  n/4 n/4 n/4 n/4              -> tổng n
   ...
-tầng k:  2^k bài, mỗi bài n/2^k       -> n
+tầng k:  2^k bài, mỗi bài n/2^k       -> tổng n
 ```
 
-Cây dừng khi cỡ bài toán còn 1, tức `n / 2^k = 1`, `k = log2 n`. Có `log2 n` tầng, mỗi tầng `n` việc, nên `T(n) = Θ(n log n)`. Cách suy luận này, "tổng chi phí mỗi tầng nhân số tầng", dùng được cho mọi recurrence dạng chia để trị.
-
-### Master theorem
-
-Cho `T(n) = a T(n/b) + f(n)`, trong đó `a >= 1` bài con, mỗi bài cỡ `n/b`, và `f(n)` là chi phí chia và gộp. Đặt `n^(log_b a)` là số lá của cây (đại lượng thay thế cho "tầng cuối"). Ba trường hợp tuỳ phần nào của cây thống trị:
-
-| Trường hợp | Điều kiện | Kết quả | Ý nghĩa |
-|---|---|---|---|
-| 1 | `f(n)` nhỏ hơn hẳn `n^(log_b a)` | `Θ(n^(log_b a))` | lá thống trị: chi phí dồn về đáy cây |
-| 2 | `f(n)` cùng bậc `n^(log_b a)` | `Θ(n^(log_b a) * log n)` | mọi tầng như nhau, nhân với số tầng |
-| 3 | `f(n)` lớn hơn hẳn (và đủ đều) | `Θ(f(n))` | gốc thống trị: chi phí dồn về đỉnh |
-
-Thay vì tin vào bảng, ta kiểm chứng bằng cách **đếm thật** `T(n)` rồi chia cho đáp án Master theorem dự đoán. Nếu dự đoán đúng, tỉ số `T(n) / g(n)` tiến tới một hằng số khi `n` lớn:
+Mỗi tầng tốn `n`. Cây dừng khi mỗi bài chỉ còn 1 phần tử, tức sau `log2 n` tầng. Vậy tổng là `n × log2 n`, tức `O(n log n)`. Kiểm tra bằng cách cộng đúng công trộn qua mọi lời gọi:
 
 ```python
 import math
-from functools import lru_cache
+def merge_work(n):
+    if n <= 1:
+        return 0
+    half = n // 2
+    return merge_work(half) + merge_work(n - half) + n   # trộn tốn n bước
 
-def T(a, b, f):
-    @lru_cache(None)
-    def t(n):
-        if n <= 1:
-            return 1
-        return a * t(n // b) + f(n)
-    return t
-
-cases = [
-    ("T=2T(n/2)+n   (merge sort)", 2, 2, lambda n: n,        lambda n: n * math.log2(n)),
-    ("T=2T(n/2)+1   (duyệt cây)",  2, 2, lambda n: 1,        lambda n: n),
-    ("T=T(n/2)+1    (binary search)", 1, 2, lambda n: 1,     lambda n: math.log2(n)),
-    ("T=4T(n/2)+n",                4, 2, lambda n: n,        lambda n: n ** 2),
-    ("T=3T(n/2)+n   (Karatsuba)",  3, 2, lambda n: n,        lambda n: n ** math.log2(3)),
-    ("T=T(n/2)+n",                 1, 2, lambda n: n,        lambda n: n),
-    ("T=4T(n/2)+n^2",              4, 2, lambda n: n * n,    lambda n: n * n * math.log2(n)),
-]
-for name, a, b, f, g in cases:
-    t = T(a, b, f)
-    row = []
-    for k in (10, 14, 18):
-        n = 2 ** k
-        row.append(f"T/g={t(n)/g(n):6.3f}")
-    print(f"{name:<32} " + "  ".join(row))
+for n in (8, 1024, 2**20):
+    print(f"n={n:>8}  tổng công trộn={merge_work(n):>9}  n*log2(n)={n * int(math.log2(n)):>9}")
 ```
 
 ```text
-T=2T(n/2)+n   (merge sort)       T/g= 1.100  T/g= 1.071  T/g= 1.056
-T=2T(n/2)+1   (duyệt cây)        T/g= 1.999  T/g= 2.000  T/g= 2.000
-T=T(n/2)+1    (binary search)    T/g= 1.100  T/g= 1.071  T/g= 1.056
-T=4T(n/2)+n                      T/g= 1.999  T/g= 2.000  T/g= 2.000
-T=3T(n/2)+n   (Karatsuba)        T/g= 2.965  T/g= 2.993  T/g= 2.999
-T=T(n/2)+n                       T/g= 1.999  T/g= 2.000  T/g= 2.000
-T=4T(n/2)+n^2                    T/g= 1.100  T/g= 1.071  T/g= 1.056
+n=       8  tổng công trộn=       24  n*log2(n)=       24
+n=    1024  tổng công trộn=    10240  n*log2(n)=    10240
+n= 1048576  tổng công trộn= 20971520  n*log2(n)= 20971520
 ```
 
-Mỗi hàng là một lần áp dụng:
+Với `n = 8`: 3 tầng, mỗi tầng 8, tổng 24.
 
-- **Merge sort**, `a=2, b=2, f=n`: `n^(log_2 2) = n` cùng bậc với `f(n)`, trường hợp 2, đáp án `n log n`. Tỉ số về 1 (1,100 rồi 1,071 rồi 1,056); nó tiến chậm vì số hạng nhỏ hơn `T(1)=1` ở đáy.
-- **Duyệt cây nhị phân**, `f=1`: `n^1` lớn hơn `f` hẳn, trường hợp 1, đáp án `Θ(n)`. Tỉ số ổn định ở 2 (đúng, vì `T(n) = 2n - 1`): ghé thăm mỗi nút một lần.
-- **Tìm nhị phân**, `a=1`: `n^0 = 1` cùng bậc với `f=1`, trường hợp 2, đáp án `log n`.
-- **`4T(n/2) + n`**: `n^(log_2 4) = n^2` thống trị `f=n`, trường hợp 1, đáp án `n^2`.
-- **Karatsuba** (nhân hai số nguyên lớn), `a=3`: đáp án `n^(log_2 3) ≈ n^1,585`, tốt hơn `n^2` của cách nhân thủ công. Tỉ số tiến tới 3 (hằng số ở đáy cây).
-- **`T(n/2) + n`**: `f=n` lớn hơn hẳn `n^0`, trường hợp 3, đáp án `Θ(n)`: chi phí chỉ nằm ở gốc, các tầng sau giảm một nửa mỗi bước (`n + n/2 + n/4 + ... = 2n`). Đây là cấu trúc của quickselect.
-- **`4T(n/2) + n^2`**: `f` cùng bậc với `n^2`, trường hợp 2, đáp án `n^2 log n`.
-
-### Khi Master theorem không áp dụng
-
-Theorem chỉ áp dụng cho dạng "chia đều rồi gộp". Hai dạng thường gặp nằm ngoài:
-
-- **`T(n) = T(n-1) + n`**: bài toán chỉ bé đi một đơn vị, không chia theo hệ số. Khai triển: `n + (n-1) + ... + 1 = n(n+1)/2 = Θ(n^2)`. Đây là chi phí của quicksort khi luôn chọn pivot tệ nhất.
-- **`T(n) = T(n-1) + T(n-2) + 1`** (Fibonacci đệ quy): hai bài con chỉ nhỏ đi hằng số, cây rộng gấp đôi gần mỗi tầng, kết quả là mũ.
-
-Fibonacci đệ quy cho ví dụ về **bài con chồng lấp**, nên đếm trực tiếp số lần gọi hàm:
+Cây cũng cho thấy khi nào đệ quy bùng nổ. Fibonacci viết thẳng `fib(n-1) + fib(n-2)` thì mỗi lời gọi đẻ ra hai lời gọi, và rất nhiều trong số đó tính lại cùng một giá trị. **Đoán trước:** `fib(30)` gọi hàm khoảng bao nhiêu lần: vài trăm, vài nghìn, hay vài triệu?
 
 ```python
 calls = 0
@@ -368,103 +379,129 @@ fib(30) có memo:   59 lần gọi, kết quả 832040
 fib(90) có memo:  179 lần gọi, kết quả 2880067194370816120
 ```
 
-Mỗi lần `n` tăng 5, số lần gọi nhân lên khoảng 11 (21891 lên 242785 khi `n` từ 20 lên 25), tức nhân khoảng `φ^5 ≈ 11,09` với `φ ≈ 1,618`: tăng trưởng `Θ(φ^n)`. Cùng bài toán, chỉ thêm một cái từ điển để nhớ kết quả, số lần gọi chỉ còn `2n - 1` (tuyến tính: 19, 39, 59, 179). Đó là toàn bộ ý tưởng của [Dynamic Programming](/docs/dsa/dynamic-programming).
+Bản đệ quy thẳng tăng theo hàm mũ: `n` thêm 5 thì số lời gọi nhân khoảng 11. Thêm một từ điển để nhớ kết quả đã tính, số lời gọi chỉ còn `2n - 1` (19, 39, 59, 179), tức tuyến tính. Đổi lớp mũ thành lớp tuyến tính bằng cách nhớ kết quả là ý tưởng của [Dynamic Programming](/docs/dsa/dynamic-programming).
 
-## Đo thực nghiệm
+**Thử ngay:** hàm `count(n)` trả về `0` nếu `n == 0`, ngược lại trả về `1 + count(n - 1)`. Vẽ cây lời gọi của nó. Độ phức tạp thời gian là bao nhiêu?
 
-Lý thuyết nói `O(n)`, nhưng code thật có đúng như vậy không? Cách kiểm chứng rẻ nhất là **doubling test**: nhân đôi `n`, đo thời gian, xem tỉ số giữa hai lần đo.
+<Expand title="Đáp án">
 
-| Tỉ số khi `n` nhân đôi | Gợi ý lớp tăng trưởng |
-|---|---|
-| gần 1 | `log n` hoặc hằng số |
-| gần 2 | `n` |
-| hơi trên 2 (2,1 đến 2,4) | `n log n` |
-| gần 4 | `n^2` |
-| gần 8 | `n^3` |
+Cây chỉ là một đường thẳng: `count(n)` gọi `count(n-1)`, gọi `count(n-2)`, ... tới `count(0)`. Có `n + 1` lời gọi, mỗi lời gọi tốn `O(1)`, tổng là `O(n)`. Cây chỉ phình ra khi một lời gọi đẻ ra **nhiều** lời gọi con.
+
+</Expand>
+
+## Trường hợp tốt nhất, xấu nhất, trung bình
+
+Cùng một thuật toán, chi phí có thể khác nhau tuỳ dữ liệu. Tìm tuyến tính gặp phần tử ở vị trí đầu thì tốn 1 bước, ở cuối hoặc không có thì tốn `n` bước.
+
+| Trường hợp | Tìm tuyến tính | Dùng khi |
+|---|---|---|
+| tốt nhất | 1 bước | hiếm khi có ích |
+| xấu nhất | `n` bước | cần đảm bảo, ví dụ hệ thống phải trả lời kịp |
+| trung bình | khoảng `n/2` bước | ước lượng cho dữ liệu thường gặp |
+
+Khi không nói gì thêm, độ phức tạp thường là của **trường hợp xấu nhất**.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ `O` nghĩa là trường hợp xấu nhất. Thật ra đó là hai câu hỏi khác nhau. Tốt nhất, xấu nhất hay trung bình là chọn *đầu vào nào*. `O`, `Ω`, `Θ` là chọn *cận nào* cho chi phí của đầu vào đó. Câu "tìm tuyến tính là `O(n)` ở trường hợp xấu nhất" kết hợp cả hai.
+
+**Thử ngay:** tìm nhị phân ở trường hợp tốt nhất tốn bao nhiêu lần so sánh? Khi nào xảy ra?
+
+<Expand title="Đáp án">
+
+1 lần, khi giá trị cần tìm nằm đúng ở vị trí giữa mảng ngay lần đầu. Trường hợp xấu nhất vẫn là khoảng `log2 n`.
+
+</Expand>
+
+## Bộ nhớ cũng có độ phức tạp
+
+Space complexity đo bộ nhớ **thêm vào** khi `n` lớn lên. Nguồn hay bị quên nhất là **ngăn xếp đệ quy**: mỗi lời gọi chưa trả về chiếm một khung trên stack. **Đoán trước:** hàm `depth(n)` dưới đây không tạo list hay dict nào. Nó có thể chạy hỏng vì thiếu bộ nhớ không?
 
 ```python
-import time, random
-
-def best_of(fn, arg, repeat=3):
-    best = float('inf')
-    for _ in range(repeat):
-        t = time.perf_counter()
-        fn(arg)
-        best = min(best, time.perf_counter() - t)
-    return best
-
-def f_linear(n):
-    s = 0
-    for i in range(n):
-        s += i
-    return s
-
-def f_nlogn(n):
-    a = [random.random() for _ in range(n)]
-    a.sort()
-
-def f_quad(n):
-    c = 0
-    for i in range(n):
-        for j in range(n):
-            c += 1
-    return c
-
-def f_exp(n):
-    def fib(k):
-        return k if k < 2 else fib(k-1) + fib(k-2)
-    return fib(n)
-
-def run(name, fn, sizes):
-    print(name)
-    prev = None
-    for n in sizes:
-        t = best_of(fn, n)
-        ratio = f"x{t/prev:5.2f}" if prev else "      "
-        print(f"  n={n:>9}  {t*1000:10.3f} ms  {ratio}")
-        prev = t
-
-run("O(n)       tổng 0..n-1", f_linear, [250_000, 500_000, 1_000_000, 2_000_000, 4_000_000])
-run("O(n log n) sort n số ngẫu nhiên", f_nlogn, [125_000, 250_000, 500_000, 1_000_000, 2_000_000])
-run("O(n^2)     hai vòng lồng", f_quad, [500, 1000, 2000, 4000])
-run("O(phi^n)   fib đệ quy", f_exp, [22, 24, 26, 28, 30])
+import sys
+print("giới hạn đệ quy mặc định:", sys.getrecursionlimit())
+def depth(n):
+    return 0 if n == 0 else 1 + depth(n - 1)
+for n in (500, 900, 5000):
+    try:
+        print(f"depth({n}) =", depth(n))
+    except RecursionError as e:
+        print(f"depth({n}) -> RecursionError: {e}")
 ```
 
 ```text
-O(n)       tổng 0..n-1
-  n=   250000       6.011 ms        
-  n=   500000      11.279 ms  x 1.88
-  n=  1000000      21.408 ms  x 1.90
-  n=  2000000      43.671 ms  x 2.04
-  n=  4000000      86.455 ms  x 1.98
-O(n log n) sort n số ngẫu nhiên
-  n=   125000      23.394 ms        
-  n=   250000      55.610 ms  x 2.38
-  n=   500000     130.989 ms  x 2.36
-  n=  1000000     289.137 ms  x 2.21
-  n=  2000000     616.049 ms  x 2.13
-O(n^2)     hai vòng lồng
-  n=      500       4.427 ms        
-  n=     1000      18.721 ms  x 4.23
-  n=     2000      85.219 ms  x 4.55
-  n=     4000     337.725 ms  x 3.96
-O(phi^n)   fib đệ quy
-  n=       22       3.362 ms        
-  n=       24       7.713 ms  x 2.29
-  n=       26      18.895 ms  x 2.45
-  n=       28      64.594 ms  x 3.42
-  n=       30     149.569 ms  x 2.32
+giới hạn đệ quy mặc định: 1000
+depth(500) = 500
+depth(900) = 900
+depth(5000) -> RecursionError: maximum recursion depth exceeded
 ```
 
-Đọc kết quả: tỉ số gần 2 cho vòng tuyến tính, 2,1 đến 2,4 cho sort, 4 cho hai vòng lồng, đúng như bảng. Với Fibonacci, mỗi bước `n` tăng 2 thì lý thuyết cho `φ^2 ≈ 2,62`; số đo dao động từ 2,29 đến 3,42. Dòng 3,42 là một lần đo bị nhiễu (có thể do bộ lập lịch hoặc bộ gom rác), và đó là cảnh báo đáng nhớ: **một con số đo đơn lẻ không đáng tin**. Mã trên lấy giá trị nhỏ nhất của 3 lần chạy để giảm nhiễu, và vẫn chưa hết.
+Đệ quy sâu `n` tầng thì có `n` khung stack cùng tồn tại, tốn `O(n)` bộ nhớ. Python chặn ở khoảng 1000 tầng để không tràn stack thật. Duyệt 5.000 phần tử kiểu này thì lỗi, bằng vòng lặp thì không: cả hai đều `O(n)` thời gian, nhưng bộ nhớ thêm là `O(n)` so với `O(1)`.
 
-Một giới hạn khác: dòng `n log n` đo cả việc sinh số ngẫu nhiên, nên hệ số bị đẩy lên một phần tuyến tính. Doubling test phát hiện được **bậc**, không cho số chính xác.
+Thời gian và bộ nhớ cũng hay đổi chác cho nhau: bảng `memo` của Fibonacci mua tốc độ bằng RAM.
 
-## Amortized analysis
+**Thử ngay:** bản `fibm` có memo dùng bao nhiêu bộ nhớ thêm theo Big-O?
 
-Có những thao tác thỉnh thoảng rất đắt nhưng phần lớn thì rẻ. Gán cho nó chi phí trường hợp xấu nhất là quá bi quan; gán chi phí trường hợp thường là bỏ qua cú đắt. **Amortized analysis** tính chi phí **trung bình trên một chuỗi thao tác liên tiếp**, và nó là đảm bảo trong trường hợp xấu nhất cho cả chuỗi, không dựa vào xác suất hay dữ liệu may mắn.
+<Expand title="Đáp án">
 
-Ví dụ chuẩn là **dynamic array**: mảng có sức chứa `cap`, `append` ghi vào ô tiếp theo (rẻ), nhưng khi đầy thì phải cấp mảng mới lớn hơn và **sao chép** toàn bộ phần tử sang (đắt). Cài lại nó, đếm số phần tử bị sao chép, với ba chiến lược tăng sức chứa:
+`O(n)`: bảng `memo` giữ `n + 1` giá trị, và ngăn xếp đệ quy sâu tới `n` tầng. Cộng lại vẫn là `O(n)`.
+
+</Expand>
+
+## Tự kiểm tra tổng hợp
+
+Các câu dưới trộn kiến thức của nhiều mục, nên khó hơn câu "Thử ngay". Nếu vướng, quay lại mục tương ứng.
+
+1. Đoạn sau có độ phức tạp bao nhiêu?
+
+   ```python
+   for i in range(n):
+       for j in range(i, n):
+           print(i, j)
+   ```
+
+2. Thuật toán A tốn `100n` bước, B tốn `n^2` bước. Với `n = 50` thì cái nào nhanh hơn? Với `n = 1000` thì sao?
+3. Hàm khử trùng lặp dưới đây chậm khi danh sách dài. Vì sao, và sửa thế nào?
+
+   ```python
+   def dedupe(items):
+       seen = []
+       for x in items:
+           if x not in seen:
+               seen.append(x)
+       return seen
+   ```
+
+4. Một hàm sắp xếp mảng (`O(n log n)`) rồi tìm nhị phân `n` lần trên mảng đó. Tổng độ phức tạp là bao nhiêu?
+
+<Expand title="Đáp án">
+
+1. `O(n^2)`. Vòng trong chạy `n - i` lần, tổng là `n + (n-1) + ... + 1 = n(n+1)/2`. Cùng dạng với Ví dụ 1.
+2. `n = 50`: A tốn 5.000, B tốn 2.500, B nhanh hơn. `n = 1000`: A tốn 100.000, B tốn 1.000.000, A nhanh hơn. Hai cái bằng nhau ở `n = 100`.
+3. `x not in seen` duyệt cả list `seen`, tốn `O(n)`, và nó nằm trong vòng lặp `n` lần, nên tổng là `O(n^2)`. Dùng thêm một `set` để kiểm tra (`O(1)` trung bình), vẫn giữ list để giữ thứ tự: tổng còn `O(n)`. Lý do `set` kiểm tra nhanh được nằm ở bài [Hash Table](/docs/dsa/hash-tables).
+4. `O(n log n)`. Sắp xếp tốn `n log n`, rồi `n` lần tìm, mỗi lần `log n`, cũng là `n log n`. Hai khối nối tiếp thì cộng: `n log n + n log n = O(n log n)`.
+
+</Expand>
+
+## Đi sâu hơn
+
+Các phần dưới không cần để đọc tiếp chặng DSA, nhưng sẽ gặp khi học sâu hơn hoặc đọc tài liệu thuật toán.
+
+<Expand title="Master theorem: công thức cho đệ quy chia để trị">
+
+Với recurrence dạng `T(n) = a T(n/b) + f(n)` (chia thành `a` bài con, mỗi bài cỡ `n/b`, tốn `f(n)` để chia và gộp), so `f(n)` với `n^(log_b a)`:
+
+| Trường hợp | Điều kiện | Kết quả | Ví dụ |
+|---|---|---|---|
+| 1 | `f(n)` nhỏ hơn hẳn `n^(log_b a)` | `Θ(n^(log_b a))` | `2T(n/2) + 1` (duyệt cây): `Θ(n)` |
+| 2 | `f(n)` cùng bậc `n^(log_b a)` | `Θ(n^(log_b a) log n)` | `2T(n/2) + n` (merge sort): `Θ(n log n)` |
+| 3 | `f(n)` lớn hơn hẳn | `Θ(f(n))` | `T(n/2) + n` (quickselect): `Θ(n)` |
+
+Định lý không áp dụng khi bài toán chỉ nhỏ đi một hằng số, như `T(n-1) + n`. Khi đó khai triển tay: `n + (n-1) + ... + 1 = Θ(n^2)`, đúng bằng chi phí của quicksort khi luôn chọn pivot tệ nhất.
+
+</Expand>
+
+<Expand title="Amortized analysis: vì sao append vào dynamic array là O(1)">
+
+Dynamic array (như `list` của Python) khi đầy phải cấp mảng mới lớn hơn và chép hết phần tử sang. Một lần `append` như vậy tốn `O(n)`, nhưng nó hiếm. <Term>Amortized analysis</Term> tính chi phí trung bình trên cả chuỗi thao tác, và đó là một đảm bảo, không dựa vào may rủi. Mô phỏng dưới đây đếm số phần tử bị sao chép với ba cách tăng sức chứa:
 
 ```python
 class DynArray:
@@ -507,321 +544,37 @@ x2               N=  10000  resize=   14  copies=       16383  cost/append=   2.
 x2               N= 100000  resize=   17  copies=      131071  cost/append=   2.31
 x2               N=1000000  resize=   20  copies=     1048575  cost/append=   2.05
 +10 mỗi lần      N=   1000  resize=  100  copies=       49600  cost/append=  50.60
-+10 mỗi lần      N=  10000  resize= 1000  copies=     4996000  cost/append=  500.60
++10 mỗi lần      N=  10000  resize= 1000  copies=     4996000  cost/append= 500.60
 +10 mỗi lần      N= 100000  resize=10000  copies=   499960000  cost/append=5000.60
 x1.5             N=   1000  resize=   17  copies=        2137  cost/append=   3.14
 x1.5             N=  10000  resize=   23  copies=       24284  cost/append=   3.43
 x1.5             N= 100000  resize=   29  copies=      276521  cost/append=   3.77
 ```
 
-### Ba cách chứng minh cùng một kết quả
+Nhân đôi sức chứa thì tổng sao chép là `1 + 2 + 4 + ... < 2N`, nên mỗi `append` trung bình dưới 3 bước dù `N` lớn tới đâu: amortized `O(1)`. Cộng thêm 10 ô mỗi lần thì chi phí mỗi `append` tăng theo `N` (50, 500, 5000): amortized `O(n)`. Kết luận: phải **nhân** sức chứa, không được **cộng**. Bài [Array & Linked List](/docs/dsa/arrays-linked-lists) bàn tiếp chiều ngược lại: khi nào thu nhỏ.
 
-**Aggregate (gộp).** Nhân đôi: resize xảy ra khi `n = 1, 2, 4, 8, ...` (đúng như dòng "resize ở n" của lần chạy `N=16`), mỗi lần sao chép `n` phần tử. Tổng sao chép tới `N` là `1 + 2 + 4 + ... + 2^k < 2^(k+1) <= 2N`, khớp 15 (cho `N=16`), 1023, 1048575. Chi phí cả chuỗi `N` lần append là `N + 2N = 3N` ở mức tối đa, nên mỗi append **amortized `O(1)`**. Cột `cost/append` luôn dưới 3, và dao động (2,02, 2,64, 2,31) tuỳ `N` rơi ngay sau hay ngay trước một lần resize: `N = 10000` vừa qua mốc 8192 nên mới trả xong khoản sao chép lớn.
+</Expand>
 
-**Accounting (tài khoản).** Tính mỗi append "giá" 3 đồng, dù thực tế có khi đắt có khi rẻ. Một đồng trả cho chính việc ghi, hai đồng gửi tiết kiệm trên phần tử mới. Khi mảng đầy ở sức chứa `c`, nửa sau của mảng (c/2 phần tử mới) đã tích lũy `2 * c/2 = c` đồng, đủ trả sao chép cả `c` phần tử. Tài khoản không bao giờ âm, nên 3 đồng mỗi append là đủ.
+<Expand title="Kiểm chứng bằng đo đạc: doubling test">
 
-**Potential (thế năng).** Định nghĩa hàm `Φ = 2n - cap`, đo "độ đầy". Chi phí amortized = chi phí thật + thay đổi `Φ`. Append thường: chi phí thật 1, `Φ` tăng 2, amortized 3. Append kích hoạt resize (`n = cap`, sao chép `n`, `cap` gấp đôi): chi phí thật `1 + n`, `Φ` đổi từ `2n - n = n` sang `2(n+1) - 2n = 2`, tức giảm `n - 2`, amortized `1 + n - (n - 2) = 3`. Cả hai trường hợp đều `3`.
+Muốn biết code thật có đúng bậc như lý thuyết không, nhân đôi `n` rồi xem thời gian tăng bao nhiêu lần, giống dòng "so với n/2" trong khung kéo ở trên:
 
-Cả ba phương pháp cho đáp án giống nhau; chọn cái nào dễ chứng minh nhất cho cấu trúc đang xét.
+| Thời gian tăng khi `n` gấp đôi | Gợi ý |
+|---|---|
+| gần 1 lần | `log n` hoặc hằng số |
+| gần 2 lần | `n` |
+| 2,1 tới 2,4 lần | `n log n` |
+| gần 4 lần | `n^2` |
+| gần 8 lần | `n^3` |
 
-### Vì sao hệ số nhân mới là chìa khoá
+Đo vài lần và lấy giá trị nhỏ nhất, vì một lần đo đơn lẻ dễ bị nhiễu. Cách này cho biết **bậc**, không cho con số chính xác. Sedgewick & Wayne (mục 1.4) trình bày kỹ phương pháp.
 
-Hàng `+10 mỗi lần` cho thấy tại sao phải **nhân** sức chứa chứ không phải **cộng** một hằng: với `N = 100000`, mỗi append tốn trung bình 5000 phép sao chép, tức amortized `Θ(N)`, tổng `Θ(N^2)`. Tăng cộng hằng số thì tổng sao chép là `10 + 20 + ... ≈ N^2/20`; tăng nhân hệ số thì tổng là chuỗi cấp số nhân, hội tụ về `O(N)`.
+</Expand>
 
-Hệ số nhân bao nhiêu thì đủ? Hệ số `x2` tốn ít sao chép nhất nhưng có thể bỏ trống tới một nửa bộ nhớ. Hệ số `x1.5` tốn nhiều sao chép hơn (cost/append khoảng 3,1 tới 3,8, thay vì 2 tới 2,6) đổi lại lãng phí bộ nhớ ít hơn; Java `ArrayList` dùng 1,5, và C++ `std::vector` tuỳ cài đặt (thường 2 hoặc 1,5). Python thì dùng hệ số nhỏ hơn nữa, đo được như sau:
+<Expand title="Hằng số ẩn và cache">
 
-```python
-import sys
-a, last, cap_changes = [], sys.getsizeof([]), []
-for i in range(1, 200):
-    a.append(i)
-    s = sys.getsizeof(a)
-    if s != last:
-        cap_changes.append((len(a), (s - sys.getsizeof([])) // 8))
-        last = s
-print("len tại lúc cấp phát lại -> sức chứa mới (số ô 8 byte):")
-print(cap_changes)
-```
+Hai thuật toán khác lớp có thể đổi ngôi khi `n` nhỏ. Insertion sort (`O(n^2)`) nhanh hơn merge sort (`O(n log n)`) với vài chục phần tử, vì vòng lặp của nó đơn giản hơn. Vì vậy Timsort của Python dùng insertion sort cho các đoạn ngắn (xem [Sorting](/docs/dsa/sorting)).
 
-```text
-len tại lúc cấp phát lại -> sức chứa mới (số ô 8 byte):
-[(1, 4), (5, 8), (9, 16), (17, 24), (25, 32), (33, 40), (41, 52), (53, 64), (65, 76), (77, 92), (93, 108), (109, 128), (129, 148), (149, 172), (173, 200)]
-```
+Máy thật cũng không đọc mọi ô nhớ với cùng chi phí: đọc các phần tử nằm sát nhau nhanh hơn nhiều so với nhảy xa, nhờ cache. Cùng số thao tác có thể khác thời gian vài lần. Phần này nằm ở bài [Memory Hierarchy](/docs/architecture/memory-hierarchy).
 
-Sức chứa đi 4, 8, 16, 24, 32, 40, 52, 64, 76, 92, ...: tăng khoảng 12,5% mỗi lần (có làm tròn) thay vì nhân đôi. CPython cố ý chọn hệ số nhỏ để tiết kiệm RAM, và vẫn là hệ số nhân nên vẫn amortized `O(1)`; tức hệ số thật nhỏ chỉ làm hằng số lớn hơn, không đổi lớp. Con số cụ thể có thể khác ở phiên bản khác của Python, chỉ có kết luận "tăng theo tỉ lệ" là ổn định.
-
-## Hằng số ẩn
-
-Big-O bỏ hằng số nên so hai thuật toán ở lớp khác nhau nghĩa là so hai đường cong có thể **cắt nhau** ở đâu đó. Phép đo dưới đây chạy insertion sort (`O(n^2)`) với merge sort (`O(n log n)`), cùng viết bằng Python thuần, đếm cả số phép so sánh lẫn thời gian:
-
-```python
-import random, time
-
-def insertion_sort(a):
-    a = a[:]
-    cmp = 0
-    for i in range(1, len(a)):
-        x = a[i]
-        j = i - 1
-        while j >= 0:
-            cmp += 1
-            if a[j] <= x:
-                break
-            a[j + 1] = a[j]
-            j -= 1
-        a[j + 1] = x
-    return a, cmp
-
-def merge_sort(a):
-    cmp = 0
-    def rec(a):
-        nonlocal cmp
-        if len(a) <= 1:
-            return a
-        mid = len(a) // 2
-        l, r = rec(a[:mid]), rec(a[mid:])
-        out, i, j = [], 0, 0
-        while i < len(l) and j < len(r):
-            cmp += 1
-            if l[i] <= r[j]:
-                out.append(l[i]); i += 1
-            else:
-                out.append(r[j]); j += 1
-        out.extend(l[i:]); out.extend(r[j:])
-        return out
-    return rec(a), cmp
-
-def best(fn, a, rep=7):
-    b = float('inf')
-    for _ in range(rep):
-        t = time.perf_counter(); fn(a); b = min(b, time.perf_counter() - t)
-    return b
-
-random.seed(1)
-print(f"{'n':>6} | {'insertion: so sánh':>19} {'ms':>9} | {'merge: so sánh':>15} {'ms':>9} | nhanh hơn")
-for n in (4, 8, 16, 32, 64, 128, 512, 2048):
-    a = [random.random() for _ in range(n)]
-    _, ci = insertion_sort(a); _, cm = merge_sort(a)
-    ti, tm = best(insertion_sort, a), best(merge_sort, a)
-    print(f"{n:>6} | {ci:>19} {ti*1000:>9.4f} | {cm:>15} {tm*1000:>9.4f} | {'insertion' if ti < tm else 'merge'}")
-```
-
-```text
-     n |  insertion: so sánh        ms |  merge: so sánh        ms | nhanh hơn
-     4 |                   6    0.0005 |               5    0.0016 | insertion
-     8 |                  19    0.0012 |              15    0.0032 | insertion
-    16 |                  84    0.0041 |              47    0.0077 | insertion
-    32 |                 241    0.0120 |             118    0.0170 | insertion
-    64 |                1047    0.0472 |             303    0.0386 | merge
-   128 |                3693    0.1703 |             739    0.0914 | merge
-   512 |               65184    3.1176 |            3962    0.4436 | merge
-  2048 |             1066401   57.4116 |           19944    2.1950 | merge
-```
-
-Hai quan sát:
-
-- **Số phép so sánh** của merge sort ít hơn ngay từ `n = 8`, nhưng **thời gian** insertion sort vẫn thắng tới `n = 32`. Merge sort mỗi bước phải cắt mảng thành hai bản sao, gọi đệ quy, nối danh sách: hằng số lớn hơn nhiều so với vòng `while` đơn giản của insertion sort. Điểm cắt nằm khoảng `n = 32` đến `64` ở lần đo này.
-- Từ đó trở đi, độ cong thắng: ở `n = 2048`, insertion sort chậm hơn khoảng 26 lần.
-
-Thư viện chuẩn khai thác đúng điều này. [Timsort](/docs/dsa/sorting) của Python và introsort của C++ chuyển sang insertion sort cho các đoạn nhỏ (cỡ vài chục phần tử) bên trong thuật toán `n log n`. Không phải vì insertion sort "tốt hơn", mà vì dưới ngưỡng đó hằng số quyết định.
-
-### Cache: cùng số thao tác, khác thời gian
-
-Mô hình "mỗi phép đọc bộ nhớ tốn như nhau" là sai trên máy thật. CPU đọc bộ nhớ theo **cache line** (thường 64 byte); đọc phần tử kế bên thì đã nằm sẵn trong cache, đọc phần tử cách xa thì phải đi xuống RAM. Tính chất này gọi là <Term>locality of reference</Term>, nối với bộ nhớ ảo ở [Virtual Memory](/docs/os/virtual-memory) (cả TLB cũng là một cache). Thí nghiệm: cộng mọi phần tử của một ma trận `N x N` lưu phẳng trong mảng, một lần duyệt theo hàng (đi sát nhau trong bộ nhớ), một lần theo cột (nhảy `N` ô mỗi bước). Số phép đọc y hệt nhau.
-
-```python
-import time
-from array import array
-
-def bench(N):
-    m = array('q', range(N * N))
-    def by_row():
-        s = 0
-        for i in range(N):
-            base = i * N
-            for j in range(N):
-                s += m[base + j]
-        return s
-    def by_col():
-        s = 0
-        for j in range(N):
-            for i in range(N):
-                s += m[i * N + j]
-        return s
-    out = []
-    for fn in (by_row, by_col):
-        best = min(_t(fn) for _ in range(3))
-        out.append(best)
-    return out
-
-def _t(fn):
-    t = time.perf_counter(); fn(); return time.perf_counter() - t
-
-print(f"{'N':>6} {'ma trận':>10} {'theo hàng':>11} {'theo cột':>10} {'cột/hàng':>9}")
-for N in (256, 1024, 2048, 4096):
-    r, c = bench(N)
-    print(f"{N:>6} {N*N*8/2**20:>8.1f}MB {r*1000:>9.1f}ms {c*1000:>8.1f}ms {c/r:>8.2f}x")
-```
-
-```text
-     N    ma trận   theo hàng   theo cột  cột/hàng
-   256      0.5MB       2.8ms      3.7ms     1.34x
-  1024      8.0MB      52.0ms    109.4ms     2.10x
-  2048     32.0MB     212.7ms    561.7ms     2.64x
-  4096    128.0MB     867.7ms   2529.2ms     2.91x
-```
-
-Khi ma trận còn nhỏ (0,5 MB, vừa trong cache), hai cách gần nhau. Khi ma trận lớn hơn cache (8 MB trở lên), duyệt theo cột chậm gấp 2 đến 3 lần, dù cùng `Θ(N^2)`. Đây còn là con số **thấp** so với ngôn ngữ biên dịch: Python tốn hàng chục nano giây cho mỗi lệnh thông dịch, che bớt chi phí của cache miss. Trong C, chênh lệch giữa hai cách duyệt thường lớn hơn nhiều.
-
-Hệ quả cho chặng này: khi bài [Array & Linked List](/docs/dsa/arrays-linked-lists) nói mảng thường thắng danh sách liên kết dù cả hai có cùng `O(n)` khi duyệt, lý do chính là bảng trên.
-
-## Trong thư viện thật
-
-Độ phức tạp của thao tác thư viện là điều dễ bỏ qua nhất, vì một dòng code ngắn có thể che một vòng lặp. Ba ví dụ trên CPython:
-
-```python
-import time
-
-def t(fn):
-    s = time.perf_counter(); fn(); return (time.perf_counter() - s) * 1000
-
-print("1) list.insert(0, x) so với list.append(x), n lần")
-for n in (10_000, 20_000, 40_000, 80_000):
-    def front():
-        a = []
-        for i in range(n): a.insert(0, i)
-    def back():
-        a = []
-        for i in range(n): a.append(i)
-    print(f"  n={n:>6}  insert(0): {t(front):9.2f} ms   append: {t(back):7.2f} ms")
-
-print("2) x in list so với x in set, 1000 lần tra phần tử cuối")
-for n in (1_000, 10_000, 100_000):
-    L = list(range(n)); S = set(L)
-    def a():
-        for _ in range(1000): (n - 1) in L
-    def b():
-        for _ in range(1000): (n - 1) in S
-    print(f"  n={n:>7}  list: {t(a):9.2f} ms   set: {t(b):7.3f} ms")
-
-print("3) nối chuỗi: s += 'x' trong vòng lặp so với ''.join")
-for n in (100_000, 200_000, 400_000, 800_000):
-    def cat():
-        s = ''
-        for _ in range(n): s += 'x'
-    def join():
-        ''.join('x' for _ in range(n))
-    print(f"  n={n:>7}  +=: {t(cat):8.2f} ms   join: {t(join):7.2f} ms")
-```
-
-```text
-1) list.insert(0, x) so với list.append(x), n lần
-  n= 10000  insert(0):      9.85 ms   append:    0.17 ms
-  n= 20000  insert(0):     37.53 ms   append:    0.50 ms
-  n= 40000  insert(0):    150.60 ms   append:    0.81 ms
-  n= 80000  insert(0):    598.06 ms   append:    2.05 ms
-2) x in list so với x in set, 1000 lần tra phần tử cuối
-  n=   1000  list:      4.34 ms   set:   0.032 ms
-  n=  10000  list:     44.42 ms   set:   0.033 ms
-  n= 100000  list:    469.85 ms   set:   0.032 ms
-3) nối chuỗi: s += 'x' trong vòng lặp so với ''.join
-  n= 100000  +=:     5.45 ms   join:    3.09 ms
-  n= 200000  +=:    11.59 ms   join:    7.00 ms
-  n= 400000  +=:    22.48 ms   join:   14.62 ms
-  n= 800000  +=:    44.71 ms   join:   29.60 ms
-```
-
-1. **`insert(0, x)`** phải dịch cả mảng một ô sang phải, `O(n)` mỗi lần; `n` lần thì `O(n^2)`. Số đo xác nhận: gấp đôi `n`, thời gian gấp khoảng 4 (9,85 lên 37,53 lên 150,60 lên 598,06). `append` thì tuyến tính tổng cộng, đúng amortized `O(1)`.
-2. **`x in list`** quét tuyến tính, `x in set` là tra bảng băm ([Hash Table](/docs/dsa/hash-tables)), thời gian gần như không đổi (0,032 ms ở cả ba kích thước). Đổi cấu trúc dữ liệu thường đáng hơn mọi tối ưu vi mô.
-3. **`s += 'x'`** theo lý thuyết sao chép chuỗi mỗi lần nên là `O(n^2)`, nhưng số đo cho thấy tuyến tính (gấp đôi `n`, gấp đôi thời gian). Lý do: CPython có một tối ưu riêng, khi chuỗi chỉ có một tham chiếu thì nó mở rộng tại chỗ thay vì sao chép. Tối ưu này **không nằm trong đặc tả ngôn ngữ**, và không có ở các implementation khác hoặc khi chuỗi có tham chiếu thứ hai. Quy ước an toàn vẫn là `''.join`, nhanh hơn ở mọi cỡ trong phép đo trên.
-
-Tài liệu của chính Python liệt kê độ phức tạp từng thao tác trên `list`, `dict`, `set` ở trang TimeComplexity (trong phần tham khảo). Đọc nó một lần, vì đó là bảng tra bạn dùng hằng ngày.
-
-## Space complexity
-
-Chi phí bộ nhớ đo giống thời gian: thêm bao nhiêu bộ nhớ khi `n` lớn lên. Hai nguồn hay bị quên:
-
-- **Bộ nhớ phụ.** Thuật toán sắp xếp tại chỗ dùng `O(1)` hoặc `O(log n)` thêm; merge sort cần mảng phụ `O(n)`.
-- **Ngăn xếp đệ quy.** Mỗi lời gọi chiếm một khung stack, nên đệ quy sâu `n` tốn `O(n)` bộ nhớ dù không tạo cấu trúc nào. Python giới hạn độ sâu mặc định để tránh tràn stack:
-
-```python
-import sys
-print("giới hạn đệ quy mặc định:", sys.getrecursionlimit())
-def depth(n):
-    return 0 if n == 0 else 1 + depth(n - 1)
-for n in (500, 900, 5000):
-    try:
-        print(f"depth({n}) =", depth(n))
-    except RecursionError as e:
-        print(f"depth({n}) -> RecursionError: {e}")
-```
-
-```text
-giới hạn đệ quy mặc định: 1000
-depth(500) = 500
-depth(900) = 900
-depth(5000) -> RecursionError: maximum recursion depth exceeded
-```
-
-Hệ quả thiết kế: duyệt một danh sách liên kết 100.000 nút bằng đệ quy sẽ lỗi, bằng vòng lặp thì không. Cùng thời gian `O(n)`, khác bộ nhớ (`O(n)` stack so với `O(1)`). Ngoài ra thời gian và bộ nhớ thường đánh đổi lẫn nhau: bảng nhớ kết quả (memo ở phần Fibonacci) mua tốc độ bằng RAM.
-
-## Quan sát và chẩn đoán
-
-Khi code chậm, đừng đoán. Đo bằng `cProfile`, nó cho biết hàm nào chiếm thời gian. Ví dụ một hàm khử trùng lặp trông vô hại:
-
-```python
-import cProfile, pstats, io
-def dedupe(items):
-    seen = []
-    for x in items:
-        if x not in seen:       # O(len(seen)) mỗi lần
-            seen.append(x)
-    return seen
-def dedupe_fast(items):
-    seen, out = set(), []
-    for x in items:
-        if x not in seen:       # O(1) trung bình
-            seen.add(x); out.append(x)
-    return out
-data = list(range(6000)) * 2
-pr = cProfile.Profile(); pr.enable()
-a = dedupe(data); b = dedupe_fast(data)
-pr.disable()
-assert a == b
-s = io.StringIO()
-pstats.Stats(pr, stream=s).sort_stats('cumulative').print_stats(4)
-print("\n".join(l for l in s.getvalue().splitlines() if l.strip()))
-```
-
-```text
-         18003 function calls in 0.171 seconds
-   Ordered by: cumulative time
-   List reduced from 5 to 4 due to restriction <4>
-   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        1    0.168    0.168    0.169    0.169 prof.py:3(dedupe)
-        1    0.001    0.001    0.003    0.003 prof.py:9(dedupe_fast)
-    12000    0.001    0.000    0.001    0.000 {method 'append' of 'list' objects}
-     6000    0.001    0.000    0.001    0.000 {method 'add' of 'set' objects}
-```
-
-(Đường dẫn file đã được rút gọn.) Cột `tottime` của `dedupe` là 0,168 giây; `dedupe_fast` chỉ 0,001: chênh nhau khoảng 170 lần với 12.000 phần tử. Chi phí nằm ở `x not in seen` bên trong, vì `in` trên list chạy trong C nên không hiện thành dòng riêng.
-
-| Triệu chứng | Nguyên nhân hay gặp | Cách xác nhận |
-|---|---|---|
-| Chạy tốt với dữ liệu thử, treo khi lên dữ liệu thật | vòng lồng ngầm (`in` trên list, `insert(0)`, `remove`) | doubling test, `cProfile` |
-| Thời gian tăng gấp 4 khi dữ liệu gấp đôi | `O(n^2)` | tỉ số doubling gần 4 |
-| Bộ nhớ tăng đều không ngừng | giữ tham chiếu, cache không giới hạn | so sánh dung lượng giữa hai kích thước |
-| Hết độ sâu đệ quy | đệ quy sâu `O(n)` | `RecursionError`; đổi sang vòng lặp |
-| Chậm không giải thích được dù đã đúng bậc | hằng số hoặc cache | so sánh số thao tác với thời gian đo |
-
-## Lưu ý
-
-- `O` là cận trên của hàm chi phí, không phải trường hợp xấu nhất. Trường hợp xấu nhất là chọn **đầu vào**; ký hiệu là chọn **cận**.
-- `Θ` mới là "cùng bậc". Trong giao tiếp, người ta thường viết `O` mà nghĩa `Θ`; trong chứng minh, hãy phân biệt.
-- Bỏ hằng số nghĩa là hai thuật toán cùng lớp vẫn có thể chênh nhau hàng chục lần, và hai thuật toán khác lớp có thể có điểm cắt ở kích thước lớn hơn dữ liệu thật của bạn. Đo trước khi tối ưu.
-- Số mili giây đo một lần không đáng tin. Lấy giá trị nhỏ nhất qua vài lần, dùng doubling test để đọc bậc thay vì đọc số tuyệt đối.
-- Amortized không phải trung bình theo xác suất: nó là đảm bảo trên mọi chuỗi thao tác. Một thao tác riêng lẻ vẫn có thể đắt (một lần `append` đang resize vẫn là `O(n)`), điều này quan trọng khi bạn cần độ trễ ổn định, như trong hệ thống thời gian thực.
-- Tăng sức chứa bằng cách **cộng** hằng số làm `append` tệ đi thành `Θ(n^2)` tổng; phải **nhân** hệ số.
-- Độ phức tạp của thao tác thư viện là phần của giao diện: `list.insert(0)`, `x in list`, `list.remove` đều `O(n)`. Tra TimeComplexity trước khi đặt chúng vào vòng lặp.
-- Bộ nhớ cũng là một chiều của độ phức tạp, và ngăn xếp đệ quy tính vào nó.
-- Master theorem chỉ áp dụng cho dạng chia đều (`T(n/b)`); `T(n-1) + ...` phải khai triển tay.
+</Expand>

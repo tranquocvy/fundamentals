@@ -27,7 +27,7 @@ Bố cục tự sinh từ `requires`, không có toạ độ. Quy tắc nằm �
 - **Trục chính** của mỗi chặng là chuỗi node bắt buộc (không `optional`) dài nhất theo `requires`. Hoà nhau thì theo thứ tự trong file. Node gốc bắt buộc không có `requires` trong chặng được xếp nối nhau trên trục theo thứ tự file.
 - Node bắt buộc không nằm trên trục thành **nhánh rẽ phải**; node `optional: true` **rẽ trái, nét đứt**. Node cha trên bản đồ là `requires` **đầu tiên** nằm trong cùng chặng; các `requires` còn lại và `requires` sang chặng khác hiện thành dòng "cần …" trên node chứ không vẽ dây. Vì vậy đặt node cha chính lên đầu danh sách.
 - Node tuỳ chọn không có cha nằm ở hàng cuối của chặng.
-- Mỗi chặng nên 5–9 node, mỗi node tương ứng một bài đọc 15–30 phút. Nhánh sâu quá 2 cấp sẽ chật trên mobile (cần đọc tốt ở 375px).
+- Mỗi chặng nên 5–9 node, mỗi node tương ứng một bài trả lời một câu hỏi nền tảng. Nhánh sâu quá 2 cấp sẽ chật trên mobile (cần đọc tốt ở 375px).
 - Trang `/roadmaps` hiện mỗi cây dạng thẻ với bản đồ nhỏ (SVG), danh sách chặng và tiến trình; trang `/roadmaps/<tên>` vẽ cây đầy đủ, có gợi ý "Học tiếp", và hộp thoại chi tiết từng node ("Nên học trước", "Học xong mở ra"). Màu của chặng lấy từ `subject` (accent theo môn trong `src/lib/subjects.ts`).
 - Trạng thái tiến trình chỉ có `done` và `skip`; khoá cũ `learning` còn có thể xuất hiện trong dữ liệu của người dùng và được đọc như "chưa học".
 - `effort` (phút) của node có `article` tự tính từ độ dài bài (`WORDS_PER_MINUTE = 160` trong `src/lib/roadmaps.ts`), nên bài 6.000 từ hiện khoảng 38 phút. Chỉ đặt `effort` tay cho node chưa có bài.
