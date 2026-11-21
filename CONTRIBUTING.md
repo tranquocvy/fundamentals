@@ -5,7 +5,7 @@ File này dành cho **cả người lẫn AI agent** (Claude Code, Codex, Cursor
 ## 1. Site này là gì
 
 - Ghi chú kiến thức nền tảng IT **đã học**, viết bằng **tiếng Việt**, giữ **thuật ngữ tiếng Anh**.
-- **Không phải** site luyện phỏng vấn: không viết dạng "câu hỏi / đáp án mẫu", không mẹo trả lời.
+- Dạy **nền tảng để hiểu thật**, nhờ vậy vững khi đi làm và khi phỏng vấn IT. **Không phải** ngân hàng câu hỏi phỏng vấn: không viết dạng "câu hỏi / đáp án mẫu", không mẹo trả lời.
 - Mỗi bài phải có **nguồn tiếng Anh** để người đọc đối chiếu.
 - Site tĩnh (Next.js `output: 'export'` + Fumadocs + MDX). Không backend, không database.
 
@@ -20,9 +20,15 @@ File này dành cho **cả người lẫn AI agent** (Claude Code, Codex, Cursor
 | Bảng so sánh khi có ≥ 2 khái niệm song song | Danh sách gạch đầu dòng dài > 7 ý |
 | Nguồn cụ thể: sách + chương, link bài gốc | "Theo internet", link blog không rõ tác giả |
 
-**Độ sâu**: bài ở đây dài và có code tự cài, output chạy thật, bảng so sánh, phần quan sát trên hệ thống thật. Chuẩn chi tiết và các bài mẫu nằm ở [content/AGENTS.md](content/AGENTS.md); đọc trước khi viết, vì quy ước ngắn gọn ở bảng trên không nói về độ sâu.
+**Cấu trúc bài** (chi tiết, lý do và nguồn nghiên cứu ở [content/AGENTS.md](content/AGENTS.md) mục 2, bài mẫu `content/docs/dsa/complexity.mdx`):
 
-Cấu trúc bài gợi ý: `## Ý chính` → các phần giải thích → `## Khi nào dùng / Lưu ý` (tuỳ bài). Không cần mục "Tài liệu tham khảo" trong nội dung vì trang tự hiển thị từ frontmatter `references`.
+1. `description` là câu hỏi mà bài trả lời.
+2. Dòng **Cần biết trước**, dòng **Cách đọc bài**, rồi `## Ý chính` trả lời thẳng câu hỏi.
+3. Các mục chính, mỗi mục một ý, theo vòng: **Đoán trước** → ví dụ có số thật → quy tắc → **Hiểu lầm hay gặp ở đây** (nếu có) → **Thử ngay** (đáp án trong `<Expand>`).
+4. Bài dạy một kỹ năng thì dùng chuỗi ví dụ giải sẵn → giải một nửa → tự làm.
+5. `## Tự kiểm tra tổng hợp`, rồi `## Đi sâu hơn` cho phần nâng cao.
+
+Không giới hạn số từ hay thời gian đọc; quy ước là cấu trúc. Phần nâng cao không chen vào mạch chính. Không cần mục "Tài liệu tham khảo" trong nội dung vì trang tự hiển thị từ frontmatter `references`.
 
 ### Giọng điệu ký hiệu code (quan trọng)
 
@@ -77,6 +83,8 @@ Schema nằm ở `src/lib/source.ts` (`articleSchema`). Thêm field mới thì s
 <Expand title="Ví dụ: counter++ bị xen kẽ">
 Nội dung markdown bình thường, có thể có code block.
 </Expand>
+
+<GrowthChart />                             thanh kéo n, so số thao tác của các lớp Big-O (initial={1000} để đặt n ban đầu)
 ```
 
 Muốn thêm component mới: tạo trong `src/components/`, đăng ký ở `src/components/mdx.tsx`, cập nhật mục này.
@@ -144,7 +152,7 @@ sections:                            # mỗi section là một "chặng" trên t
 - `requires` **đầu tiên** nằm trong cùng chặng là node cha trên bản đồ. Các `requires` còn lại, và `requires` sang chặng khác, hiện thành dòng "cần …" trên node chứ không vẽ dây. Vì vậy hãy đặt node cha chính lên đầu danh sách.
 - Trục chính là chuỗi node bắt buộc dài nhất (hoà nhau thì theo thứ tự trong file). Node bắt buộc không nằm trên trục thành nhánh rẽ phải; node `optional: true` rẽ trái với nét đứt.
 - Node gốc bắt buộc không có `requires` trong chặng được xếp nối tiếp nhau trên trục theo thứ tự trong file.
-- Mỗi chặng nên có 5–9 node, một node tương ứng một bài đọc 15–30 phút. Nhánh sâu quá 2 cấp sẽ chật trên mobile.
+- Mỗi chặng nên có 5–9 node, một node tương ứng một bài trả lời một câu hỏi nền tảng. Nhánh sâu quá 2 cấp sẽ chật trên mobile.
 - Mỗi node phải có `article` hoặc ít nhất một `resources`, để người học luôn có chỗ bắt đầu.
 
 **Quy tắc id (quan trọng):** id node là khoá lưu tiến trình trong trình duyệt người dùng. Đổi tên hay xoá id làm tiến trình của họ biến mất.

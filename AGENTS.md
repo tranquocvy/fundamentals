@@ -6,7 +6,8 @@ Ngữ cảnh theo thư mục (chuẩn chất lượng bài, mẫu để bắt ch
 
 Tóm tắt điều không được vi phạm:
 
-- Nội dung tiếng Việt, **giữ thuật ngữ tiếng Anh**. Không phải site luyện phỏng vấn.
+- Nội dung tiếng Việt, **giữ thuật ngữ tiếng Anh**. Dạy nền tảng để hiểu thật (nhờ vậy vững khi phỏng vấn), không viết dạng ngân hàng câu hỏi.
+- Bài viết theo **khung bài học** ở content/AGENTS.md mục 2: mỗi mục là vòng Đoán trước → ví dụ có số thật → Thử ngay; nâng cao để ở `## Đi sâu hơn`. Không giới hạn số từ; quy ước là cấu trúc.
 - Bài mới: tạo bằng `npm run new <môn> <slug>` (copy `templates/_template.mdx`, tự thêm vào `meta.json`), điền hết `TODO`, `status: draft`, có ≥ 1 `references`.
 - Thuật ngữ: dùng `<Term>tên</Term>` và thêm giải nghĩa vào `content/glossary.json` nếu chưa có. Không lặp `def` cho thuật ngữ đã có trong glossary.
 - Roadmap: mỗi cây là một file `content/roadmaps/<slug>.yaml` (CONTRIBUTING.md mục 4b). **Không đổi tên hay xoá id node / tên file đã có** vì đó là khoá lưu tiến trình người dùng; muốn bỏ node thì đặt `deprecated: true`. Khung roadmap phải có `sources` từ nguồn mở, không sao chép roadmap.sh.

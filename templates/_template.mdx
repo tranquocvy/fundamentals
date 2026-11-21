@@ -1,6 +1,6 @@
 ---
 title: {{title}}
-description: TODO một câu tiếng Việt nói bài này bao phủ những gì (cơ chế nào, tự cài gì, đo gì).
+description: TODO câu hỏi mà bài này trả lời, viết bằng lời của người chưa biết (ví dụ "Làm sao biết thuật toán chậm đi bao nhiêu khi dữ liệu lớn lên?").
 status: draft
 tags: [{{subject}}]
 # authors: [github-username]
@@ -10,35 +10,54 @@ references:
     note: TODO đọc phần nào
 ---
 
-{/* Trước khi viết, đọc content/AGENTS.md (chuẩn độ sâu, quy trình, bẫy MDX).
-    Bài đạt chuẩn dài 5.000 tới 12.000 từ gồm cả code. Xoá chú thích này và mọi dòng hướng dẫn bên dưới khi viết xong. */}
+{/* Trước khi viết, đọc content/AGENTS.md mục 2 (chuẩn một bài học) và bài mẫu content/docs/dsa/complexity.mdx.
+    Không giới hạn số từ; mọi đoạn phải phục vụ câu hỏi ở description, phần nâng cao để ở "Đi sâu hơn".
+    Xoá chú thích này và mọi dòng hướng dẫn bên dưới khi viết xong. */}
+
+**Cần biết trước:** kiến thức cần có, kèm link `/docs/<môn>/<slug>` tới bài tương ứng.
+
+**Cách đọc bài:** mỗi mục có một câu **Đoán trước** và kết bằng một câu **Thử ngay**. Hãy tự trả lời trong đầu (hoặc ra giấy) rồi mới xem đáp án. Việc tự nhớ lại và tự đoán giúp nhớ lâu hơn nhiều so với chỉ đọc.
 
 ## Ý chính
 
-Hai, ba đoạn: khái niệm cốt lõi và **bài toán nó giải**. Thuật ngữ đã có trong glossary chỉ cần <Term>process</Term>; thuật ngữ mới thì thêm vào `content/glossary.json` hoặc viết <Term def="Giải nghĩa ngắn.">tên thuật ngữ</Term>. Kết đoạn bằng một câu nói bài đi theo trình tự nào và output lấy từ máy nào.
+Hai đoạn ngắn trả lời thẳng câu hỏi của bài. Thuật ngữ đã có trong glossary chỉ cần <Term>process</Term>; thuật ngữ mới thì thêm vào `content/glossary.json` hoặc viết <Term def="Giải nghĩa ngắn.">tên thuật ngữ</Term>.
 
-## Vấn đề nhỏ nhất, rồi từng lớp một
+## Mục thứ nhất: một ý
 
-Đi từ dưới lên: mỗi cơ chế là lời giải cho một vấn đề cụ thể của cơ chế trước nó. Ví dụ tính tay có số cụ thể, và số khớp với output của code bên dưới.
+Mở bằng vấn đề cần giải quyết.
 
-## Tự cài thứ đang nói tới
+**Đoán trước:** câu hỏi người đọc tự đoán, đặt ngay trước output hoặc kết luận.
 
-Code chạy được, dán **nguyên code và nguyên output** (chạy thật, không bịa). Mô phỏng hoặc đo để so sánh các lựa chọn, kèm bảng so sánh.
+Ví dụ cụ thể có số thật: code ngắn kèm output chạy thật, hoặc bảng tính tay. Sau đó rút ra quy tắc từ ví dụ.
 
-<Expand title="Ví dụ chi tiết hoặc chứng minh">
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ X. Thật ra Y, vì Z. (Bỏ dòng này nếu mục không có hiểu lầm đáng kể.)
 
-Phần đào sâu hoặc ví dụ dài. Để một dòng trống sau thẻ mở và trước thẻ đóng.
+**Thử ngay:** một câu hỏi ngắn.
+
+<Expand title="Đáp án">
+
+Đáp án và lý do. Để một dòng trống sau thẻ mở và trước thẻ đóng.
 
 </Expand>
 
-## Trong hệ thống thật
+## Mục dạy một kỹ năng (nếu bài có)
 
-Linux làm thế nào (system call, file trong `/proc`, tham số `sysctl`), và phần mềm quen thuộc chọn gì, vì sao. Liên kết chéo tới bài khác bằng `/docs/<môn>/<slug>`.
+### Ví dụ 1 (giải sẵn)
 
-## Quan sát và chẩn đoán
+Giải đủ từng bước, kiểm lại bằng số.
 
-Lệnh nào để thấy cơ chế trên máy thật, đọc output ra sao. Bảng "triệu chứng, nguyên nhân hay gặp".
+### Ví dụ 2 (giải một nửa)
 
-## Lưu ý
+Cho người đọc điền chỗ trống `___`, đáp án trong `<Expand>`.
 
-- 6 tới 12 gạch đầu dòng: hiểu lầm hay gặp, cái bẫy thực tế, khi nào dùng hoặc không.
+### Ví dụ 3 (tự làm)
+
+Chỉ cho đề và gợi ý, đáp án trong `<Expand>`.
+
+## Tự kiểm tra tổng hợp
+
+3 tới 5 câu trộn kiến thức nhiều mục, hỏi "vì sao" hoặc "nếu đổi X thì sao". Mọi đáp án chung trong một `<Expand title="Đáp án">`.
+
+## Đi sâu hơn
+
+Phần nâng cao, mỗi chủ đề một `<Expand>` hoặc link sang bài khác. Mạch chính phải hiểu được khi không mở phần này.

@@ -13,7 +13,7 @@ Các dòng `TODO` trong frontmatter là **cố ý**: `npm run check` chặn bài
 
 ## Khi sửa template
 
-- Template phải phản ánh **chuẩn bài hiện hành** ở [content/AGENTS.md](../content/AGENTS.md) (bài sâu, tự cài, output chạy thật, mục `## Lưu ý`). Đổi chuẩn thì sửa cả hai nơi.
+- Template phải phản ánh **chuẩn bài hiện hành** ở [content/AGENTS.md](../content/AGENTS.md) (khung bài: Cần biết trước, Cách đọc bài, Ý chính, các mục theo vòng Đoán trước / ví dụ / Thử ngay, Tự kiểm tra tổng hợp, Đi sâu hơn). Đổi chuẩn thì sửa cả hai nơi.
 - Frontmatter của template phải hợp lệ với `articleSchema` ở `src/lib/source.ts` (`kind` chỉ nhận `book | web | paper | video`). Thêm field mới ở schema thì thêm vào đây và vào CONTRIBUTING mục Frontmatter.
 - Thân bài chỉ chứa **hướng dẫn tạm** để người viết xoá đi; đừng đưa nội dung giả trông như thật vào template, vì bài viết dở vẫn build và hiện lên site.
 - Chú thích trong MDX dùng `{/* ... */}`. Đừng dùng `<!-- -->` (không hợp lệ trong MDX).

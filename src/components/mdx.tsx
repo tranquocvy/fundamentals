@@ -3,6 +3,7 @@ import type { MDXComponents } from 'mdx/types';
 import { Expand } from './expand';
 import { Term } from './term';
 import { GlossaryList } from './glossary-list';
+import { GrowthChart } from './growth-chart';
 
 export function getMDXComponents(components?: MDXComponents) {
   return {
@@ -10,6 +11,7 @@ export function getMDXComponents(components?: MDXComponents) {
     Expand,
     Term,
     GlossaryList,
+    GrowthChart,
     ...components,
   } satisfies MDXComponents;
 }

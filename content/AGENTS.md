@@ -15,7 +15,7 @@ content/
 
 Các môn khai báo ở `src/lib/subjects.ts`; môn nào có `ready: true` mới hiện nội dung. Môn chưa có bài hiện nhãn "soon". Màu accent của môn khai báo sẵn ở đó, và `src/app/global.css` cần hai dòng màu tương ứng khi tạo môn (CONTRIBUTING mục 4).
 
-Trạng thái hiện tại: năm chặng của `cs-fundamentals` (**Computer Architecture** 4 bài, **Operating Systems** 8 bài, **Computer Networks** 7 bài, **Data Structures & Algorithms** 8 bài, **Databases** 7 bài) đã viết theo chuẩn sâu bên dưới, đều `draft`. Chặng và node mới dự kiến nằm ở [roadmaps/EXPANSION.md](roadmaps/EXPANSION.md). Xem `content/roadmaps/cs-fundamentals.yaml` để biết node nào đã có `article`, đó là nguồn sự thật, đừng dựa vào danh sách trong file này.
+Trạng thái hiện tại: năm chặng của `cs-fundamentals` (**Computer Architecture** 4 bài, **Operating Systems** 8 bài, **Computer Networks** 7 bài, **Data Structures & Algorithms** 8 bài, **Databases** 7 bài) đã có bài, đều `draft`. Chỉ `dsa/complexity` theo chuẩn ở mục 2; các bài còn lại viết theo chuẩn cũ (dài) và chờ viết lại khi chủ repo yêu cầu. Chặng và node mới dự kiến nằm ở [roadmaps/EXPANSION.md](roadmaps/EXPANSION.md). Xem `content/roadmaps/cs-fundamentals.yaml` để biết node nào đã có `article`, đó là nguồn sự thật, đừng dựa vào danh sách trong file này.
 
 ### Bản đồ từng môn (để biết bài nào nối với bài nào)
 
@@ -31,43 +31,87 @@ Môn không thể có file ghi chú riêng trong `content/docs/<môn>/` (xem c�
 
 Bài viết cho môn mới nên chọn thứ tự đọc **theo chuỗi `requires`** của node trong roadmap, và để bài sau dẫn link về bài trước. Bài `databases/indexing` cần `dsa/trees` (B-tree), và `databases/transactions` cần `os/synchronization` và `os/file-systems` (journaling): các liên kết này đã có.
 
-## 2. Chuẩn độ sâu của một bài (đã thống nhất với chủ repo)
+## 2. Chuẩn một bài học (đã thống nhất với chủ repo)
 
-Chủ repo muốn bài **đủ kiến thức, đủ ví dụ, implement đủ sâu để người làm IT nắm chắc, không sơ sài, không ngại dài**. Các bài ngắn 300–850 từ ban đầu chỉ là bản tạm và đã được viết lại. Bài đạt chuẩn thường dài **5.000 tới 12.000 từ** (tính cả code); độ dài là hệ quả của việc đi tới cơ chế, đừng độn.
+### Mục tiêu
 
-Một bài đạt chuẩn có đủ:
+Site dạy **kiến thức nền tảng để hiểu thật**, nhờ vậy người đọc vững khi đi làm và khi phỏng vấn IT. Bài phải giúp người chưa biết gì về chủ đề hiểu được phần cốt lõi; kiến thức nâng cao là **phần mở rộng**, không chen vào mạch chính.
 
-1. **Mở bằng `## Ý chính`**: hai, ba đoạn nêu khái niệm cốt lõi, bài toán nó giải, rồi một đoạn nói bài đi theo trình tự nào và output lấy từ đâu.
-2. **Đi từ dưới lên, giải thích vì sao.** Mỗi cơ chế là lời giải cho một vấn đề cụ thể của cơ chế trước nó (ví dụ: địa chỉ vật lý, base and bounds, segmentation, paging; hay stop-and-wait, cửa sổ trượt, TCP).
-3. **Tự cài thứ đang nói tới**, không chỉ dùng API: spinlock và mutex trên futex, Banker's algorithm, trình mô phỏng scheduler, `ping` và `traceroute` qua raw socket, resolver DNS đi từ root xuống, server HTTP/1.1 trên socket, trie cho longest prefix match, X25519 viết tay.
-4. **Ví dụ tính tay có số cụ thể**, và số khớp với output của code trong bài.
-5. **Bảng so sánh** khi có từ hai lựa chọn song song trở lên.
-6. **Hệ thống thật**: Linux làm thế nào (system call, file trong `/proc`, tham số `sysctl`), phần mềm quen thuộc chọn gì và vì sao (PostgreSQL, Nginx, Redis, Chrome, Go...).
-7. **Mục quan sát và chẩn đoán**: lệnh nào để thấy cơ chế trên máy thật, đọc output ra sao, bảng "triệu chứng, nguyên nhân hay gặp".
-8. **Kết bằng `## Lưu ý`**: 6 tới 12 gạch đầu dòng về hiểu lầm và cái bẫy thực tế. Đây là mục duy nhất được phép là danh sách dài.
-9. **Liên kết chéo** bằng `/docs/<môn>/<slug>` tới các bài đã có khi nhắc khái niệm có bài riêng (ví dụ TCP dẫn về CPU Scheduling cho exponential averaging, I/O & Devices cho epoll).
+**Không giới hạn số từ hay thời gian đọc**, vì mỗi chủ đề cần lượng nội dung khác nhau. Thứ được quy ước là **cấu trúc và cách viết**. Phép thử cho mọi đoạn: nó có giúp trả lời câu hỏi của bài (`description`) ở mức nền tảng không? Không thì bỏ, hoặc chuyển xuống `## Đi sâu hơn`.
 
-Không làm: viết dạng câu hỏi phỏng vấn; chép định nghĩa sách giáo khoa; mục "Tài liệu tham khảo" trong thân bài; số liệu hay output không chạy ra từ máy thật.
+Trước đây chuẩn là "không ngại dài, 5.000 tới 12.000 từ, có đủ hệ thống thật và mục chẩn đoán". Chuẩn đó làm bài phình thành tài liệu từ cơ bản tới chuyên sâu, và đã bị thay. **Các bài viết trước chuẩn này chưa được viết lại**; đừng lấy cấu trúc của chúng làm mẫu.
+
+### Cơ sở
+
+Cấu trúc dưới đây dựa trên các kết quả nghiên cứu về học tập được lặp lại nhiều lần:
+
+| Nguyên tắc | Áp dụng trong bài | Nguồn |
+|---|---|---|
+| Bộ nhớ làm việc có hạn; quá nhiều chữ hay nhiều thứ mới cùng lúc làm người đọc quá tải | một ý mỗi mục, định nghĩa thuật ngữ trước khi dùng, cắt phần không phục vụ câu hỏi của bài | Sweller, Cognitive Load Theory; Mayer, coherence và segmenting principles |
+| Người mới học tốt hơn từ ví dụ giải sẵn; khi đã quen, nên giảm dần phần giải sẵn | chuỗi ví dụ giải sẵn → giải một nửa → tự làm | Renkl & Atkinson 2003 (faded worked examples); Kalyuga 2003 (expertise reversal) |
+| Tự nhớ lại và tự trả lời giúp nhớ lâu hơn đọc lại | câu "Thử ngay" cuối mỗi mục, "Tự kiểm tra tổng hợp" cuối bài | Roediger & Karpicke 2006; Dunlosky và cộng sự 2013 |
+| Đoán trước rồi xem kết quả làm người đọc chú ý vào chỗ lệch giữa đoán và thật | câu "Đoán trước" ngay trước output hay kết luận | White & Gunstone 1992 (Predict–Observe–Explain) |
+| Nối ví dụ cụ thể với quy tắc trừu tượng | con số thật trước, quy tắc sau, rồi kiểm lại bằng số | Pashler và cộng sự 2007 (IES practice guide) |
+| Sửa hiểu lầm hiệu quả nhất khi nêu thẳng ra và giải thích vì sao sai, ngay chỗ nó nảy ra | "Nhiều người nghĩ X. Thật ra Y, vì Z." đặt trong mục liên quan | Tippett 2010 (refutation text) |
+| Hình ảnh động chỉ giúp khi người học phải tương tác với nó, xem không thì gần như vô ích | chỉ làm widget khi người đọc tự đổi input và phải đoán | Hundhausen, Douglas & Stasko 2002; Naps và cộng sự 2002; Tversky, Morrison & Bétrancourt 2002 |
+
+### Khung bài
+
+Theo đúng thứ tự:
+
+1. **`description` là câu hỏi mà bài trả lời**, viết bằng lời của người chưa biết. Ví dụ: "Làm sao biết một thuật toán sẽ chậm đi bao nhiêu khi dữ liệu lớn lên, mà không cần chạy thử trên mọi máy?"
+2. **Dòng `**Cần biết trước:**`** nêu kiến thức cần có và link tới bài tương ứng. Ngay sau đó là **dòng `**Cách đọc bài:**`** giải thích hai câu Đoán trước và Thử ngay (chép từ bài mẫu).
+3. **`## Ý chính`**: 2 đoạn ngắn trả lời thẳng câu hỏi của bài. Người chỉ đọc mục này vẫn nắm được ý cốt lõi.
+4. **Các mục chính, mỗi mục một ý**, đi từ vấn đề tới cơ chế giải quyết nó. Mỗi mục là một **vòng nhỏ**:
+   - mở bằng vấn đề, hoặc câu **`**Đoán trước:**`** đặt ngay trước output hay kết luận mà người đọc cần đoán;
+   - ví dụ cụ thể có số thật (code ngắn và output chạy thật, hoặc bảng tính tay);
+   - rút ra quy tắc từ ví dụ;
+   - nếu mục đó có một hiểu lầm hay gặp, viết **`**Hiểu lầm hay gặp ở đây:**`** theo dạng "Nhiều người nghĩ X. Thật ra Y, vì Z.";
+   - kết bằng **`**Thử ngay:**`**: một câu hỏi ngắn, đáp án trong `<Expand title="Đáp án">`.
+5. **Kỹ năng thì dạy bằng chuỗi ví dụ mờ dần** (khi bài dạy một cách làm, như đọc độ phức tạp từ code hay tính subnet). Ba mục con: **Ví dụ 1 (giải sẵn)** đủ từng bước; **Ví dụ 2 (giải một nửa)** để chỗ trống `___` cho người đọc điền; **Ví dụ 3 (tự làm)**. Đáp án của ví dụ 2 và 3 nằm trong `<Expand>` và có kiểm bằng số.
+6. **Bảng so sánh** khi có từ hai lựa chọn song song trở lên.
+7. **`## Tự kiểm tra tổng hợp`**: 3 tới 5 câu trộn kiến thức của nhiều mục, khó hơn các câu Thử ngay. Ưu tiên câu "vì sao", "nếu đổi X thì sao", hoặc đọc một đoạn code thật. Không hỏi lại định nghĩa. Mọi đáp án nằm chung trong một `<Expand title="Đáp án">`.
+8. **`## Đi sâu hơn`**: phần nâng cao, mỗi chủ đề một `<Expand>` (chứng minh chặt, định lý, cách hệ thống thật cài đặt, đo đạc chi tiết), hoặc link sang bài khác. **Mạch chính phải đọc hiểu trọn vẹn khi không mở phần này.**
+
+Không có mục "Hiểu lầm thường gặp" hay "Lưu ý" riêng ở cuối bài: hiểu lầm đặt ngay tại mục nó nảy ra.
+
+### Cách viết
+
+- Một đoạn một ý. Câu ngắn. Xưng hô tự nhiên với người đọc.
+- Thuật ngữ được định nghĩa **trước** lần dùng đầu, bọc `<Term>`.
+- Code trong mạch chính phải ngắn và chỉ minh hoạ đúng ý đang nói. Không dồn nhiều hàm vào một khối khi người đọc chưa biết đang đo cái gì; giới thiệu từng hàm ở mục cần nó.
+- Ví dụ chạy được thì phải có cả code lẫn output thật, và số trong văn khớp số trong output.
+- **Liên kết chéo** bằng `/docs/<môn>/<slug>` khi nhắc khái niệm có bài riêng, thay vì giải thích lại.
+- **Hệ thống thật** (Linux làm thế nào, PostgreSQL hay Redis chọn gì) chỉ vào mạch chính khi nó giúp hiểu ý nền tảng; còn lại để ở Đi sâu hơn.
+
+### Widget tương tác
+
+Chỉ làm khi thoả **cả ba** điều kiện: người đọc **tự đổi input**; bài có câu Đoán trước đi kèm; và hình hay bảng tĩnh không thể hiện được điều đó (thường là thứ thay đổi theo một tham số, hoặc một quá trình chạy từng bước). Widget là client component ở `src/components/`, viết để **dùng lại được cho nhiều bài**, và mạch chính vẫn phải hiểu được khi không có nó (ví dụ trang `llms.txt` không chạy được widget). Hiện có `<GrowthChart>` (CONTRIBUTING mục "Component dùng được trong MDX").
+
+### Không làm
+
+Viết dạng ngân hàng câu hỏi phỏng vấn hoặc mẹo trả lời; chép định nghĩa sách giáo khoa; mục "Tài liệu tham khảo" trong thân bài; số liệu hay output không chạy ra từ máy thật; độn nội dung nâng cao vào mạch chính.
 
 ### Mẫu để bắt chước
 
-Khi cần ví dụ về giọng văn, độ chi tiết, cách đặt code và output cạnh nhau, đọc một bài đã viết xong thay vì suy diễn:
+**Cấu trúc và cách viết**: `content/docs/dsa/complexity.mdx` là bài duy nhất đã theo chuẩn này. Bắt chước nó: dòng Cách đọc bài, vòng nhỏ ở mỗi mục, chuỗi ví dụ 1/2/3, Hiểu lầm hay gặp ở đây, Tự kiểm tra tổng hợp, Đi sâu hơn.
 
-| Muốn học cách | Đọc |
+Các bài dưới viết theo chuẩn cũ (dài, nhiều nâng cao trong mạch chính). Chỉ dùng chúng để học **kỹ thuật làm thí nghiệm**, đừng bắt chước cấu trúc:
+
+| Muốn học kỹ thuật | Đọc |
 |---|---|
 | tự cài một cơ chế rồi so sánh bằng số đo | `content/docs/os/synchronization.mdx`, `content/docs/os/cpu-scheduling.mdx` |
 | bóc từng byte của một giao thức, tự dựng gói tin | `content/docs/networking/dns.mdx`, `content/docs/networking/network-layers.mdx` |
-| đi từ vấn đề tới giải pháp qua nhiều tầng, kèm mô phỏng | `content/docs/networking/tcp-vs-udp.mdx` |
 | mô hình hoá bằng bảng tính tay | `content/docs/os/virtual-memory.mdx` |
 
 ## 3. Quy trình viết một bài
 
 1. **Tạo file.** Bài mới: `npm run new <môn> <slug>` (slug trùng `id` của node roadmap nếu bài trả lời cho node đó). Lệnh tự thêm vào cuối `meta.json`; sửa tay thứ tự cho khớp thứ tự đọc. Bài viết lại: ghi đè, giữ `authors`.
-2. **Frontmatter.** `status: draft` (kể cả khi viết lại bài đang `reviewed`; chỉ người review mới đổi lại). `description` một câu nói bài bao phủ những gì. `references`: 6 tới 9 nguồn, ghi tới chương, có `note` nói đọc phần nào; ưu tiên RFC, sách gốc, tài liệu chính thức.
-3. **Chạy code trước, viết văn sau.** Mọi đoạn code trong bài được viết thành file trong thư mục tạm (không phải trong repo), chạy thật, rồi dán **nguyên code và nguyên output** vào bài. Không bịa output. Nếu một đoạn không chạy được trên máy bạn (không có gcc, không có quyền root...), nói rõ trong bài là output minh hoạ, đừng trình bày như chạy thật.
+2. **Frontmatter.** `status: draft` (kể cả khi viết lại bài đang `reviewed`; chỉ người review mới đổi lại). `description` là câu hỏi mà bài trả lời (mục 2). `references`: nguồn ghi tới chương, có `note` nói đọc phần nào; ưu tiên RFC, sách gốc, tài liệu chính thức. Nguồn cho phần Đi sâu hơn ghi rõ trong `note`.
+3. **Chạy code trước, viết văn sau.** Mọi đoạn code trong bài được viết thành file trong thư mục tạm (không phải trong repo), chạy thật, rồi dán **nguyên code và nguyên output** vào bài. Viết xong thì chạy lại toàn bộ khối code theo thứ tự trong bài (khối sau có thể dùng hàm của khối trước, kể cả khối nằm trong `<Expand>`) và so từng ký tự với khối output đi ngay sau. Không bịa output. Nếu một đoạn không chạy được trên máy bạn (không có gcc, không có quyền root...), nói rõ trong bài là output minh hoạ, đừng trình bày như chạy thật.
 4. **Thuật ngữ.** Bọc `<Term>` ở lần xuất hiện đầu. Viết xong cả một chặng mới thêm glossary một lượt (mục 5).
 5. **Gắn vào roadmap.** Thêm `article: <môn>/<slug>` ngay sau `title` của node tương ứng trong `content/roadmaps/*.yaml`. Giữ nguyên `resources`. **Không đổi `id`.**
-6. **Cập nhật `index.mdx` của môn**: bảng "bài nào trả lời câu hỏi gì", theo thứ tự đọc. Và `meta.json`.
+6. **Cập nhật `index.mdx` của môn**: bảng "bài nào trả lời câu hỏi gì", theo thứ tự đọc; cột câu hỏi lấy từ `description`. Và `meta.json`.
 7. **Kiểm tra**: `npm run check`, rồi dừng dev server, rồi `npm run build`. Mở từng trang ở `/docs/<môn>/<slug>` và nhìn: không có dòng `| ... |` hiện thành chữ thô, không có thẻ `<Term>` hay `<Expand>` hiện thành chữ.
 
 ## 4. Bẫy MDX và bẫy viết bài
