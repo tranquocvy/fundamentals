@@ -327,6 +327,8 @@ Hai phía đều đọc ra `A, x, B, y, C` khi duyệt inorder, nên đều là 
 
 <Term>AVL tree</Term> (Adelson-Velsky và Landis, 1962) giữ một bất biến: tại **mọi** nút, chiều cao cây con trái và cây con phải lệch nhau **tối đa 1**. Sau mỗi lần chèn, đi ngược lên từ chỗ vừa chèn; nút nào lệch 2 thì sửa bằng một phép xoay, hoặc hai phép nếu nhánh lệch bị gấp khúc.
 
+<Expand title="Code AVL (chèn và kiểm tra bất biến)">
+
 ```python
 class AVLNode:
     __slots__ = ("key", "left", "right", "h")
@@ -365,6 +367,8 @@ def check_avl(n, lo=-math.inf, hi=math.inf):  # kiểm bất biến AVL và th�
     assert abs(hl - hr) <= 1, "lệch quá 1"
     return 1 + max(hl, hr)
 ```
+
+</Expand>
 
 **Đoán trước:** chèn `1, 2, 3, 4, 5, 6, 7` tăng dần vào AVL. Cây trông thế nào?
 
@@ -442,6 +446,8 @@ Vì cây luôn đầy từ trái, không cần con trỏ: lưu thẳng theo tầ
 
 Cây đầy có chiều cao `log2 n`, nên cả hai thao tác là `O(log n)`.
 
+<Expand title="Code min-heap">
+
 ```python
 class MinHeap:
     def __init__(self, items=()):
@@ -469,6 +475,8 @@ class MinHeap:
         if a: a[0] = last; self._sift_down(0)
         return top
 ```
+
+</Expand>
 
 **Đoán trước:** `push` lần lượt `5, 3, 8, 1, 9, 2, 7`. Phần tử đầu mảng là gì? Mảng có được sắp xếp không?
 
@@ -528,6 +536,8 @@ Cây AVL một tỷ khoá cao khoảng 30 tầng. Trong RAM thì ổn. Trên đ�
 
 <Term>B-tree</Term> (Bayer và McCreight, 1972) với bậc `t` cho mỗi nút (trừ gốc) từ `t-1` tới `2t-1` khoá đã sắp xếp; nút trong có số con bằng số khoá cộng một, và các khoá chia khoảng cho các con. **Mọi lá nằm cùng độ sâu.** Chèn vào lá; nút đầy thì **tách** làm đôi và đẩy khoá giữa lên cha. Cây chỉ cao thêm khi gốc bị tách, nên không bao giờ lệch.
 
+<Expand title="Code B-tree (tìm, chèn, tách nút)">
+
 ```python
 import bisect
 
@@ -578,6 +588,8 @@ bt = BTree(2)                                     # mỗi nút 1 tới 3 khoá
 for k in range(1, 11): bt.insert(k)
 dump(bt.root)
 ```
+
+</Expand>
 
 ```text
 [4]
@@ -633,6 +645,8 @@ Mọi cây ở trên so sánh **cả khoá** tại mỗi nút. Khi khoá là chu
 
 **Đoán trước:** 8 từ dưới đây có tổng 26 ký tự. Trie của chúng có nhiều nút hơn hay ít hơn 26?
 
+<Expand title="Code trie">
+
 ```python
 class TrieNode:
     __slots__ = ("kids", "end")
@@ -666,6 +680,8 @@ print(f"{len(words)} từ, {sum(map(len, words))} ký tự, trie có {tr.nodes} 
 for p in ("car", "ca", "do", "x"):
     print(f"tiền tố {p!r}: {tr.with_prefix(p)}")
 ```
+
+</Expand>
 
 ```text
 8 từ, 26 ký tự, trie có 12 nút (kể cả gốc)

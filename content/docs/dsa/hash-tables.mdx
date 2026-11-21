@@ -61,9 +61,9 @@ for n in (10_000, 100_000, 1_000_000):
 ```
 
 ```text
-n=   10,000: list      91.4 µs | set 0.058 µs
-n=  100,000: list    1166.9 µs | set 0.058 µs
-n=1,000,000: list   10006.1 µs | set 0.058 µs
+n=   10,000: list      43.1 µs | set 0.029 µs
+n=  100,000: list     503.7 µs | set 0.032 µs
+n=1,000,000: list    5121.3 µs | set 0.029 µs
 ```
 
 `list` tăng đúng theo `n`, vì nó so `x` với từng phần tử. `set` gần như không đổi. Nó không duyệt gì cả: nó tính ra ngay ô cần nhìn.
@@ -223,6 +223,8 @@ Chaining cần một danh sách cho mỗi ô, tức thêm con trỏ và thêm ob
 
 Tìm kiếm đi theo đúng đường đó: bắt đầu ở ô nhà, đi tiếp tới khi gặp khoá (tìm thấy) hoặc gặp một ô **trống** (chắc chắn không có, vì nếu có thì khoá đã được đặt vào ô trống đó hoặc trước nó).
 
+<Expand title="Code của bảng linear probing">
+
 ```python
 EMPTY, DELETED = object(), object()          # ô chưa dùng, ô đã xoá (bia mộ)
 
@@ -260,6 +262,8 @@ class LinearProbingTable:
 def show(t):
     return " ".join("." if k is EMPTY else "X" if k is DELETED else str(k) for k in t.keys)
 ```
+
+</Expand>
 
 Bảng này chưa tự lớn lên; mục sau sẽ bàn. Phần `DELETED` (bia mộ) được giải thích ở Ví dụ 3.
 
@@ -353,11 +357,7 @@ Bia mộ không chứa khoá nhưng vẫn làm đường tìm dài ra. Chèn m�
 
 ### Bảng đầy thì linear probing chậm rất nhanh
 
-Lý thuyết (Knuth) cho số ô thăm trung bình theo `α` khi khoá rải đều:
-
-| | Tìm thấy | Tìm không có |
-|---|---|---|
-| Linear probing | `½ (1 + 1/(1−α))` | `½ (1 + 1/(1−α)²)` |
+Đo số ô phải thăm khi nạp 100.000 khoá ngẫu nhiên vào bảng đầy 25%, 50%, 75% và 90%, cả khi tìm khoá có sẵn lẫn khoá không có.
 
 **Đoán trước:** ở `α = 0,9`, tìm một khoá **không có** trong bảng tốn trung bình bao nhiêu lần thăm: khoảng 2, khoảng 10, hay khoảng 50?
 
@@ -376,31 +376,31 @@ def avg_probes_lp(alpha, N=100_000):
     return hit, t.probes / N
 
 random.seed(5)
-print(f"{'α':>5} | {'tìm thấy: đo / lý thuyết':>25} | {'không có: đo / lý thuyết':>25}")
+print(f"{'α':>5} | {'tìm thấy':>9} | {'tìm không có':>13}")
 for a in (0.25, 0.5, 0.75, 0.9):
     hit, miss = avg_probes_lp(a)
-    print(f"{a:>5} | {hit:>13.2f} / {0.5 * (1 + 1 / (1 - a)):>6.2f} | {miss:>13.2f} / {0.5 * (1 + 1 / (1 - a)**2):>6.2f}")
+    print(f"{a:>5} | {hit:>9.2f} | {miss:>13.2f}")
 ```
 
 ```text
-    α |  tìm thấy: đo / lý thuyết |  không có: đo / lý thuyết
- 0.25 |          1.17 /   1.17 |          1.39 /   1.39
-  0.5 |          1.50 /   1.50 |          2.49 /   2.50
- 0.75 |          2.50 /   2.50 |          8.55 /   8.50
-  0.9 |          5.34 /   5.50 |         45.77 /  50.50
+    α |  tìm thấy |  tìm không có
+ 0.25 |      1.17 |          1.39
+  0.5 |      1.50 |          2.49
+ 0.75 |      2.50 |          8.55
+  0.9 |      5.34 |         45.77
 ```
 
-Từ `α = 0,5` lên `0,9`, tìm không có tăng từ khoảng 2,5 lên gần 46 lần thăm (lý thuyết 50,5), vì nó phải đi hết đoạn tụ cụm mới gặp ô trống. Chi phí tăng theo `1/(1−α)²`, nên bảng open addressing phải giữ `α` thấp, thường dưới 0,5 tới 0,75.
+Từ `α = 0,5` lên `0,9`, tìm không có tăng từ khoảng 2,5 lên gần 46 lần thăm, vì nó phải đi hết đoạn tụ cụm mới gặp ô trống, mà bảng càng đầy thì đoạn tụ cụm càng dài. Chi phí không tăng đều mà vọt lên khi bảng gần đầy, nên bảng open addressing phải giữ `α` thấp, thường dưới 0,5 tới 0,75.
 
 **Hiểu lầm hay gặp ở đây:** nhiều người nghĩ bảng băm đầy 90% vẫn nhanh như bảng đầy 50%, chỉ là tốn ít RAM hơn. Thật ra với open addressing, đi từ 50% lên 90% làm thao tác tìm không có chậm đi khoảng 20 lần. Mỗi bảng băm thật đều có một ngưỡng `α` tối đa, và chọn ngưỡng là đánh đổi giữa RAM và thời gian.
 
 Bù lại, khi `α` thấp, open addressing thường nhanh hơn chaining trên máy thật: các ô cần thăm nằm liền nhau trong mảng, nên thân thiện cache (xem bài [Array & Linked List](/docs/dsa/arrays-linked-lists)). `dict` và `set` của Python dùng open addressing.
 
-**Thử ngay:** một bảng linear probing có 1.000 ô. Bạn muốn tìm không có tốn trung bình không quá khoảng 5 lần thăm. Bảng được chứa tối đa khoảng bao nhiêu khoá?
+**Thử ngay:** theo bảng đo, đi từ bảng đầy 50% lên đầy 75%, tìm khoá không có chậm đi khoảng mấy lần? Bảng đầy 75% tốn ít ô hơn bảng đầy 50% bao nhiêu?
 
 <Expand title="Đáp án">
 
-Cần `½ (1 + 1/(1−α)²) ≤ 5`, tức `1/(1−α)² ≤ 9`, `1−α ≥ 1/3`, `α ≤ 2/3`. Khoảng 666 khoá. Ngưỡng hai phần ba này cũng chính là ngưỡng `dict` của Python dùng.
+Từ khoảng 2,5 lên khoảng 8,5 lần thăm, chậm hơn hơn 3 lần. Để chứa cùng số khoá, bảng đầy 75% cần ít ô hơn khoảng một phần ba so với bảng đầy 50%. Đó là đánh đổi phải chọn; `dict` của Python chọn lớn lên khi đầy khoảng hai phần ba (mục sau).
 
 </Expand>
 
@@ -486,6 +486,8 @@ Hàm băm chuỗi cổ điển của Java là `h = 31 × h + ký_tự`. Với n�
 
 **Đoán trước:** cùng 16.384 khoá, chèn khoá ngẫu nhiên và chèn khoá va chạm cố ý vào bảng chaining dùng hàm băm này. Số lần so sánh chênh nhau bao nhiêu?
 
+<Expand title="Code dựng khoá va chạm và đo">
+
 ```python
 import itertools, time
 
@@ -520,17 +522,19 @@ for k in (10, 12, 14):
     trial(f"va chạm cố ý (2^{k})", bad)
 ```
 
+</Expand>
+
 ```text
 java_hash("Aa") = 2112 | java_hash("BB") = 2112
-ngẫu nhiên (2^10)        1024 khoá:          11 lần so sánh,      3.0 ms
-va chạm cố ý (2^10)      1024 khoá:     523,776 lần so sánh,     45.6 ms
-ngẫu nhiên (2^12)        4096 khoá:         143 lần so sánh,     28.7 ms
-va chạm cố ý (2^12)      4096 khoá:   8,386,560 lần so sánh,    621.7 ms
-ngẫu nhiên (2^14)       16384 khoá:       2,055 lần so sánh,     89.4 ms
-va chạm cố ý (2^14)     16384 khoá: 134,209,536 lần so sánh,   9688.9 ms
+ngẫu nhiên (2^10)        1024 khoá:          11 lần so sánh,      1.5 ms
+va chạm cố ý (2^10)      1024 khoá:     523,776 lần so sánh,     15.4 ms
+ngẫu nhiên (2^12)        4096 khoá:         143 lần so sánh,      7.7 ms
+va chạm cố ý (2^12)      4096 khoá:   8,386,560 lần so sánh,    226.7 ms
+ngẫu nhiên (2^14)       16384 khoá:       2,055 lần so sánh,     34.3 ms
+va chạm cố ý (2^14)     16384 khoá: 134,209,536 lần so sánh,   3421.0 ms
 ```
 
-Khoá va chạm cố ý tốn đúng `n(n−1)/2` lần so sánh (với `n = 1024` là 523.776), còn khoá ngẫu nhiên chỉ vài nghìn. Mỗi lần số khoá gấp 4, thời gian gấp khoảng 15, đúng dáng `n^2`. 16.384 chuỗi 28 ký tự, chưa tới nửa MB dữ liệu, làm một lõi CPU bận gần 10 giây.
+Khoá va chạm cố ý tốn đúng `n(n−1)/2` lần so sánh (với `n = 1024` là 523.776), còn khoá ngẫu nhiên chỉ vài nghìn. Mỗi lần số khoá gấp 4, thời gian gấp khoảng 15, đúng dáng `n^2`. 16.384 chuỗi 28 ký tự, chưa tới nửa MB dữ liệu, làm một lõi CPU bận hơn 3 giây.
 
 Cách phòng thủ chính là **hàm băm có khoá bí mật**: mỗi tiến trình bốc ngẫu nhiên một khoá lúc khởi động, và hàm băm phụ thuộc khoá đó, nên kẻ tấn công không tính trước được va chạm. Python từ 3.4 dùng SipHash (Aumasson và Bernstein, 2012) cho `str` và `bytes`. Chạy cùng một lệnh ba lần:
 
@@ -545,9 +549,9 @@ print("hash(12345) =", hash(12345), "(số nguyên thì không ngẫu nhiên ho�
 ```
 
 ```text
-lần chạy 1: hash('hello') = 2885855912509067683
-lần chạy 2: hash('hello') = -1512185736645333005
-lần chạy 3: hash('hello') = -2838406719917167643
+lần chạy 1: hash('hello') = 5570357303087643666
+lần chạy 2: hash('hello') = -4940028136096487139
+lần chạy 3: hash('hello') = 4716535871416296106
 hash(12345) = 12345 (số nguyên thì không ngẫu nhiên hoá)
 ```
 
@@ -585,7 +589,7 @@ Các câu dưới trộn kiến thức của nhiều mục, nên khó hơn câu 
 
 <Expand title="Đáp án">
 
-1. Tìm không có tốn khoảng `½ (1 + 1/(1−α)²)`; ở `α = 0,95` là khoảng 200 lần thăm, vì phải đi hết đoạn tụ cụm mới gặp ô trống. Tìm thấy chỉ khoảng 10,5. Hạ ngưỡng về khoảng 0,5 tới 0,7.
+1. Tìm khoá không có phải đi hết đoạn tụ cụm mới gặp ô trống, và bảng đầy 95% gần như chỉ còn những đoạn tụ cụm rất dài: bảng đo trong bài đã cho khoảng 46 lần thăm ở 90%, và ở 95% là khoảng 200 (công thức ở phần Đi sâu hơn). Tìm khoá có sẵn thì dừng giữa đường nên đỡ hơn nhiều. Hạ ngưỡng về khoảng 0,5 tới 0,7.
 2. Mọi khoá có `k % 100 = 0`, nên tất cả rơi vào ô 0: bảng thành một danh sách, mọi thao tác `O(n)`. Với 101 ô (số nguyên tố, không chia hết 100), các bội của 100 rải ra mọi ô. Đây là lý do hàm băm thật trộn bit kỹ, và một số bảng chọn số ô nguyên tố.
 3. Mỗi lần xoá để lại một bia mộ. Số khoá không đổi nhưng bia mộ tích lại, làm đường tìm dài ra và cuối cùng gần như không còn ô trống để dừng. Bảng nên đếm cả bia mộ vào `α` và rehash (dọn bia mộ) khi tổng vượt ngưỡng.
 4. `Query` không cài `__eq__` và `__hash__`, nên Python so sánh theo danh tính object. Hai `Query("SELECT 1")` là hai object khác nhau, hash khác nhau. Cài `__eq__` và `__hash__` dựa trên `sql` (và không sửa `sql` sau đó), hoặc dùng chính chuỗi `sql` làm khoá.
@@ -596,6 +600,18 @@ Các câu dưới trộn kiến thức của nhiều mục, nên khó hơn câu 
 ## Đi sâu hơn
 
 Các phần dưới không cần để đọc tiếp chặng DSA.
+
+<Expand title="Công thức số ô phải thăm của linear probing">
+
+Với khoá rải đều và hệ số tải `α`, Knuth chứng minh số ô thăm trung bình của linear probing là:
+
+| | Tìm thấy | Tìm không có |
+|---|---|---|
+| Linear probing | `½ (1 + 1/(1−α))` | `½ (1 + 1/(1−α)²)` |
+
+Thay số: `α = 0,5` cho 1,5 và 2,5; `α = 0,9` cho 5,5 và 50,5, khớp bảng đo trong bài (số đo ở 0,9 thấp hơn lý thuyết một chút vì dữ liệu hữu hạn). Bình phương ở cột "không có" là lý do chi phí vọt lên khi bảng gần đầy. Muốn tìm không có tốn không quá 5 lần thăm thì cần `1/(1−α)² ≤ 9`, tức `α ≤ 2/3`: chính là ngưỡng `dict` của Python dùng.
+
+</Expand>
 
 <Expand title="Robin Hood hashing: cùng trung bình, đuôi ngắn hẳn">
 
