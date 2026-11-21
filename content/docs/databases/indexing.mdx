@@ -1,6 +1,6 @@
 ---
 title: Indexing
-description: Heap file và trang, B+ tree tự cài và B-tree thật của PostgreSQL (chiều cao, fan-out, tính tay khớp thực tế), clustered và secondary index, composite và covering index, hash, GIN, BRIN, cái giá khi ghi và những lúc planner bỏ qua chỉ mục, đo trên bảng một triệu dòng.
+description: Vì sao thêm một index có thể làm truy vấn nhanh hơn hàng nghìn lần, và vì sao không nên đánh index cho mọi cột?
 status: draft
 tags: [databases, indexing, b-tree]
 authors: [tranquocvy]
@@ -8,242 +8,732 @@ references:
   - title: "Use The Index, Luke — SQL indexing and tuning e-book"
     url: https://use-the-index-luke.com/
     kind: book
-    note: cấu trúc chỉ mục, WHERE, composite index, ORDER BY, hàm trên cột, LIKE
+    note: cấu trúc index, WHERE, composite index, ORDER BY, hàm trên cột, LIKE
   - title: "PostgreSQL docs — Chapter 11: Indexes"
     url: https://www.postgresql.org/docs/current/indexes.html
     kind: web
-    note: các kiểu chỉ mục, multicolumn, index-only scan, expression index
-  - title: "PostgreSQL docs — B-Tree Indexes (Chapter 67)"
-    url: https://www.postgresql.org/docs/current/btree.html
-    kind: web
-    note: cấu trúc B-tree của PostgreSQL, deduplication, fillfactor
-  - title: "PostgreSQL docs — pageinspect"
-    url: https://www.postgresql.org/docs/current/pageinspect.html
-    kind: web
-    note: nhìn vào trang heap và trang B-tree, bt_metap, bt_page_stats
+    note: các kiểu index, multicolumn, index-only scan, expression index
   - title: "CMU 15-445/645 Database Systems — Tree Indexes; Storage and Buffer Pool lectures"
     url: https://15445.courses.cs.cmu.edu/
     kind: video
     note: B+ tree, trang đĩa, heap file
-  - title: "Petrov — Database Internals, Part I: Storage Engines (B-Tree Basics, File Formats)"
+  - title: "PostgreSQL docs — B-Tree Indexes (Chapter 67) và pageinspect"
+    url: https://www.postgresql.org/docs/current/btree.html
+    kind: web
+    note: cấu trúc B-tree của PostgreSQL, fillfactor; cho phần đi sâu hơn
+  - title: "Petrov — Database Internals, Part I: Storage Engines"
     kind: book
-    note: B-tree trên đĩa, chia nút, tương quan giữa cấu trúc và chi phí đọc ghi
-  - title: "Comer — The Ubiquitous B-Tree (ACM Computing Surveys, 1979)"
-    kind: paper
-    note: B-tree và B+ tree, lý do chúng thống trị chỉ mục
+    note: B-tree trên đĩa, chia nút; cho phần đi sâu hơn
   - title: "MySQL docs — Clustered and Secondary Indexes (InnoDB)"
     url: https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html
     kind: web
-    note: khoá chính là chỉ mục clustered, chỉ mục phụ lưu khoá chính
+    note: khoá chính là clustered index, index phụ lưu khoá chính
 ---
+
+**Cần biết trước:** độ phức tạp `O(n)` và `O(log n)` ở bài [Big-O & Complexity](/docs/dsa/complexity); cây tìm kiếm ở bài [Tree](/docs/dsa/trees); đọc `EXPLAIN` ở bài [Relational Model & SQL](/docs/databases/relational-model). Mọi SQL chạy trên **PostgreSQL 16.15**, output là output thật.
+
+**Cách đọc bài:** mỗi mục có một câu **Đoán trước** và kết bằng một câu **Thử ngay**. Hãy tự trả lời trong đầu (hoặc ra giấy) rồi mới xem đáp án. Việc tự nhớ lại và tự đoán giúp nhớ lâu hơn nhiều so với chỉ đọc.
 
 ## Ý chính
 
-Một bảng một triệu dòng có người dùng đang hỏi: "cho tôi dòng có token này". Không có gợi ý nào, cơ sở dữ liệu chỉ có cách đọc **mọi dòng** để so sánh (quét tuần tự, `Θ(n)`). **<Term>Index</Term>** (chỉ mục) là một cấu trúc phụ, lưu bên cạnh bảng, giúp đi thẳng tới dòng cần tìm trong `O(log n)` bước đọc. Gần như mọi chỉ mục quan hệ là một **<Term>B-tree</Term>** (chính xác là B+ tree) mà bạn đã gặp ở bài [Tree](/docs/dsa/trees): cây cân bằng, mỗi nút là một **trang đĩa** chứa hàng trăm khoá, nên cây rất thấp.
+Không có gợi ý gì, muốn tìm một dòng trong bảng một triệu dòng thì cơ sở dữ liệu phải đọc **cả bảng** (`O(n)`). Một <Term>index</Term> là cấu trúc phụ nằm cạnh bảng, thường là một <Term>B-tree</Term>, giúp đi thẳng tới dòng cần tìm chỉ sau vài lần đọc (`O(log n)`). Trong bài này, con số đó là 4 trang thay vì 10.368 trang.
 
-Chỉ mục là đánh đổi chứ không phải phép màu: nó **tăng tốc đọc, làm chậm ghi, và tốn chỗ**; một chỉ mục sai chỗ không giúp gì mà vẫn trả cả hai cái giá. Bài này đi theo trình tự: dữ liệu nằm trong bảng thế nào (heap và trang); B+ tree tự cài rồi so với B-tree thật của PostgreSQL, bằng cách **tính tay chiều cao và fan-out rồi đối chiếu với trang thật** (`pageinspect`); chỉ mục clustered và secondary, và vì sao thứ tự trên đĩa quan trọng; composite index và quy tắc tiền tố trái; covering index và index-only scan; hash, GIN, BRIN; chi phí ghi; và sáu lý do planner **bỏ qua** chỉ mục dù nó có sẵn. Mọi con số là output thật từ **PostgreSQL 16.15** trong WSL của máy viết bài, trên bảng 1.000.000 dòng. Bài trước là [Relational Model & SQL](/docs/databases/relational-model) (cách đọc `EXPLAIN`); bài sau là [Transactions](/docs/databases/transactions).
+Index không miễn phí. Nó **tăng tốc đọc, nhưng làm chậm mọi lần ghi và tốn chỗ**, và chỉ giúp được những truy vấn có dạng hợp với nó. Vì vậy hiểu index là hiểu ba câu hỏi: nó tìm nhanh nhờ đâu, truy vấn nào dùng được nó, và nó tốn gì.
 
-## Dữ liệu nằm ở đâu: heap và trang
+## Không có index: phải đọc cả bảng
 
-Một bảng trong PostgreSQL là một **heap file**: dãy các **trang** (page) cỡ 8 KB, mỗi trang chứa nhiều dòng. Đơn vị đọc ghi đĩa (và đọc vào bộ nhớ đệm) là trang, không phải dòng, giống mọi cấu trúc ở [File Systems](/docs/os/file-systems) và [Tree](/docs/dsa/trees). Mỗi dòng có địa chỉ vật lý **`ctid` = (số trang, vị trí trong trang)**. Dựng một bảng 1.000.000 dòng gồm `id` tăng dần, `rnd` ngẫu nhiên, `token` là `md5(id)`, `created` tăng theo `id`, và ba cột nhỏ `a`, `b`, `c`:
+Bảng trong PostgreSQL là một dãy **trang** (page) 8 KB, mỗi trang chứa nhiều dòng. Đĩa và bộ nhớ đệm đọc ghi theo trang, không theo dòng, nên **số trang phải đọc** là thước đo chi phí chính của một truy vấn. Dựng một bảng một triệu dòng để thử:
 
 ```sql
 \pset null '∅'
 CREATE EXTENSION IF NOT EXISTS pageinspect;
-SELECT setseed(0.42);
+SELECT setseed(0.42) AS seed \gset
 DROP TABLE IF EXISTS t;
--- 1.000.000 dòng. id tăng dần; rnd là cùng dãy 1..N nhưng xáo ngẫu nhiên; created tăng theo id.
+-- 1.000.000 dòng: id tăng dần, rnd ngẫu nhiên, token = md5(id), a, b, c là các cột nhỏ
 CREATE TABLE t AS
-SELECT g                          AS id,
-       (random() * 1000000)::int  AS rnd,
-       md5(g::text)               AS token,
-       timestamp '2026-01-01' + g * interval '1 second' AS created,
-       (g % 50)                   AS a,
-       (g % 20)                   AS b,
-       (g % 7)                    AS c
+SELECT g                         AS id,
+       (random() * 1000000)::int AS rnd,
+       md5(g::text)              AS token,
+       g % 50 AS a, g % 20 AS b, g % 7 AS c
 FROM generate_series(1, 1000000) g;
-ANALYZE t;
+VACUUM ANALYZE t;
 
-\echo '== kích thước bảng (heap) =='
-SELECT pg_size_pretty(pg_relation_size('t')) AS heap_size,
-       pg_relation_size('t') / 8192            AS pages,
-       (SELECT count(*) FROM t)                AS rows,
+SELECT pg_size_pretty(pg_relation_size('t')) AS table_size,
+       pg_relation_size('t') / 8192          AS pages,
        round(1000000.0 / (pg_relation_size('t') / 8192), 1) AS rows_per_page;
-
-\echo ''
-\echo '== ctid = (trang, vị trí trong trang) của dòng: heap là các trang 8 KB =='
-SELECT ctid, id, token FROM t WHERE id IN (1, 2, 3, 150, 151, 152, 999999) ORDER BY id;
-
-\echo ''
-\echo '== nhìn vào bên trong một trang bằng pageinspect (trang số 0) =='
-SELECT lp AS slot, lp_off AS offset_in_page, lp_len AS len, t_xmin, t_xmax, t_ctid
-FROM heap_page_items(get_raw_page('t', 0)) ORDER BY lp LIMIT 4;
-SELECT lower, upper, special, pagesize FROM page_header(get_raw_page('t', 0));
+SELECT ctid, id FROM t WHERE id IN (1, 2, 3, 999999) ORDER BY id;
 ```
 
 ```text
- setseed 
----------
- 
-(1 row)
-
 NOTICE:  table "t" does not exist, skipping
-== kích thước bảng (heap) ==
- heap_size | pages |  rows   | rows_per_page 
------------+-------+---------+---------------
- 97 MB     | 12352 | 1000000 |          81.0
+ table_size | pages | rows_per_page 
+------------+-------+---------------
+ 81 MB      | 10368 |          96.5
 (1 row)
 
-
-== ctid = (trang, vị trí trong trang) của dòng: heap là các trang 8 KB ==
-    ctid    |   id   |              token               
-------------+--------+----------------------------------
- (0,1)      |      1 | c4ca4238a0b923820dcc509a6f75849b
- (0,2)      |      2 | c81e728d9d4c2f636f067f89cc14862c
- (0,3)      |      3 | eccbc87e4b5ce2fe28308fd9f2a7baf3
- (1,69)     |    150 | 7ef605fc8dba5425d6965fbd4c8fbe1f
- (1,70)     |    151 | a8f15eda80c50adb0e71943adc8015cf
- (1,71)     |    152 | 37a749d808e46495a8da1e5352d03cae
- (12345,54) | 999999 | 52c69e3a57331081823331c4e69d3f2e
-(7 rows)
-
-
-== nhìn vào bên trong một trang bằng pageinspect (trang số 0) ==
- slot | offset_in_page | len | t_xmin | t_xmax | t_ctid 
-------+----------------+-----+--------+--------+--------
-    1 |           8096 |  92 |    808 |      0 | (0,1)
-    2 |           8000 |  92 |    808 |      0 | (0,2)
-    3 |           7904 |  92 |    808 |      0 | (0,3)
-    4 |           7808 |  92 |    808 |      0 | (0,4)
+    ctid    |   id   
+------------+--------
+ (0,1)      |      1
+ (0,2)      |      2
+ (0,3)      |      3
+ (10309,26) | 999999
 (4 rows)
-
- lower | upper | special | pagesize 
--------+-------+---------+----------
-   348 |   416 |    8192 |     8192
-(1 row)
 ```
 
-Đọc output:
+Bảng chiếm **10.368 trang**, mỗi trang khoảng 96 dòng. Mỗi dòng có địa chỉ `ctid` = (số trang, vị trí trong trang): dòng 1 ở trang 0, dòng 999.999 ở trang 10.309.
 
-- Bảng chiếm **12.352 trang** (97 MB), mỗi trang chứa trung bình **81 dòng** (`1.000.000 / 12.352`).
-- `ctid` cho thấy dòng 1, 2, 3 nằm ở trang 0, vị trí 1, 2, 3; dòng 150 ở `(1, 69)`: trang 1 bắt đầu từ dòng 82. Dòng 999.999 ở trang 12.345.
-- `pageinspect` nhìn thẳng vào trang 0. Phần đầu trang chứa một mảng **con trỏ dòng** (line pointer) lớn dần từ đầu trang (`lower = 348`), còn các dòng thật được xếp ngược từ **cuối** trang trở lên (`upper = 416`); vùng trống ở giữa co dần. Mỗi dòng (**tuple**) dài 92 byte (`len`), có các trường `t_xmin` và `t_xmax` (nói ai tạo ra và xoá nó, phục vụ MVCC ở bài [Transactions](/docs/databases/transactions)). Bố cục "mảng con trỏ ở đầu, dữ liệu từ cuối vào" cho phép di chuyển dòng trong trang mà không đổi địa chỉ bên ngoài.
-
-Hệ quả cho chỉ mục: một chỉ mục **không chứa dòng**, mà chứa **khoá cộng `ctid`** trỏ về heap. Tìm bằng chỉ mục gồm hai bước: đi xuống cây để lấy `ctid`, rồi đọc đúng trang heap đó.
-
-## Không có chỉ mục: quét tuần tự
-
-Tìm dòng có `token = '8f14e45f...'` (đây là `md5('7')`, nên đúng một dòng khớp). Lần một chưa có chỉ mục nào; lần hai tạo B-tree trên `token`:
+**Đoán trước:** tìm đúng một dòng theo `token`, khi chưa có index thì phải đọc bao nhiêu trang? Sau khi tạo index thì sao?
 
 ```sql
-\pset null '∅'
-\echo '== 1. KHÔNG có chỉ mục: tìm một dòng theo token =='
+\echo '== chưa có index =='
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON)
 SELECT * FROM t WHERE token = '8f14e45fceea167a5a36dedd4bea2543';
 
-\echo ''
-\echo '== 2. tạo B-tree trên token, rồi tìm lại =='
+\echo '== tạo B-tree index trên token, rồi tìm lại =='
 CREATE INDEX t_token_idx ON t (token);
-ANALYZE t;
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON)
 SELECT * FROM t WHERE token = '8f14e45fceea167a5a36dedd4bea2543';
-
-\echo ''
-\echo '== 3. kích thước và chiều cao của chỉ mục =='
-SELECT pg_size_pretty(pg_relation_size('t_token_idx')) AS index_size,
-       pg_relation_size('t_token_idx') / 8192 AS index_pages;
-SELECT level AS height_above_leaf, root AS root_block, fastroot FROM bt_metap('t_token_idx');
-SELECT blkno, type, live_items AS keys_in_page, avg_item_size FROM bt_page_stats('t_token_idx', (SELECT root FROM bt_metap('t_token_idx')));
-SELECT blkno, type, live_items AS keys_in_page FROM bt_page_stats('t_token_idx', 1);
-
-\echo ''
-\echo '== 4. khoá chính trên id (số nguyên 4 byte): chiều cao và fan-out =='
-ALTER TABLE t ADD PRIMARY KEY (id);
-SELECT pg_size_pretty(pg_relation_size('t_pkey')) AS pkey_size, (SELECT level FROM bt_metap('t_pkey')) AS height_above_leaf;
-SELECT blkno, type, live_items AS keys_in_root FROM bt_page_stats('t_pkey', (SELECT root FROM bt_metap('t_pkey')));
-SELECT blkno, type, live_items AS keys_in_a_leaf FROM bt_page_stats('t_pkey', 1);
 ```
 
 ```text
-== 1. KHÔNG có chỉ mục: tìm một dòng theo token ==
+== chưa có index ==
                              QUERY PLAN                             
 --------------------------------------------------------------------
  Gather (actual rows=1 loops=1)
    Workers Planned: 2
    Workers Launched: 2
-   Buffers: shared hit=2273 read=10079
+   Buffers: shared hit=2176 read=8192
    ->  Parallel Seq Scan on t (actual rows=0 loops=3)
          Filter: (token = '8f14e45fceea167a5a36dedd4bea2543'::text)
          Rows Removed by Filter: 333333
-         Buffers: shared hit=2273 read=10079
+         Buffers: shared hit=2176 read=8192
  Planning:
-   Buffers: shared hit=89
- Planning Time: 0.216 ms
- Execution Time: 19.915 ms
+   Buffers: shared hit=86
+ Planning Time: 0.204 ms
+ Execution Time: 19.442 ms
 (12 rows)
 
-
-== 2. tạo B-tree trên token, rồi tìm lại ==
+== tạo B-tree index trên token, rồi tìm lại ==
                             QUERY PLAN                            
 ------------------------------------------------------------------
  Index Scan using t_token_idx on t (actual rows=1 loops=1)
    Index Cond: (token = '8f14e45fceea167a5a36dedd4bea2543'::text)
-   Buffers: shared hit=1 read=3
+   Buffers: shared read=4
  Planning:
-   Buffers: shared hit=31 read=1
- Planning Time: 0.103 ms
- Execution Time: 0.030 ms
+   Buffers: shared hit=19 read=1
+ Planning Time: 0.166 ms
+ Execution Time: 0.036 ms
 (7 rows)
+```
 
+Đọc dòng `Buffers` (số trang đã chạm tới):
 
-== 3. kích thước và chiều cao của chỉ mục ==
- index_size | index_pages 
-------------+-------------
- 56 MB      |        7210
-(1 row)
+| | Kiểu quét | Số trang | Thời gian |
+|---|---|---|---|
+| chưa có index | `Seq Scan` (quét tuần tự) | `2176 + 8192 = 10.368`, đúng bằng cả bảng | 19,4 ms |
+| có index | `Index Scan` | **4** | 0,036 ms |
 
- height_above_leaf | root_block | fastroot 
--------------------+------------+----------
-                 2 |        116 |      116
-(1 row)
+Không có index, cơ sở dữ liệu đọc mọi trang rồi loại bỏ 999.999 dòng không khớp (`Rows Removed by Filter`). Có index, nó đi xuống cây 3 trang để lấy `ctid` của dòng cần tìm, rồi đọc đúng 1 trang của bảng. Index **không chứa dòng**, chỉ chứa khoá kèm địa chỉ `ctid` trỏ về bảng.
 
- blkno | type | keys_in_page | avg_item_size 
--------+------+--------------+---------------
-   116 | r    |           65 |            47
-(1 row)
+**Thử ngay:** nếu bảng lớn gấp 10 lần (10 triệu dòng), cách quét tuần tự phải đọc khoảng bao nhiêu trang? Cách dùng index thì sao?
 
- blkno | type | keys_in_page 
--------+------+--------------
-     1 | l    |          141
-(1 row)
+<Expand title="Đáp án">
 
+Quét tuần tự tăng tuyến tính: khoảng 103.680 trang. Dùng index thì gần như không đổi: cây vẫn 3 hoặc 4 tầng (mục sau giải thích vì sao), cộng 1 trang bảng, tức 4 hoặc 5 trang.
 
-== 4. khoá chính trên id (số nguyên 4 byte): chiều cao và fan-out ==
- pkey_size | height_above_leaf 
------------+-------------------
- 21 MB     |                 2
-(1 row)
+</Expand>
 
- blkno | type | keys_in_root 
--------+------+--------------
-   290 | r    |           10
-(1 row)
+## Vì sao index chỉ cần vài trang: B+ tree
 
- blkno | type | keys_in_a_leaf 
--------+------+----------------
-     1 | l    |            367
+Index mặc định là một **B+ tree**, họ hàng của cây nhị phân tìm kiếm ở bài [Tree](/docs/dsa/trees) với hai khác biệt quyết định:
+
+1. **Mỗi nút là một trang 8 KB**, chứa **hàng trăm khoá** chứ không phải 1 khoá. Nút có nhiều nhánh con thì cây rất thấp.
+2. Khoá và địa chỉ dòng chỉ nằm ở **lá**, và các lá được **nối với nhau theo thứ tự**. Tìm một khoảng (`BETWEEN`, `ORDER BY`) chỉ cần xuống tới lá đầu tiên rồi đi ngang.
+
+```text
+                     [ gốc: vài khoá dẫn đường ]
+                    /            |             \
+      [ nút trong ]        [ nút trong ]   ...   [ nút trong ]
+       /    |    \           /    |    \
+   [lá] → [lá] → [lá] → [lá] → [lá] → [lá] → ...   (mỗi lá: hàng trăm khoá + ctid)
+```
+
+PostgreSQL cho xem cấu trúc thật của index bằng extension `pageinspect`:
+
+```sql
+ALTER TABLE t ADD PRIMARY KEY (id);   -- khoá chính tự tạo index t_pkey trên id
+SELECT c.relname AS index,
+       pg_size_pretty(pg_relation_size(c.oid))              AS size,
+       (SELECT level FROM bt_metap(c.relname)) + 1          AS levels,
+       (SELECT live_items FROM bt_page_stats(c.relname, 1)) AS keys_per_leaf
+FROM pg_class c WHERE c.relname IN ('t_pkey', 't_token_idx') ORDER BY c.relname;
+```
+
+```text
+    index    | size  | levels | keys_per_leaf 
+-------------+-------+--------+---------------
+ t_pkey      | 21 MB |      3 |           367
+ t_token_idx | 56 MB |      3 |           141
+(2 rows)
+```
+
+Cả hai index đều chỉ có **3 tầng**. Một lá của `t_pkey` chứa **367** khoá (`id` là số nguyên 4 byte), còn một lá của `t_token_idx` chỉ chứa **141** khoá vì mỗi `token` dài 32 ký tự. Từ số khoá mỗi trang, ta tính được chiều cao cây. Ba ví dụ dưới đi từ giải sẵn tới tự làm.
+
+### Ví dụ 1 (giải sẵn): index trên `id`
+
+1. 1.000.000 khoá, mỗi lá 367 khoá, nên cần `⌈1.000.000 / 367⌉ = 2.725` lá.
+2. Mỗi nút ở tầng trên trỏ được tới khoảng 367 nút con (đơn giản hoá: coi nút trong chứa cùng số khoá như lá). 2.725 lá cần `⌈2.725 / 367⌉ = 8` nút.
+3. 8 nút vừa một nút gốc.
+4. Tổng: lá, một tầng giữa, gốc = **3 tầng**, khớp với `levels = 3` ở trên.
+
+Viết thành code để kiểm lại:
+
+```python
+import math
+
+def height(n_rows, per_page):
+    """Số tầng của B+ tree khi mỗi trang chứa per_page khoá (đơn giản hoá: nút trong cũng vậy)."""
+    nodes = math.ceil(n_rows / per_page)          # tầng lá
+    levels = 1
+    print(f"  lá: {nodes:,} trang")
+    while nodes > 1:
+        nodes = math.ceil(nodes / per_page)       # mỗi nút tầng trên trỏ tới per_page nút tầng dưới
+        levels += 1
+        print(f"  tầng {levels}: {nodes:,} trang")
+    return levels
+
+print("=>", height(1_000_000, 367), "tầng")
+```
+
+```text
+  lá: 2,725 trang
+  tầng 2: 8 trang
+  tầng 3: 1 trang
+=> 3 tầng
+```
+
+### Ví dụ 2 (giải một nửa): index trên `token`
+
+Mỗi lá chỉ chứa 141 khoá. Điền vào chỗ trống:
+
+1. Số lá: `⌈1.000.000 / 141⌉ =` ___.
+2. Tầng trên: `⌈___ / 141⌉ =` ___ nút.
+3. Số nút đó vừa một gốc không? Cây cao ___ tầng.
+
+<Expand title="Đáp án">
+
+```python
+print("=>", height(1_000_000, 141), "tầng")
+```
+
+```text
+  lá: 7,093 trang
+  tầng 2: 51 trang
+  tầng 3: 1 trang
+=> 3 tầng
+```
+
+7.093 lá, 51 nút ở tầng giữa, vẫn vừa một gốc: **3 tầng**, khớp với PostgreSQL. Khoá dài làm index to hơn (56 MB so với 21 MB) và có nhiều lá hơn, nhưng chưa đủ để thêm một tầng.
+
+</Expand>
+
+### Ví dụ 3 (tự làm)
+
+Bảng lớn lên **100 triệu dòng**, index trên `id` (367 khoá mỗi trang). Cây cao bao nhiêu tầng? Vậy tìm một dòng đọc bao nhiêu trang?
+
+<Expand title="Đáp án">
+
+```python
+print("=>", height(100_000_000, 367), "tầng")
+```
+
+```text
+  lá: 272,480 trang
+  tầng 2: 743 trang
+  tầng 3: 3 trang
+  tầng 4: 1 trang
+=> 4 tầng
+```
+
+**4 tầng**, nên tìm một dòng đọc 4 trang index cộng 1 trang bảng. Dữ liệu tăng 100 lần mà chỉ thêm 1 lần đọc: đây là `O(log n)` với cơ số khoảng 367. Trong thực tế vài tầng trên cùng luôn nằm sẵn trong bộ nhớ đệm, nên số lần đọc đĩa còn ít hơn.
+
+</Expand>
+
+## Composite index và quy tắc tiền tố trái
+
+Index có thể gồm **nhiều cột**: `CREATE INDEX t_abc ON t (a, b, c)`. Các mục được sắp theo `a` trước, cùng `a` thì theo `b`, cùng `(a, b)` thì theo `c`. Giống danh bạ điện thoại sắp theo **họ** rồi tới **tên**: tìm "họ Nguyễn" hay "Nguyễn Văn An" rất nhanh, nhưng tìm mọi người **tên An** thì phải lật cả cuốn, vì những người tên An nằm rải rác ở mọi họ.
+
+**Đoán trước:** với index `(a, b, c)`, ba truy vấn `WHERE a = 7`, `WHERE a = 7 AND b = 7`, `WHERE b = 7`, cái nào dùng được index?
+
+```sql
+CREATE INDEX t_abc ON t (a, b, c);
+VACUUM ANALYZE t;
+\echo '-- 1. WHERE a = 7'
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE a = 7;
+\echo '-- 2. WHERE a = 7 AND b = 7'
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE a = 7 AND b = 7;
+\echo '-- 3. WHERE b = 7 (bỏ qua cột đầu a)'
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE b = 7;
+\echo '-- 4. WHERE a = 7 ORDER BY b, c (cùng thứ tự với index)'
+EXPLAIN (COSTS OFF) SELECT a, b, c FROM t WHERE a = 7 ORDER BY b, c LIMIT 5;
+\echo '-- 5. WHERE a = 7 ORDER BY c, b (đảo thứ tự)'
+EXPLAIN (COSTS OFF) SELECT a, b, c FROM t WHERE a = 7 ORDER BY c, b LIMIT 5;
+```
+
+```text
+-- 1. WHERE a = 7
+            QUERY PLAN            
+----------------------------------
+ Bitmap Heap Scan on t
+   Recheck Cond: (a = 7)
+   ->  Bitmap Index Scan on t_abc
+         Index Cond: (a = 7)
+(4 rows)
+
+-- 2. WHERE a = 7 AND b = 7
+                QUERY PLAN                 
+-------------------------------------------
+ Bitmap Heap Scan on t
+   Recheck Cond: ((a = 7) AND (b = 7))
+   ->  Bitmap Index Scan on t_abc
+         Index Cond: ((a = 7) AND (b = 7))
+(4 rows)
+
+-- 3. WHERE b = 7 (bỏ qua cột đầu a)
+          QUERY PLAN          
+------------------------------
+ Gather
+   Workers Planned: 2
+   ->  Parallel Seq Scan on t
+         Filter: (b = 7)
+(4 rows)
+
+-- 4. WHERE a = 7 ORDER BY b, c (cùng thứ tự với index)
+               QUERY PLAN               
+----------------------------------------
+ Limit
+   ->  Index Only Scan using t_abc on t
+         Index Cond: (a = 7)
+(3 rows)
+
+-- 5. WHERE a = 7 ORDER BY c, b (đảo thứ tự)
+                  QUERY PLAN                  
+----------------------------------------------
+ Limit
+   ->  Sort
+         Sort Key: c, b
+         ->  Index Only Scan using t_abc on t
+               Index Cond: (a = 7)
+(5 rows)
+```
+
+- Truy vấn 1 và 2 lọc trên **các cột đầu liên tục** (`a`, rồi `a, b`), nên điều kiện nằm trong `Index Cond`: index thu hẹp được miền tìm.
+- Truy vấn 3 bỏ qua `a`. Các mục có `b = 7` rải khắp index, nên planner quét cả bảng (`Seq Scan`).
+- Truy vấn 4 cần thứ tự `b, c` trong cùng `a`, đúng thứ tự index đã sắp sẵn: không có bước `Sort`. Truy vấn 5 đảo thành `c, b` thì phải sắp xếp thêm.
+
+Đó là **quy tắc tiền tố trái** (leftmost prefix): index nhiều cột chỉ dùng được hiệu quả khi điều kiện bắt đầu từ cột đầu tiên và không nhảy cóc. Từ đó có quy tắc đặt thứ tự cột: **cột so sánh bằng (`=`) đặt trước, cột tìm khoảng (`>`, `BETWEEN`) hoặc `ORDER BY` đặt sau.** Một index `(a, b)` cũng thay được index `(a)`, nên không cần giữ cả hai.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ index `(a, b, c)` giúp mọi truy vấn có nhắc tới `a`, `b` hoặc `c`. Thật ra nó chỉ giúp truy vấn lọc theo **tiền tố** `a`, `a, b` hoặc `a, b, c`, vì các mục chỉ được sắp theo thứ tự đó.
+
+**Thử ngay:** bảng `orders` có index `(user_id, created_at)`. Truy vấn nào dùng được index tốt: (1) `WHERE user_id = 42 ORDER BY created_at DESC LIMIT 10`; (2) `WHERE created_at > '2026-01-01'`?
+
+<Expand title="Đáp án">
+
+(1) dùng được rất tốt: lọc `user_id` là cột đầu, các đơn của user 42 đã nằm liền nhau và sắp sẵn theo `created_at`. Chỉ cần đọc 10 mục cuối, không phải sắp xếp. (2) không dùng hiệu quả: `created_at` là cột thứ hai, các đơn sau ngày 1/1 nằm rải rác trong mọi `user_id`. Muốn truy vấn (2) nhanh thì cần thêm một index bắt đầu bằng `created_at`.
+
+</Expand>
+
+## Covering index: không cần quay về bảng
+
+Mỗi lần tìm qua index thường còn một bước về bảng để lấy các cột không có trong index. Nếu kết quả có nhiều dòng nằm rải rác, bước này rất đắt: mỗi dòng có thể nằm ở một trang khác.
+
+**Đoán trước:** truy vấn `SELECT token FROM t WHERE a = 7 AND b = 7` trả về 10.000 dòng. Với index `(a, b)`, nó phải đọc khoảng bao nhiêu trang?
+
+```sql
+DROP INDEX t_abc;
+CREATE INDEX t_ab ON t (a, b);
+VACUUM ANALYZE t;
+\echo '== index (a, b): token nằm ở bảng =='
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON)
+SELECT token FROM t WHERE a = 7 AND b = 7;
+
+DROP INDEX t_ab;
+CREATE INDEX t_ab_cover ON t (a, b) INCLUDE (token);
+VACUUM ANALYZE t;
+\echo '== index (a, b) INCLUDE (token): token nằm sẵn trong index =='
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON)
+SELECT token FROM t WHERE a = 7 AND b = 7;
+SELECT pg_size_pretty(pg_relation_size('t_ab_cover')) AS covering_index_size;
+```
+
+```text
+== index (a, b): token nằm ở bảng ==
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Bitmap Heap Scan on t (actual rows=10000 loops=1)
+   Recheck Cond: ((a = 7) AND (b = 7))
+   Heap Blocks: exact=10000
+   Buffers: shared hit=2489 read=7522
+   ->  Bitmap Index Scan on t_ab (actual rows=10000 loops=1)
+         Index Cond: ((a = 7) AND (b = 7))
+         Buffers: shared read=11
+ Planning:
+   Buffers: shared hit=21
+ Planning Time: 0.135 ms
+ Execution Time: 39.117 ms
+(11 rows)
+
+== index (a, b) INCLUDE (token): token nằm sẵn trong index ==
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Index Only Scan using t_ab_cover on t (actual rows=10000 loops=1)
+   Index Cond: ((a = 7) AND (b = 7))
+   Heap Fetches: 0
+   Buffers: shared hit=1 read=85
+ Planning:
+   Buffers: shared hit=14
+ Planning Time: 0.079 ms
+ Execution Time: 1.046 ms
+(8 rows)
+
+ covering_index_size 
+---------------------
+ 64 MB
 (1 row)
 ```
 
-**Không chỉ mục**: `Parallel Seq Scan`, ba tiến trình cùng đọc bảng, loại `333.333` dòng mỗi tiến trình (`Rows Removed by Filter`), tổng `Buffers: hit=2273 read=10079` = **12.352 trang**, đúng bằng kích thước bảng, mất khoảng **20 ms**. Chi phí tăng tuyến tính với kích thước bảng.
+| Index | Kiểu quét | Số trang | Thời gian |
+|---|---|---|---|
+| `(a, b)` | `Bitmap Heap Scan` | 10.011 (11 trang index + **10.000 trang bảng**) | 39,1 ms |
+| `(a, b) INCLUDE (token)` | `Index Only Scan`, `Heap Fetches: 0` | **86** | 1,0 ms |
 
-**Có chỉ mục**: `Index Scan using t_token_idx`, `Buffers: hit=1 read=3` = **4 trang** (3 tầng của cây cộng 1 trang heap), mất khoảng **0,03 ms**. Từ 12.352 trang xuống 4 trang: chênh gần ba nghìn lần số trang. (Phép đo seq scan có phần đọc từ đĩa hoặc cache của hệ điều hành, nên con số tuyệt đối thay đổi; tỉ lệ số trang mới là điều ổn định.)
+Với index `(a, b)`, tìm ra 10.000 `ctid` rất nhanh (11 trang), nhưng 10.000 dòng đó nằm ở **10.000 trang khác nhau** của bảng. `INCLUDE (token)` cất thêm `token` vào lá của index, nên kết quả lấy thẳng từ index, không đụng bảng: **index-only scan**, ít trang hơn khoảng 116 lần. Cái giá: index to hơn (64 MB).
 
-## B+ tree: từ trang đĩa tới chiều cao
+Một index như vậy, chứa đủ mọi cột truy vấn cần, gọi là **covering index**.
 
-### Tự cài một B+ tree tối giản
+**Thử ngay:** truy vấn trên đổi thành `SELECT token, rnd FROM t WHERE a = 7 AND b = 7`. Index `t_ab_cover` còn cho index-only scan không?
 
-Bài [Tree](/docs/dsa/trees) cài B-tree để minh hoạ ý tưởng. Hầu hết chỉ mục thật là **B+ tree**, khác ở hai điểm: dữ liệu (khoá và giá trị hay `ctid`) chỉ ở **lá**, nút trong chỉ giữ khoá dẫn đường, và các lá được **nối thành danh sách liên kết**. Dưới đây là một B+ tree tối giản, mỗi nút là một "trang" chứa tối đa `order` khoá; bộ đếm `reads` đếm số trang chạm tới:
+<Expand title="Đáp án">
+
+Không. `rnd` không có trong index, nên với mỗi dòng vẫn phải về bảng lấy `rnd`, quay lại kiểu đọc 10.000 trang. Covering index chỉ có lợi cho đúng những truy vấn mà nó chứa đủ cột.
+
+</Expand>
+
+## Thứ tự trên đĩa: clustered và secondary index
+
+Truy vấn khoảng (`BETWEEN`) trả nhiều dòng. Số trang phải đọc phụ thuộc vào việc các dòng đó **nằm gần nhau trên đĩa** hay rải rác. PostgreSQL đo điều này bằng thống kê **correlation** của mỗi cột: 1 là thứ tự trong bảng khớp hoàn toàn với thứ tự giá trị, 0 là không liên quan.
+
+**Đoán trước:** lấy khoảng 10.000 dòng theo `id` (chèn tăng dần) và 10.000 dòng theo `rnd` (ngẫu nhiên), cả hai đều qua index. Số trang chênh nhau bao nhiêu lần?
+
+```sql
+CREATE INDEX t_rnd ON t (rnd);
+ANALYZE t;
+SELECT attname, round(correlation::numeric, 3) AS correlation
+FROM pg_stats WHERE tablename = 't' AND attname IN ('id', 'rnd') ORDER BY attname;
+
+SET enable_bitmapscan = off; SET enable_seqscan = off;   -- ép dùng Index Scan để so cho công bằng
+\echo '== 10.000 dòng liền nhau theo id =='
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON)
+SELECT count(token) FROM t WHERE id BETWEEN 500000 AND 509999;
+\echo '== khoảng 10.000 dòng theo rnd =='
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON)
+SELECT count(token) FROM t WHERE rnd BETWEEN 500000 AND 509999;
+RESET enable_bitmapscan; RESET enable_seqscan;
+```
+
+```text
+ attname | correlation 
+---------+-------------
+ id      |       1.000
+ rnd     |       0.000
+(2 rows)
+
+== 10.000 dòng liền nhau theo id ==
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Aggregate (actual rows=1 loops=1)
+   Buffers: shared hit=104 read=30
+   ->  Index Scan using t_pkey on t (actual rows=10000 loops=1)
+         Index Cond: ((id >= 500000) AND (id <= 509999))
+         Buffers: shared hit=104 read=30
+ Planning:
+   Buffers: shared hit=25 read=1
+ Planning Time: 0.117 ms
+ Execution Time: 0.918 ms
+(9 rows)
+
+== khoảng 10.000 dòng theo rnd ==
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Aggregate (actual rows=1 loops=1)
+   Buffers: shared hit=10162 read=51
+   ->  Index Scan using t_rnd on t (actual rows=10187 loops=1)
+         Index Cond: ((rnd >= 500000) AND (rnd <= 509999))
+         Buffers: shared hit=10162 read=51
+ Planning:
+   Buffers: shared hit=3
+ Planning Time: 0.067 ms
+ Execution Time: 5.463 ms
+(9 rows)
+```
+
+Cùng khoảng 10.000 dòng: theo `id` chạm **134 trang**, theo `rnd` chạm **10.213 trang**, gấp khoảng 76 lần. Các dòng `id` liên tiếp nằm cạnh nhau, khoảng 96 dòng một trang; các dòng có `rnd` gần nhau thì rải khắp bảng, gần như mỗi dòng một trang. (Lần này `rnd` chỉ mất 5,5 ms vì các trang đã nằm sẵn trong bộ nhớ đệm từ các truy vấn trước; trên đĩa thật, chênh lệch thời gian sẽ lớn hơn nhiều.)
+
+Đây là lý do có hai kiểu tổ chức:
+
+| | Secondary index (PostgreSQL mặc định) | Clustered index (MySQL InnoDB, SQL Server) |
+|---|---|---|
+| Bảng lưu ở đâu | heap riêng, dòng theo thứ tự chèn | chính là B+ tree theo khoá chính, lá chứa cả dòng |
+| Index trỏ về dòng bằng | địa chỉ vật lý `ctid` | giá trị khoá chính |
+| Truy vấn khoảng theo khoá chính | nhanh nếu chèn theo thứ tự khoá | luôn nhanh: dữ liệu sắp theo khoá |
+| Mỗi bảng có | nhiều index, không cái nào quyết định thứ tự | đúng một clustered index |
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ PostgreSQL có clustered index như MySQL. Thật ra lệnh `CLUSTER` của PostgreSQL chỉ **sắp lại bảng một lần**; dữ liệu ghi sau đó không tự giữ thứ tự (xem phần Đi sâu hơn).
+
+**Thử ngay:** trong InnoDB, vì sao người ta khuyên dùng khoá chính tăng dần (số tự tăng) thay vì UUID ngẫu nhiên?
+
+<Expand title="Đáp án">
+
+Vì bảng InnoDB **chính là** B+ tree theo khoá chính. Khoá tăng dần thì dòng mới luôn chèn vào lá cuối cùng, các lá được ghi đầy và tuần tự. UUID ngẫu nhiên làm dòng mới rơi vào lá bất kỳ, liên tục phải tách lá, lá chỉ đầy khoảng một nửa tới hai phần ba, index phình to và tốn bộ nhớ đệm. Phần Đi sâu hơn có mô phỏng độ đầy lá theo thứ tự chèn.
+
+</Expand>
+
+## Cái giá khi ghi
+
+Mỗi index là một B+ tree phải **cập nhật theo** mọi `INSERT`, `DELETE`, và mọi `UPDATE` làm đổi cột của index hoặc đổi chỗ dòng.
+
+**Đoán trước:** nạp 300.000 dòng vào bảng có 5 index thì lượng ghi gấp bao nhiêu lần bảng không có index?
+
+```sql
+CREATE TEMP TABLE results (n_indexes int, wal_mb numeric, table_mb numeric, indexes_mb numeric);
+
+-- k = số index trên bảng. Mỗi lần nạp 300.000 dòng vào một bảng mới có k index,
+-- rồi đo lượng WAL (nhật ký ghi, xem bài Transactions) sinh ra: thước đo lượng việc ghi,
+-- ổn định hơn đo thời gian.
+DO $$
+DECLARE
+  k int; lsn0 pg_lsn;
+BEGIN
+  FOR k IN 0..5 LOOP
+    DROP TABLE IF EXISTS w;
+    CREATE TABLE w (id int, c1 text, c2 text, c3 text, c4 text, c5 text);
+    IF k >= 1 THEN CREATE INDEX w1 ON w (c1); END IF;
+    IF k >= 2 THEN CREATE INDEX w2 ON w (c2); END IF;
+    IF k >= 3 THEN CREATE INDEX w3 ON w (c3); END IF;
+    IF k >= 4 THEN CREATE INDEX w4 ON w (c4); END IF;
+    IF k >= 5 THEN CREATE INDEX w5 ON w (c5); END IF;
+    lsn0 := pg_current_wal_insert_lsn();
+    INSERT INTO w SELECT g, md5(g || 'a'), md5(g || 'b'), md5(g || 'c'), md5(g || 'd'), md5(g || 'e')
+      FROM generate_series(1, 300000) g;
+    INSERT INTO results SELECT k,
+      round(pg_wal_lsn_diff(pg_current_wal_insert_lsn(), lsn0) / 1048576.0, 1),
+      round(pg_relation_size('w') / 1048576.0, 1),
+      round(coalesce((SELECT sum(pg_relation_size(indexrelid)) FROM pg_stat_user_indexes WHERE relname = 'w'), 0) / 1048576.0, 1);
+  END LOOP;
+END $$;
+
+SELECT n_indexes AS indexes, wal_mb AS "WAL ghi ra (MB)",
+       round(wal_mb / (SELECT wal_mb FROM results WHERE n_indexes = 0), 2) AS "so với 0 index",
+       table_mb AS "bảng (MB)", indexes_mb AS "các index (MB)"
+FROM results ORDER BY n_indexes;
+```
+
+```text
+ indexes | WAL ghi ra (MB) | so với 0 index | bảng (MB) | các index (MB) 
+---------+-----------------+----------------+-----------+----------------
+       0 |            64.3 |           1.00 |      58.6 |            0.0
+       1 |           102.3 |           1.59 |      58.6 |           21.9
+       2 |           140.3 |           2.18 |      58.6 |           43.6
+       3 |           178.4 |           2.77 |      58.6 |           65.5
+       4 |           225.3 |           3.50 |      58.6 |           87.1
+       5 |           254.4 |           3.96 |      58.6 |          108.6
+(6 rows)
+```
+
+Mỗi index thêm khoảng **38 MB** vào lượng ghi. Với 5 index, cùng 300.000 dòng phải ghi **gần gấp 4 lần**, và 5 index chiếm 108,6 MB, **gần gấp đôi** chính dữ liệu (58,6 MB). Index ở đây đặt trên cột `md5` ngẫu nhiên, trường hợp tệ cho B-tree vì mỗi dòng chèn vào một lá bất kỳ.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ thêm index "cho chắc" thì không mất gì. Thật ra mỗi index làm chậm mọi lần ghi và tốn bộ nhớ đệm, kể cả khi không truy vấn nào dùng tới nó. Mỗi index phải có truy vấn thật sự cần nó. Trong PostgreSQL, `pg_stat_user_indexes.idx_scan = 0` sau một thời gian dài là dấu hiệu index thừa.
+
+**Thử ngay:** cần nạp 50 triệu dòng vào một bảng đang có 6 index, và không ai đọc bảng trong lúc nạp. Làm sao cho nhanh hơn?
+
+<Expand title="Đáp án">
+
+Xoá các index (trừ cái cần cho ràng buộc, nếu phải giữ), nạp dữ liệu, rồi tạo lại index. Tạo index một lần trên dữ liệu có sẵn nhanh hơn nhiều so với cập nhật cây cho từng dòng: PostgreSQL sắp xếp toàn bộ khoá rồi dựng cây từ dưới lên, các lá được ghi đầy và tuần tự.
+
+</Expand>
+
+## Khi nào có index mà không được dùng
+
+<Term>Query planner</Term> ước lượng chi phí từng cách chạy rồi chọn cách rẻ nhất. Có index không có nghĩa là nó được dùng. Bảng dưới có 500.000 dòng, đủ index trên các cột được lọc.
+
+**Đoán trước:** trong năm trường hợp dưới, trường hợp nào planner vẫn dùng index?
+
+```sql
+DROP TABLE IF EXISTS g;
+CREATE TABLE g AS
+SELECT i AS id, i % 1000 AS thousandth, 'User' || (i % 5000) AS name, i::text AS id_text
+FROM generate_series(1, 500000) i;
+CREATE INDEX g_id ON g (id);
+CREATE INDEX g_th ON g (thousandth);
+CREATE INDEX g_name ON g (name);
+CREATE INDEX g_idtext ON g (id_text text_pattern_ops);
+ANALYZE g;
+
+\echo '-- 1a. lấy 90% số dòng'
+EXPLAIN (COSTS OFF) SELECT * FROM g WHERE thousandth < 900;
+\echo '-- 1b. lấy 0,5% số dòng'
+EXPLAIN (COSTS OFF) SELECT * FROM g WHERE thousandth < 5;
+\echo '-- 2. bọc cột trong hàm'
+EXPLAIN (COSTS OFF) SELECT * FROM g WHERE lower(name) = 'user42';
+\echo '-- 3. tính toán trên cột'
+EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id + 1 = 100;
+\echo '-- 4. ép kiểu cột'
+EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id_text::int = 500;
+\echo '-- 5a. LIKE tiền tố'
+EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id_text LIKE '4999%';
+\echo '-- 5b. LIKE hậu tố'
+EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id_text LIKE '%999';
+```
+
+```text
+NOTICE:  table "g" does not exist, skipping
+-- 1a. lấy 90% số dòng
+          QUERY PLAN          
+------------------------------
+ Seq Scan on g
+   Filter: (thousandth < 900)
+(2 rows)
+
+-- 1b. lấy 0,5% số dòng
+              QUERY PLAN              
+--------------------------------------
+ Bitmap Heap Scan on g
+   Recheck Cond: (thousandth < 5)
+   ->  Bitmap Index Scan on g_th
+         Index Cond: (thousandth < 5)
+(4 rows)
+
+-- 2. bọc cột trong hàm
+                   QUERY PLAN                   
+------------------------------------------------
+ Gather
+   Workers Planned: 2
+   ->  Parallel Seq Scan on g
+         Filter: (lower(name) = 'user42'::text)
+(4 rows)
+
+-- 3. tính toán trên cột
+            QUERY PLAN            
+----------------------------------
+ Gather
+   Workers Planned: 2
+   ->  Parallel Seq Scan on g
+         Filter: ((id + 1) = 100)
+(4 rows)
+
+-- 4. ép kiểu cột
+                 QUERY PLAN                 
+--------------------------------------------
+ Gather
+   Workers Planned: 2
+   ->  Parallel Seq Scan on g
+         Filter: ((id_text)::integer = 500)
+(4 rows)
+
+-- 5a. LIKE tiền tố
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Index Scan using g_idtext on g
+   Index Cond: ((id_text ~>=~ '4999'::text) AND (id_text ~<~ '499:'::text))
+   Filter: (id_text ~~ '4999%'::text)
+(3 rows)
+
+-- 5b. LIKE hậu tố
+                QUERY PLAN                 
+-------------------------------------------
+ Gather
+   Workers Planned: 2
+   ->  Parallel Seq Scan on g
+         Filter: (id_text ~~ '%999'::text)
+(4 rows)
+```
+
+Hai nhóm nguyên nhân:
+
+1. **Lấy quá nhiều dòng** (1a). Đọc 90% số dòng qua index nghĩa là nhảy tới gần như mọi trang theo thứ tự lộn xộn; đọc tuần tự cả bảng rẻ hơn. Lấy 0,5% (1b) thì index thắng. Tỉ lệ dòng được chọn gọi là **selectivity**; ngưỡng chuyển tuỳ phần cứng và thống kê, thường vài phần trăm.
+2. **Điều kiện không khớp với thứ index đã sắp** (2, 3, 4, 5b). Index sắp theo giá trị gốc của `name`, không theo `lower(name)`; sắp theo `id`, không theo `id + 1`. `LIKE '4999%'` đổi được thành một khoảng (từ `4999` tới trước `499:`) nên dùng được index, còn `LIKE '%999'` thì các giá trị khớp nằm rải khắp nơi.
+
+Cách sửa nhóm 2: viết lại để **cột đứng một mình** (`id = 99` thay cho `id + 1 = 100`), hoặc tạo **index trên biểu thức**:
+
+```sql
+CREATE INDEX g_lower_name ON g (lower(name));
+ANALYZE g;
+EXPLAIN (COSTS OFF) SELECT * FROM g WHERE lower(name) = 'user42';
+EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id = 99;
+```
+
+```text
+                     QUERY PLAN                     
+----------------------------------------------------
+ Bitmap Heap Scan on g
+   Recheck Cond: (lower(name) = 'user42'::text)
+   ->  Bitmap Index Scan on g_lower_name
+         Index Cond: (lower(name) = 'user42'::text)
+(4 rows)
+
+         QUERY PLAN         
+----------------------------
+ Index Scan using g_id on g
+   Index Cond: (id = 99)
+(2 rows)
+```
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ thấy `Seq Scan` dù đã có index là planner chọn sai. Thật ra ở trường hợp 1a, `Seq Scan` **là** cách rẻ nhất. Ép planner dùng index (`SET enable_seqscan = off`) chỉ để thử nghiệm, không dùng ở production. Planner chỉ thật sự sai khi thống kê cũ làm nó ước lượng lệch số dòng; khi đó cần chạy `ANALYZE`.
+
+**Thử ngay:** cột `created_at` có index. Truy vấn `WHERE date(created_at) = '2026-01-05'` không dùng được index. Viết lại thế nào để dùng được, mà không cần tạo index mới?
+
+<Expand title="Đáp án">
+
+Đổi thành một khoảng trên chính cột đó: `WHERE created_at >= '2026-01-05' AND created_at < '2026-01-06'`. Cột đứng một mình nên index dùng được, và kết quả giống hệt.
+
+</Expand>
+
+## Các kiểu index khác
+
+B-tree là mặc định và đúng cho hầu hết trường hợp, vì nó hỗ trợ cả `=`, khoảng, `ORDER BY` và `LIKE` tiền tố. PostgreSQL còn vài kiểu khác cho các dạng dữ liệu đặc biệt. Số liệu dưới đo trên một bảng 1.000.000 dòng (112 MB); code và output nằm ở phần Đi sâu hơn.
+
+| Kiểu | Hỗ trợ | Kích thước | Dùng khi |
+|---|---|---|---|
+| B-tree | `=`, khoảng, `ORDER BY`, `LIKE 'abc%'` | 56 MB (chuỗi 32 ký tự), 21 MB (timestamp) | mặc định cho hầu hết cột |
+| Hash | chỉ `=` | 32 MB (chuỗi 32 ký tự) | chỉ tra cứu bằng, khoá dài |
+| GIN | "chứa phần tử": mảng, JSON, tìm kiếm văn bản | 16 MB | cột nhiều giá trị, ví dụ `tags @> ARRAY[...]` |
+| BRIN | khoảng, khi dữ liệu đã theo thứ tự trên đĩa | **24 kB** | bảng rất lớn, cột tăng theo thời gian (log, sự kiện) |
+
+## Tự kiểm tra tổng hợp
+
+Các câu dưới trộn kiến thức của nhiều mục. Nếu vướng, quay lại mục tương ứng.
+
+1. Bảng `orders(id, user_id, status, created_at, total)`, truy vấn chạy nhiều nhất là `SELECT id, total FROM orders WHERE user_id = ? AND status = 'paid' ORDER BY created_at DESC LIMIT 20`. Thiết kế một index cho nó, và giải thích thứ tự cột.
+2. Một đồng nghiệp đánh index cho cả 12 cột của bảng `events` (chủ yếu được ghi, thỉnh thoảng mới đọc) "để truy vấn nào cũng nhanh". Hệ quả là gì?
+3. Bảng `users` có index trên `email`, nhưng màn hình đăng nhập chạy `WHERE lower(email) = lower(?)` và rất chậm. Vì sao? Nêu hai cách sửa.
+4. Bảng 2 tỉ dòng log, chỉ chèn thêm theo thời gian, thường truy vấn "các dòng trong 10 phút qua". So sánh B-tree và BRIN trên cột thời gian.
+
+<Expand title="Đáp án">
+
+1. `(user_id, status, created_at)`. Hai cột so sánh bằng đặt trước (thứ tự giữa chúng không quan trọng lắm), `created_at` dùng cho `ORDER BY` đặt sau cùng. Như vậy các đơn `paid` của một user nằm liền nhau và đã sắp theo thời gian, chỉ cần đọc 20 mục từ cuối, không sắp xếp. Có thể thêm `INCLUDE (id, total)` để truy vấn thành index-only scan, vì index của PostgreSQL không tự chứa khoá chính.
+2. Mỗi lần ghi phải cập nhật 12 cây: lượng ghi tăng nhiều lần (ở thí nghiệm trên, 5 index đã gần gấp 4), index chiếm chỗ gấp nhiều lần dữ liệu và đẩy dữ liệu hữu ích ra khỏi bộ nhớ đệm. Phần lớn index không bao giờ được dùng vì truy vấn thật chỉ lọc vài cột. Nên giữ index cho đúng truy vấn thật, và gộp bằng composite index nếu được.
+3. Index sắp theo `email` gốc, còn truy vấn so sánh `lower(email)`, nên planner phải quét cả bảng. Cách 1: tạo index trên biểu thức `lower(email)`. Cách 2: luôn lưu email đã chuyển về chữ thường khi ghi, rồi truy vấn `WHERE email = lower(?)`.
+4. Cả hai đều dùng được vì cột tăng dần theo thứ tự chèn (correlation gần 1). B-tree trên 2 tỉ dòng to tới hàng chục GB và phải cập nhật mỗi lần chèn. BRIN chỉ lưu min và max của mỗi nhóm trang nên nhỏ hơn hàng nghìn lần và gần như không tốn chi phí ghi; đổi lại nó chỉ khoanh vùng theo nhóm trang (phải lọc lại các dòng trong vùng), và chỉ dùng được vì dữ liệu nằm theo thứ tự thời gian. Với bảng log kiểu này, BRIN thường là lựa chọn tốt.
+
+</Expand>
+
+## Đi sâu hơn
+
+Các phần dưới không cần để đọc tiếp chặng cơ sở dữ liệu. Chúng chạy tiếp trên cùng các bảng ở trên, theo đúng thứ tự.
+
+<Expand title="Tự cài một B+ tree: chiều cao, truy vấn khoảng, độ đầy của lá">
+
+B+ tree tối giản dưới đây có mỗi nút là một "trang" chứa tối đa `order` khoá, và bộ đếm `reads` đếm số trang đã chạm tới. Khi lá đầy, nó tách đôi và đẩy khoá giữa lên nút cha.
 
 ```python
 # B+ tree tối giản: khoá chỉ nằm ở lá, các lá nối thành danh sách liên kết, mỗi nút = một "trang".
@@ -347,11 +837,6 @@ if __name__ == "__main__":
         print(f"{name:<24} {h:>4} {leaves:>8,} {fill:>10.0%}")
     ideal = math.ceil(N / ORDER)
     print(f"{'nạp hàng loạt (100%)':<24} {'':>4} {ideal:>8,} {'100%':>10}   (lý tưởng: {N:,} / {ORDER} = {ideal:,} lá)")
-
-    print()
-    print("chiều cao theo số khoá và fan-out (tính: ceil(log_fanout(N))), mỗi khoá 8 byte + con trỏ 8 byte, trang 8 KB ≈ 500 khoá:")
-    for n in (10**6, 10**8, 10**10):
-        print(f"  N = {n:>14,}: " + ", ".join(f"fan-out {f}: {math.ceil(math.log(n, f))} tầng" for f in (2, 100, 500)))
 ```
 
 ```text
@@ -364,395 +849,172 @@ ngẫu nhiên                  3    2,911        69%
 tăng dần                    3    3,999        50%
 giảm dần                    3    3,921        51%
 nạp hàng loạt (100%)             2,000       100%   (lý tưởng: 200,000 / 100 = 2,000 lá)
-
-chiều cao theo số khoá và fan-out (tính: ceil(log_fanout(N))), mỗi khoá 8 byte + con trỏ 8 byte, trang 8 KB ≈ 500 khoá:
-  N =      1,000,000: fan-out 2: 20 tầng, fan-out 100: 3 tầng, fan-out 500: 3 tầng
-  N =    100,000,000: fan-out 2: 27 tầng, fan-out 100: 4 tầng, fan-out 500: 3 tầng
-  N = 10,000,000,000: fan-out 2: 34 tầng, fan-out 100: 5 tầng, fan-out 500: 4 tầng
 ```
 
-Với 200.000 khoá và 100 khoá mỗi trang:
+- Tìm một khoá luôn chạm đúng 3 trang, bằng chiều cao cây.
+- Tìm khoảng 1% số khoá tốn 28 trang: 3 trang để xuống lá đầu tiên, rồi đi ngang khoảng 25 lá nhờ con trỏ `next`. Đây là lý do cơ sở dữ liệu dùng B+ tree (lá nối nhau) thay vì B-tree thường.
+- Chèn ngẫu nhiên cho lá đầy **69%** (khoảng `ln 2`, một kết quả kinh điển). Chèn tăng dần với cách tách 50/50 cho lá chỉ đầy **50%**, vì nửa trái sau khi tách không bao giờ được chèn thêm. PostgreSQL tránh điều này: khi tách lá ngoài cùng bên phải, nó giữ lá trái đầy tới `fillfactor` (mặc định 90%). Còn `CREATE INDEX` trên dữ liệu có sẵn thì sắp xếp rồi dựng cây từ dưới lên, các lá gần đầy hoàn toàn.
 
-- Cây chỉ cao **3 tầng**, nên tìm một khoá luôn chạm đúng 3 trang, trong khi quét cả bảng cần 2.911 trang.
-- **Truy vấn khoảng** (1% số khoá, 1.971 khoá) tốn 28 trang: 3 để xuống lá đầu tiên rồi đi ngang qua khoảng 25 lá kế tiếp theo con trỏ `next`. Đây là lý do B+ tree thắng B-tree thường trong cơ sở dữ liệu: khoảng là thao tác chủ lực (`BETWEEN`, `ORDER BY ... LIMIT`, `>`), và các lá được nối sẵn.
-- **Độ đầy của lá phụ thuộc thứ tự chèn**: chèn ngẫu nhiên cho lá đầy **69%** (đúng `ln 2 ≈ 0,69`, kết quả kinh điển), nhưng chèn **tăng dần** cho lá đầy **50%** (mỗi lần lá cuối đầy, tách đôi, nửa trái không bao giờ được chèn thêm nữa), tốn 3.999 lá thay vì 2.000 lá của **nạp hàng loạt** (bulk load, dựng từ dữ liệu đã sắp xếp, đầy 100%). PostgreSQL xử lý trường hợp chèn tăng dần phổ biến này bằng cách khi lá **ngoài cùng bên phải** bị tách, nó giữ lá trái đầy tới `fillfactor` (mặc định 90%) thay vì chia 50/50; còn `CREATE INDEX` trên bảng có sẵn dữ liệu sắp xếp rồi dựng thẳng từ dưới lên.
+</Expand>
 
-### B-tree thật của PostgreSQL và phép tính tay
+<Expand title="Tính tay vì sao một lá chứa đúng 367 hay 141 khoá">
 
-Giờ so với chỉ mục thật. Phần cuối của `idx_basic` lấy thông tin cấu trúc bằng `pageinspect`:
+Một trang 8.192 byte, trừ phần đầu trang (24 byte) và vùng đặc biệt ở cuối trang (16 byte), còn **8.152 byte**. Lá B-tree của PostgreSQL mặc định chỉ đổ đầy tới `fillfactor` **90%** khi dựng index, nên dùng `8.152 × 0,9 ≈ 7.337` byte.
 
-- Chỉ mục `token` (chuỗi 32 ký tự): **56 MB, 7.210 trang**, gốc có **65 khoá**, một lá mẫu có **141 khoá**. Cây có `level = 2` (số tầng phía trên lá), tức tổng **3 tầng**: gốc, một tầng giữa, lá.
-- Khoá chính `id` (số nguyên 4 byte): **21 MB**, gốc **10 khoá**, một lá có **367 khoá**, cũng 3 tầng.
+- Khoá `int4`: mỗi mục gồm phần đầu 8 byte (chứa `ctid`) cộng 4 byte khoá, căn lề lên **16 byte**, cộng 4 byte con trỏ dòng trong trang = **20 byte**. `7.337 / 20 ≈ 367` mục, khớp output.
+- Khoá `md5` 32 ký tự: 8 byte đầu mục, cộng 33 byte (1 byte độ dài và 32 ký tự), căn lề lên 48 byte, cộng 4 byte con trỏ dòng = **52 byte**. `7.337 / 52 ≈ 141` mục, khớp output.
 
-Tính tay để thấy các con số này không tình cờ. Một trang 8.192 byte trừ phần đầu trang (24 byte) và vùng đặc biệt cuối trang (16 byte) còn **8.152 byte**; B-tree lá của PostgreSQL mặc định chỉ đổ đầy tới **`fillfactor` 90%**, nên dùng được `8.152 × 0,9 ≈ 7.337` byte. Một mục chỉ mục cho khoá `int4` là: đầu mục 8 byte (chứa `ctid`) cộng 4 byte khoá, căn lề lên **16 byte**, cộng 4 byte con trỏ dòng, tức **20 byte** mỗi mục. Vậy mỗi lá chứa `7.337 / 20 ≈ 367` mục. Output báo đúng **367**. Với khoá `md5` 32 ký tự: 8 byte đầu mục, cộng 33 byte (1 byte độ dài cộng 32 ký tự), căn lề lên 48 byte, cộng 4 byte con trỏ dòng, tức **52 byte** mỗi mục: `7.337 / 52 ≈ 141` mục mỗi lá, đúng **141** như output.
+Bài học: **khoá ngắn thì index nhỏ, cây thấp, và nhiều phần của index nằm vừa bộ nhớ đệm hơn.**
 
-Từ đó suy ra chiều cao: `1.000.000 / 367 ≈ 2.725` lá cho `id`; mỗi nút trong cũng chứa vài trăm con trỏ xuống con, nên cần khoảng 8 đến 10 nút trong, và một gốc nhỏ trỏ vào chúng: gốc 10 mục là hợp lý. Tổng ba tầng. Mỗi lần nhân dữ liệu lên 300 đến 400 lần mới thêm một tầng: ở `1.000.000` dòng, 3 tầng; tới khoảng `50 triệu` dòng mới cần 4 tầng (`367^3 ≈ 49 triệu`) cho khoá nguyên (với khoá chuỗi dài thì sớm hơn). Vì vậy tìm một khoá trong bảng tỉ dòng cũng chỉ vài lần đọc trang, và vài tầng trên cùng luôn nằm sẵn trong bộ nhớ đệm.
+</Expand>
 
-Một nhận xét về kích thước: chỉ mục `token` (56 MB) bằng khoảng **58% kích thước bảng** (97 MB) vì khoá dài; chỉ mục `id` chỉ 21 MB. **Khoá ngắn, chỉ mục nhỏ, cây thấp, nhiều khoá nằm trong bộ nhớ đệm hơn.**
+<Expand title="Index-only scan cần visibility map sạch">
 
-## Clustered và secondary index; thứ tự trên đĩa quan trọng
-
-Trong PostgreSQL, mọi chỉ mục là **secondary** (phụ): heap xếp dòng theo thứ tự **chèn**, chỉ mục trỏ vào bằng `ctid`. Ngược lại, **InnoDB** của MySQL (và SQL Server, Oracle IOT) dùng **clustered index**: bảng chính là một B+ tree theo khoá chính, lá chứa **cả dòng**. Chỉ mục phụ của InnoDB trỏ về dòng bằng **giá trị khoá chính** chứ không bằng địa chỉ vật lý, nên tìm qua chỉ mục phụ phải đi hai cây (cây phụ lấy khoá chính, cây chính lấy dòng).
-
-Thứ tự trên đĩa quan trọng vì **truy vấn khoảng**. Nếu các dòng có khoá gần nhau cũng nằm gần nhau trên đĩa (khoá chính và `id` tăng dần trong heap), đọc 1% dòng chạm ít trang. Nếu chúng rải ngẫu nhiên, mỗi dòng nằm ở một trang khác. PostgreSQL ghi nhận điều này thành thống kê **correlation** (từ −1 đến 1) cho mỗi cột, planner dựa vào đó để ước lượng chi phí:
+Index không lưu thông tin dòng nào còn "nhìn thấy được" với transaction hiện tại (xem <Term>MVCC</Term> ở bài [Transactions](/docs/databases/transactions)). Để index-only scan khỏi phải về bảng kiểm tra, PostgreSQL dựa vào **visibility map**: một bản đồ bit đánh dấu trang nào của bảng chỉ chứa dòng mọi transaction đều thấy. `UPDATE` xoá dấu đó trên các trang bị sửa, và `VACUUM` đặt lại:
 
 ```sql
-\pset null '∅'
-\echo '== tương quan giữa thứ tự chỉ mục và thứ tự trên đĩa =='
-CREATE INDEX t_rnd ON t (rnd);
-ANALYZE t;
-SELECT attname, round(correlation::numeric, 3) AS correlation
-FROM pg_stats WHERE tablename = 't' AND attname IN ('id', 'rnd', 'created') ORDER BY attname;
+UPDATE t SET b = b WHERE a = 7 AND b = 7 AND id < 300000;
+\echo '== ngay sau UPDATE =='
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY OFF) SELECT token FROM t WHERE a = 7 AND b = 7;
+VACUUM t;
+\echo '== sau VACUUM =='
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY OFF) SELECT token FROM t WHERE a = 7 AND b = 7;
+```
 
-\echo ''
-\echo '== khoảng ~1% số dòng trên id (đã sắp trên đĩa) =='
-SET enable_bitmapscan = off; SET enable_seqscan = off;
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT count(token) FROM t WHERE id BETWEEN 500000 AND 509999;
-\echo '== cùng độ rộng ~1% nhưng trên rnd (xáo ngẫu nhiên) cũng bằng index scan =='
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT count(token) FROM t WHERE rnd BETWEEN 500000 AND 509999;
-RESET enable_bitmapscan; RESET enable_seqscan;
+```text
+== ngay sau UPDATE ==
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Index Only Scan using t_ab_cover on t (actual rows=10000 loops=1)
+   Index Cond: ((a = 7) AND (b = 7))
+   Heap Fetches: 6000
+   Buffers: shared hit=800 read=2341 dirtied=2284 written=2340
+ Planning:
+   Buffers: shared hit=24 read=4 written=4
+(6 rows)
 
-\echo ''
-\echo '== để planner tự chọn trên rnd: bitmap scan gom truy cập heap theo trang =='
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT count(token) FROM t WHERE rnd BETWEEN 500000 AND 509999;
+== sau VACUUM ==
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Index Only Scan using t_ab_cover on t (actual rows=10000 loops=1)
+   Index Cond: ((a = 7) AND (b = 7))
+   Heap Fetches: 0
+   Buffers: shared hit=85
+ Planning:
+   Buffers: shared hit=13
+(6 rows)
+```
 
-\echo ''
-\echo '== CLUSTER sắp lại heap theo chỉ mục rnd (khoá bảng, tốn thời gian) =='
+Ngay sau `UPDATE`, vẫn gọi là "Index Only Scan" nhưng có **6.000** lần phải về bảng kiểm tra (`Heap Fetches`) và chạm 3.141 trang. Sau `VACUUM`, `Heap Fetches` về **0** và chỉ còn 85 trang. Bảng ghi nhiều cần autovacuum chạy đủ thường xuyên thì covering index mới phát huy.
+
+</Expand>
+
+<Expand title="Bitmap scan và lệnh CLUSTER">
+
+Ở mục thứ tự trên đĩa, ta đã ép planner dùng `Index Scan` cho `rnd`. Để planner tự chọn, nó dùng **bitmap scan**: đọc index trước, gom mọi `ctid` thành một bản đồ bit theo trang, rồi đọc bảng **theo thứ tự trang, mỗi trang đúng một lần**. Sau đó `CLUSTER` sắp lại cả bảng theo index `t_rnd`:
+
+```sql
+\echo '== planner tự chọn cho rnd =='
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON)
+SELECT count(token) FROM t WHERE rnd BETWEEN 500000 AND 509999;
+
+\echo '== CLUSTER: sắp lại bảng theo index t_rnd =='
 CLUSTER t USING t_rnd;
 ANALYZE t;
-SELECT attname, round(correlation::numeric, 3) AS correlation FROM pg_stats WHERE tablename = 't' AND attname IN ('id', 'rnd') ORDER BY attname;
+SELECT attname, round(correlation::numeric, 3) AS correlation
+FROM pg_stats WHERE tablename = 't' AND attname IN ('id', 'rnd') ORDER BY attname;
 SET enable_bitmapscan = off; SET enable_seqscan = off;
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT count(token) FROM t WHERE rnd BETWEEN 500000 AND 509999;
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON)
+SELECT count(token) FROM t WHERE rnd BETWEEN 500000 AND 509999;
 RESET enable_bitmapscan; RESET enable_seqscan;
 ```
 
 ```text
-== tương quan giữa thứ tự chỉ mục và thứ tự trên đĩa ==
- attname | correlation 
----------+-------------
- created |       1.000
- id      |       1.000
- rnd     |      -0.001
-(3 rows)
-
-
-== khoảng ~1% số dòng trên id (đã sắp trên đĩa) ==
-                           QUERY PLAN                           
-----------------------------------------------------------------
- Aggregate (actual rows=1 loops=1)
-   Buffers: shared hit=30 read=125
-   ->  Index Scan using t_pkey on t (actual rows=10000 loops=1)
-         Index Cond: ((id >= 500000) AND (id <= 509999))
-         Buffers: shared hit=30 read=125
- Planning:
-   Buffers: shared hit=24 read=2
- Planning Time: 0.239 ms
- Execution Time: 2.133 ms
-(9 rows)
-
-== cùng độ rộng ~1% nhưng trên rnd (xáo ngẫu nhiên) cũng bằng index scan ==
-                          QUERY PLAN                           
----------------------------------------------------------------
- Aggregate (actual rows=1 loops=1)
-   Buffers: shared hit=5205 read=5008
-   ->  Index Scan using t_rnd on t (actual rows=10187 loops=1)
-         Index Cond: ((rnd >= 500000) AND (rnd <= 509999))
-         Buffers: shared hit=5205 read=5008
- Planning:
-   Buffers: shared hit=3
- Planning Time: 0.038 ms
- Execution Time: 22.419 ms
-(9 rows)
-
-
-== để planner tự chọn trên rnd: bitmap scan gom truy cập heap theo trang ==
+== planner tự chọn cho rnd ==
                              QUERY PLAN                             
 --------------------------------------------------------------------
  Aggregate (actual rows=1 loops=1)
-   Buffers: shared hit=7025
+   Buffers: shared hit=6138 read=428
    ->  Bitmap Heap Scan on t (actual rows=10187 loops=1)
          Recheck Cond: ((rnd >= 500000) AND (rnd <= 509999))
-         Heap Blocks: exact=6998
-         Buffers: shared hit=7025
+         Heap Blocks: exact=6539
+         Buffers: shared hit=6138 read=428
          ->  Bitmap Index Scan on t_rnd (actual rows=10187 loops=1)
                Index Cond: ((rnd >= 500000) AND (rnd <= 509999))
-               Buffers: shared hit=27
- Planning Time: 0.042 ms
- Execution Time: 4.685 ms
-(11 rows)
+               Buffers: shared hit=10 read=17
+ Planning:
+   Buffers: shared hit=149 read=3
+ Planning Time: 0.377 ms
+ Execution Time: 9.468 ms
+(13 rows)
 
-
-== CLUSTER sắp lại heap theo chỉ mục rnd (khoá bảng, tốn thời gian) ==
+== CLUSTER: sắp lại bảng theo index t_rnd ==
  attname | correlation 
 ---------+-------------
- id      |       0.004
+ id      |       0.003
  rnd     |       1.000
 (2 rows)
 
                           QUERY PLAN                           
 ---------------------------------------------------------------
  Aggregate (actual rows=1 loops=1)
-   Buffers: shared read=154
+   Buffers: shared read=133
    ->  Index Scan using t_rnd on t (actual rows=10187 loops=1)
          Index Cond: ((rnd >= 500000) AND (rnd <= 509999))
-         Buffers: shared read=154
+         Buffers: shared read=133
  Planning:
    Buffers: shared hit=10 read=4
- Planning Time: 0.081 ms
- Execution Time: 0.949 ms
+ Planning Time: 0.079 ms
+ Execution Time: 0.979 ms
 (9 rows)
 ```
 
-- `id` và `created` có correlation **1,000** (thứ tự khớp hoàn toàn với heap), `rnd` có **−0,001** (không liên quan).
-- Cùng độ rộng 1% (10.000 dòng): trên `id`, index scan chạm **155 trang** trong **2,1 ms**; trên `rnd`, cũng index scan, chạm **10.213 trang** trong **22,4 ms**, nhiều gấp 66 lần số trang và 10 lần thời gian, vì 10.000 dòng nằm rải khắp 12.352 trang của heap, gần như mỗi dòng một trang.
-- Khi để planner tự chọn trên `rnd`, nó dùng **bitmap scan**: đọc chỉ mục trước, gom mọi `ctid` thành một bản đồ bit theo trang, rồi đọc heap **theo thứ tự trang, mỗi trang một lần**. Kết quả 7.025 trang, **4,7 ms**: tốt hơn index scan thuần vì không đọc lại một trang nhiều lần, nhưng vẫn chạm gần nửa bảng.
-- `CLUSTER t USING t_rnd` **sắp lại heap theo chỉ mục** `t_rnd` (tốn thời gian và khoá bảng); sau đó `rnd` có correlation **1,000**, và cùng truy vấn chạm **154 trang** trong **0,95 ms**. (Còn `id` giờ chỉ **0,004**.) Cái giá: `CLUSTER` là thao tác một lần, dữ liệu ghi mới không tự giữ thứ tự, và mỗi bảng chỉ có một thứ tự vật lý duy nhất. InnoDB cố định thứ tự đó là khoá chính, nên người ta thường chọn khoá chính tăng dần (chèn nối đuôi, ít tách trang) thay vì UUID ngẫu nhiên (chèn rải khắp cây, tách trang liên tục, như bảng "ngẫu nhiên" ở B+ tree tự cài phía trên).
+- Bitmap scan chạm 6.539 trang bảng thay vì 10.213, vì không đọc lại một trang nhiều lần. Nhưng 10.187 dòng vẫn nằm rải trên hơn nửa bảng.
+- Sau `CLUSTER`, `rnd` có correlation **1,000** và cùng truy vấn chỉ chạm **133 trang**. Đổi lại `id` giờ chỉ còn **0,003**: mỗi bảng chỉ có một thứ tự vật lý. `CLUSTER` khoá cả bảng trong lúc chạy, và dữ liệu ghi sau đó không tự giữ thứ tự.
 
-## Composite index và quy tắc tiền tố trái
+</Expand>
 
-Chỉ mục có thể trên **nhiều cột**: `CREATE INDEX t_abc ON t (a, b, c)`. Các mục được sắp theo `a` trước, trong cùng `a` sắp theo `b`, trong cùng `(a, b)` sắp theo `c`, giống sắp từ điển theo chữ cái đầu rồi chữ thứ hai. Hệ quả là **quy tắc tiền tố trái** (leftmost prefix): chỉ mục chỉ thu hẹp miền tìm hiệu quả khi truy vấn có điều kiện trên **các cột đầu liên tục**.
+<Expand title="Đo các kiểu index: hash, BRIN, GIN">
 
 ```sql
-\pset null '∅'
-\echo '== composite index (a, b, c): quy tắc tiền tố trái =='
-DROP INDEX IF EXISTS t_ab_cover, t_ab, t_abc;
-CREATE INDEX t_abc ON t (a, b, c);
-ANALYZE t;
-\echo '-- lọc a: dùng được (tiền tố)'
-EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE a = 7;
-\echo '-- lọc a và b: dùng được'
-EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE a = 7 AND b = 7;
-\echo '-- lọc a, b, c: dùng được cả ba cột'
-EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE a = 7 AND b = 7 AND c = 3;
-\echo '-- chỉ lọc b (bỏ qua tiền tố a): chỉ mục gần như vô dụng với planner'
-EXPLAIN (COSTS OFF) SELECT * FROM t WHERE b = 7;
-\echo '-- lọc a và c (nhảy qua b): chỉ cột a thu hẹp được miền tìm'
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY OFF) SELECT * FROM t WHERE a = 7 AND c = 3 AND b IS NOT NULL;
-\echo '-- ORDER BY khớp thứ tự chỉ mục: không cần bước sắp xếp'
-EXPLAIN (COSTS OFF) SELECT a, b, c FROM t WHERE a = 7 ORDER BY b, c LIMIT 5;
-\echo '-- ORDER BY đảo thứ tự cột: phải sắp xếp thêm'
-EXPLAIN (COSTS OFF) SELECT a, b, c FROM t WHERE a = 7 ORDER BY c, b LIMIT 5;
-```
-
-```text
-== composite index (a, b, c): quy tắc tiền tố trái ==
--- lọc a: dùng được (tiền tố)
-               QUERY PLAN               
-----------------------------------------
- Aggregate
-   ->  Index Only Scan using t_abc on t
-         Index Cond: (a = 7)
-(3 rows)
-
--- lọc a và b: dùng được
-                QUERY PLAN                 
--------------------------------------------
- Aggregate
-   ->  Index Only Scan using t_abc on t
-         Index Cond: ((a = 7) AND (b = 7))
-(3 rows)
-
--- lọc a, b, c: dùng được cả ba cột
-                      QUERY PLAN                       
--------------------------------------------------------
- Aggregate
-   ->  Index Only Scan using t_abc on t
-         Index Cond: ((a = 7) AND (b = 7) AND (c = 3))
-(3 rows)
-
--- chỉ lọc b (bỏ qua tiền tố a): chỉ mục gần như vô dụng với planner
-          QUERY PLAN          
-------------------------------
- Gather
-   Workers Planned: 2
-   ->  Parallel Seq Scan on t
-         Filter: (b = 7)
-(4 rows)
-
--- lọc a và c (nhảy qua b): chỉ cột a thu hẹp được miền tìm
-                          QUERY PLAN                           
----------------------------------------------------------------
- Bitmap Heap Scan on t (actual rows=2857 loops=1)
-   Recheck Cond: ((a = 7) AND (b IS NOT NULL) AND (c = 3))
-   Heap Blocks: exact=2249
-   Buffers: shared hit=51 read=2218
-   ->  Bitmap Index Scan on t_abc (actual rows=2857 loops=1)
-         Index Cond: ((a = 7) AND (b IS NOT NULL) AND (c = 3))
-         Buffers: shared read=20
-(7 rows)
-
--- ORDER BY khớp thứ tự chỉ mục: không cần bước sắp xếp
-               QUERY PLAN               
-----------------------------------------
- Limit
-   ->  Index Only Scan using t_abc on t
-         Index Cond: (a = 7)
-(3 rows)
-
--- ORDER BY đảo thứ tự cột: phải sắp xếp thêm
-                  QUERY PLAN                  
-----------------------------------------------
- Limit
-   ->  Sort
-         Sort Key: c, b
-         ->  Index Only Scan using t_abc on t
-               Index Cond: (a = 7)
-(5 rows)
-```
-
-- Lọc `a`, hoặc `a và b`, hoặc `a, b, c`: dùng được chỉ mục, các điều kiện `Index Cond` nằm hết trong cây. (Kiểu quét là Index Only Scan vì bảng đã `VACUUM` và `count(*)` chỉ cần khoá.)
-- **Chỉ lọc `b`** (bỏ qua `a`): các mục có `b = 7` rải khắp chỉ mục (cứ mỗi giá trị `a` lại có một đoạn), không có đoạn liên tục để nhảy tới, nên planner chọn quét tuần tự cả bảng.
-- **Lọc `a` và `c`, bỏ `b`**: chỉ cột đầu thu hẹp được: phải đọc **mọi mục có `a = 7`** (20 trang chỉ mục, 20.000 mục) và lọc `c = 3` bên trong. Không tệ, nhưng chi phí tỉ lệ với số dòng `a = 7`, không phải số dòng thoả cả hai điều kiện.
-- **Thứ tự `ORDER BY`**: truy vấn `WHERE a = 7 ORDER BY b, c LIMIT 5` khớp thứ tự chỉ mục nên chạy `Index Only Scan` rồi `Limit` ngay, **không có bước `Sort`**; còn `ORDER BY c, b` ngược thứ tự phải thêm `Sort` trên toàn bộ dòng `a = 7`.
-
-Quy tắc đặt thứ tự cột: **cột dùng điều kiện bằng (`=`) đặt trước, cột dùng khoảng (`<`, `BETWEEN`) hoặc `ORDER BY` đặt sau**, vì sau cột khoảng các cột tiếp theo không còn thu hẹp được nữa. Trong số các cột `=`, ưu tiên cột lọc mạnh nhất và cột nhiều truy vấn dùng chung. Một chỉ mục `(a, b)` thay được chỉ mục `(a)` riêng, nên không cần giữ cả hai.
-
-## Covering index và index-only scan
-
-Mỗi lần tìm qua chỉ mục thường còn một bước về heap để lấy các cột không có trong chỉ mục. Nếu chỉ mục **chứa đủ mọi cột truy vấn cần**, PostgreSQL trả kết quả thẳng từ chỉ mục, không đụng heap: **index-only scan**. `INCLUDE` thêm cột vào lá của chỉ mục mà không dùng làm khoá sắp xếp:
-
-```sql
-\pset null '∅'
-\echo '== covering index: chỉ mục chứa luôn cột cần lấy thì không phải về heap =='
-DROP INDEX IF EXISTS t_a_cover, t_a_inc, t_abc;
-CREATE INDEX t_ab ON t (a, b);
-VACUUM ANALYZE t;
-\echo '-- chỉ mục (a, b): tìm được dòng nhưng token nằm ở heap, mỗi dòng một lần về heap'
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT token FROM t WHERE a = 7 AND b = 7;
-
-DROP INDEX t_ab;
-CREATE INDEX t_ab_cover ON t (a, b) INCLUDE (token);
-VACUUM ANALYZE t;
-\echo '-- chỉ mục (a, b) INCLUDE (token): Index Only Scan, Heap Fetches = 0'
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT token FROM t WHERE a = 7 AND b = 7;
-SELECT pg_size_pretty(pg_relation_size('t_ab_cover')) AS covering_index_size;
-
-\echo ''
-\echo '-- index-only scan phụ thuộc visibility map: sau khi ghi nhiều, Heap Fetches tăng cho tới khi VACUUM'
-UPDATE t SET b = b WHERE a = 7 AND b = 7 AND id < 300000;
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY OFF) SELECT token FROM t WHERE a = 7 AND b = 7;
-VACUUM t;
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY OFF) SELECT token FROM t WHERE a = 7 AND b = 7;
-```
-
-```text
-== covering index: chỉ mục chứa luôn cột cần lấy thì không phải về heap ==
-NOTICE:  index "t_a_inc" does not exist, skipping
-NOTICE:  index "t_abc" does not exist, skipping
--- chỉ mục (a, b): tìm được dòng nhưng token nằm ở heap, mỗi dòng một lần về heap
-                         QUERY PLAN                          
--------------------------------------------------------------
- Bitmap Heap Scan on t (actual rows=10000 loops=1)
-   Recheck Cond: ((a = 7) AND (b = 7))
-   Heap Blocks: exact=6882
-   Buffers: shared hit=48 read=6845
-   ->  Bitmap Index Scan on t_ab (actual rows=10000 loops=1)
-         Index Cond: ((a = 7) AND (b = 7))
-         Buffers: shared read=11
- Planning:
-   Buffers: shared hit=22
- Planning Time: 0.221 ms
- Execution Time: 32.340 ms
-(11 rows)
-
--- chỉ mục (a, b) INCLUDE (token): Index Only Scan, Heap Fetches = 0
-                            QUERY PLAN                             
--------------------------------------------------------------------
- Index Only Scan using t_ab_cover on t (actual rows=10000 loops=1)
-   Index Cond: ((a = 7) AND (b = 7))
-   Heap Fetches: 0
-   Buffers: shared hit=1 read=85
- Planning:
-   Buffers: shared hit=14
- Planning Time: 0.073 ms
- Execution Time: 0.912 ms
-(8 rows)
-
- covering_index_size 
----------------------
- 64 MB
-(1 row)
-
-
--- index-only scan phụ thuộc visibility map: sau khi ghi nhiều, Heap Fetches tăng cho tới khi VACUUM
-                            QUERY PLAN                             
--------------------------------------------------------------------
- Index Only Scan using t_ab_cover on t (actual rows=10000 loops=1)
-   Index Cond: ((a = 7) AND (b = 7))
-   Heap Fetches: 7510
-   Buffers: shared hit=2823 dirtied=82
-(4 rows)
-
-                            QUERY PLAN                             
--------------------------------------------------------------------
- Index Only Scan using t_ab_cover on t (actual rows=10000 loops=1)
-   Index Cond: ((a = 7) AND (b = 7))
-   Heap Fetches: 0
-   Buffers: shared hit=109
- Planning:
-   Buffers: shared hit=12
-(6 rows)
-```
-
-Truy vấn `SELECT token FROM t WHERE a = 7 AND b = 7` trả 10.000 dòng:
-
-- Với chỉ mục `(a, b)`: **Bitmap Heap Scan**, đọc **6.882 trang heap**, mất **32,3 ms**: chỉ mục tìm ra `ctid` nhưng `token` nằm ở heap.
-- Với `(a, b) INCLUDE (token)`: **Index Only Scan**, `Heap Fetches: 0`, chạm **86 trang** (chỉ mục), mất **0,9 ms**: nhanh hơn khoảng 35 lần. Cái giá: chỉ mục lớn hơn (**64 MB**).
-
-Ba điều kiện để index-only scan thật sự "không đụng heap": mọi cột nằm trong chỉ mục, chỉ mục hỗ trợ (B-tree có), và các trang heap phải **"tất cả đều nhìn thấy"** theo **visibility map** (bản đồ bit nói trang này không có dòng chết hay dòng chưa commit). Hai lần chạy cuối cho thấy điều đó: sau khi `UPDATE` hàng loạt, visibility map bị xoá bit cho các trang bị sửa, và lần chạy kế tiếp báo **`Heap Fetches: 7510`** (phải kiểm tra từng dòng ở heap, và đọc 2.823 trang); sau `VACUUM`, `Heap Fetches` về lại **0** và chỉ chạm 109 trang. Muốn index-only scan ổn định thì bảng phải được `VACUUM` thường xuyên (autovacuum làm việc này).
-
-## Các kiểu chỉ mục khác
-
-B-tree là mặc định, nhưng không phải lúc nào cũng đúng. PostgreSQL có nhiều kiểu, so trên bảng một triệu dòng khác:
-
-```sql
-\pset null '∅'
--- bảng t đã bị CLUSTER theo rnd ở bước trước; dựng lại một bảng sạch để so sánh kiểu chỉ mục
 DROP TABLE IF EXISTS u;
 CREATE TABLE u AS
-SELECT g AS id, md5(g::text) AS token, timestamp '2026-01-01' + g * interval '1 second' AS created,
+SELECT g AS id, md5(g::text) AS token,
+       timestamp '2026-01-01' + g * interval '1 second' AS created,
        ARRAY[g % 100, g % 1000, g % 10000] AS tags
 FROM generate_series(1, 1000000) g;
 ANALYZE u;
-SELECT pg_size_pretty(pg_relation_size('u')) AS heap_size;
-
-\echo '== kích thước các kiểu chỉ mục trên cùng bảng 1.000.000 dòng =='
-CREATE INDEX u_token_btree ON u USING btree (token);
-CREATE INDEX u_token_hash  ON u USING hash  (token);
+CREATE INDEX u_token_btree   ON u USING btree (token);
+CREATE INDEX u_token_hash    ON u USING hash  (token);
 CREATE INDEX u_created_btree ON u USING btree (created);
 CREATE INDEX u_created_brin  ON u USING brin  (created);
-CREATE INDEX u_tags_gin ON u USING gin (tags);
+CREATE INDEX u_tags_gin      ON u USING gin   (tags);
+SELECT pg_size_pretty(pg_relation_size('u')) AS table_size;
 SELECT indexrelname AS index, pg_size_pretty(pg_relation_size(indexrelid)) AS size
 FROM pg_stat_user_indexes WHERE relname = 'u' ORDER BY pg_relation_size(indexrelid) DESC;
 
-\echo ''
-\echo '== hash: chỉ hỗ trợ so sánh bằng. Bỏ B-tree trên token để thấy hash làm việc, rồi thử khoảng =='
+\echo '== hash: tìm bằng thì dùng được, tìm khoảng thì không =='
 DROP INDEX u_token_btree;
 EXPLAIN (COSTS OFF) SELECT * FROM u WHERE token = '8f14e45fceea167a5a36dedd4bea2543';
 EXPLAIN (COSTS OFF) SELECT * FROM u WHERE token > 'ff0' AND token < 'ff1';
 
-\echo ''
-\echo '== BRIN: chỉ nhớ min/max mỗi nhóm trang. Bỏ B-tree trên created để BRIN được dùng =='
+\echo '== BRIN trên cột tăng dần theo thứ tự chèn =='
 DROP INDEX u_created_btree;
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON)
 SELECT count(*) FROM u WHERE created BETWEEN '2026-01-05' AND '2026-01-05 00:10:00';
-\echo '-- cùng truy vấn nhưng trên cột token (không theo thứ tự trên đĩa) BRIN không giúp được, planner quét cả bảng'
-CREATE INDEX u_token_brin ON u USING brin (token);
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON) SELECT count(*) FROM u WHERE token BETWEEN '0000' AND '0001';
 
-\echo ''
-\echo '== GIN: chỉ mục ngược cho mảng, JSON, văn bản: tìm dòng chứa phần tử =='
+\echo '== GIN: tìm dòng có mảng tags chứa 9999 =='
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, COSTS OFF, SUMMARY ON)
 SELECT count(*) FROM u WHERE tags @> ARRAY[9999];
 ```
 
 ```text
- heap_size 
------------
+NOTICE:  table "u" does not exist, skipping
+ table_size 
+------------
  112 MB
 (1 row)
 
-== kích thước các kiểu chỉ mục trên cùng bảng 1.000.000 dòng ==
       index      | size  
 -----------------+-------
  u_token_btree   | 56 MB
@@ -762,8 +1024,7 @@ SELECT count(*) FROM u WHERE tags @> ARRAY[9999];
  u_created_brin  | 24 kB
 (5 rows)
 
-
-== hash: chỉ hỗ trợ so sánh bằng. Bỏ B-tree trên token để thấy hash làm việc, rồi thử khoảng ==
+== hash: tìm bằng thì dùng được, tìm khoảng thì không ==
                             QUERY PLAN                            
 ------------------------------------------------------------------
  Index Scan using u_token_hash on u
@@ -778,8 +1039,7 @@ SELECT count(*) FROM u WHERE tags @> ARRAY[9999];
          Filter: ((token > 'ff0'::text) AND (token < 'ff1'::text))
 (4 rows)
 
-
-== BRIN: chỉ nhớ min/max mỗi nhóm trang. Bỏ B-tree trên created để BRIN được dùng ==
+== BRIN trên cột tăng dần theo thứ tự chèn ==
                                                                            QUERY PLAN                                                                            
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------
  Aggregate (actual rows=1 loops=1)
@@ -793,314 +1053,49 @@ SELECT count(*) FROM u WHERE tags @> ARRAY[9999];
                Index Cond: ((created >= '2026-01-05 00:00:00'::timestamp without time zone) AND (created <= '2026-01-05 00:10:00'::timestamp without time zone))
                Buffers: shared hit=8
  Planning:
-   Buffers: shared hit=24
- Planning Time: 0.071 ms
- Execution Time: 0.808 ms
+   Buffers: shared hit=22 read=2
+ Planning Time: 0.070 ms
+ Execution Time: 0.885 ms
 (14 rows)
 
--- cùng truy vấn nhưng trên cột token (không theo thứ tự trên đĩa) BRIN không giúp được, planner quét cả bảng
-                                 QUERY PLAN                                  
------------------------------------------------------------------------------
- Aggregate (actual rows=1 loops=1)
-   Buffers: shared hit=2464 read=11872
-   ->  Gather (actual rows=13 loops=1)
-         Workers Planned: 2
-         Workers Launched: 2
-         Buffers: shared hit=2464 read=11872
-         ->  Parallel Seq Scan on u (actual rows=4 loops=3)
-               Filter: ((token >= '0000'::text) AND (token <= '0001'::text))
-               Rows Removed by Filter: 333329
-               Buffers: shared hit=2464 read=11872
- Planning:
-   Buffers: shared hit=32
- Planning Time: 0.100 ms
- Execution Time: 31.158 ms
-(14 rows)
-
-
-== GIN: chỉ mục ngược cho mảng, JSON, văn bản: tìm dòng chứa phần tử ==
+== GIN: tìm dòng có mảng tags chứa 9999 ==
                               QUERY PLAN                               
 -----------------------------------------------------------------------
  Aggregate (actual rows=1 loops=1)
-   Buffers: shared hit=21 read=83
+   Buffers: shared hit=20 read=84
    ->  Bitmap Heap Scan on u (actual rows=100 loops=1)
          Recheck Cond: (tags @> '{9999}'::integer[])
          Heap Blocks: exact=100
-         Buffers: shared hit=21 read=83
+         Buffers: shared hit=20 read=84
          ->  Bitmap Index Scan on u_tags_gin (actual rows=100 loops=1)
                Index Cond: (tags @> '{9999}'::integer[])
                Buffers: shared hit=4
  Planning:
    Buffers: shared hit=7
- Planning Time: 0.074 ms
- Execution Time: 0.363 ms
+ Planning Time: 0.069 ms
+ Execution Time: 0.423 ms
 (13 rows)
 ```
 
-| Kiểu | Hỗ trợ | Kích thước (1 triệu dòng) | Dùng khi |
-|---|---|---|---|
-| B-tree | `=`, khoảng, `ORDER BY`, tiền tố `LIKE` | 56 MB (chuỗi), 21 MB (timestamp) | mặc định cho hầu hết cột |
-| Hash | chỉ `=` | 32 MB (chuỗi) | tra cứu bằng thuần tuý, chuỗi dài |
-| GIN | chứa phần tử (mảng, JSON, tìm kiếm văn bản) | 16 MB | cột nhiều giá trị: `tags @> ARRAY[...]`, full-text search |
-| BRIN | khoảng, trên dữ liệu đã theo thứ tự trên đĩa | **24 KB** | bảng cực lớn, cột tăng dần như thời gian, log |
+- **Hash** chỉ lưu mã băm nên nhỏ hơn B-tree cùng cột (32 MB so với 56 MB), nhưng với truy vấn khoảng thì vô dụng: planner quét cả bảng. Đó là lý do B-tree thường thắng, vì nó dùng được cho nhiều kiểu truy vấn hơn.
+- **BRIN** (block range index) chỉ lưu min và max của mỗi nhóm 128 trang liền nhau: **24 kB**, nhỏ hơn B-tree cùng cột gần 900 lần. Truy vấn 10 phút chạm 136 trang. Nó chỉ khoanh vùng tới mức nhóm trang (`lossy`), nên phải lọc lại 8.359 dòng không khớp. BRIN chỉ có ích khi giá trị cột **đi theo thứ tự vật lý**; với cột ngẫu nhiên như `token`, nhóm trang nào cũng có cả giá trị nhỏ lẫn lớn, min và max không loại được gì.
+- **GIN** là index **ngược**: với mỗi phần tử, lưu danh sách các dòng chứa nó, giống mục lục cuối sách. Tìm các dòng có `9999` trong mảng `tags` chỉ chạm 4 trang index và đọc đúng 100 dòng khớp.
 
-- **Hash** nhỏ hơn B-tree cùng cột (32 MB so với 56 MB) vì chỉ lưu mã băm, và tìm bằng `O(1)` bước. Nhưng với khoảng (`token > 'ff0' AND token < 'ff1'`), nó vô dụng: planner quét tuần tự cả bảng (xem plan thứ hai). Vì vậy B-tree thường thắng chỉ vì dùng được nhiều truy vấn hơn.
-- **GIN** là chỉ mục **ngược**: với mỗi giá trị phần tử, lưu danh sách các dòng chứa nó (giống chỉ mục cuối sách). Tìm các dòng có `tags @> ARRAY[9999]` chạm chỉ 4 trang chỉ mục và đọc 100 dòng đúng (0,34 ms), điều mà B-tree thường không làm được cho cột mảng.
-- **BRIN** (block range index) chỉ lưu **min và max** của mỗi nhóm trang liền nhau. Chỉ **24 KB** cho bảng 112 MB (B-tree cùng cột là 21 MB, hơn 800 lần). Tìm khoảng thời gian 10 phút trên cột `created` (tăng dần theo thứ tự chèn) chạm chỉ 136 trang (128 trang heap lossy cộng 8 trang chỉ mục) trong **0,77 ms**. Nhưng BRIN chỉ có tác dụng khi giá trị **tương quan với thứ tự vật lý**: với cột `token` (băm ngẫu nhiên), mỗi nhóm trang có đủ giá trị nhỏ lẫn lớn nên min/max không loại được gì, và planner bỏ BRIN, quét cả bảng (ở cuối output của BRIN).
+</Expand>
 
-## Cái giá khi ghi
+<Expand title="Index trong vận hành thật">
 
-Mỗi chỉ mục là một B-tree phải **cập nhật theo** mọi `INSERT`, `UPDATE` (nếu đổi cột được đánh chỉ mục hoặc dòng đổi chỗ) và `DELETE`. Thí nghiệm: nạp 300.000 dòng vào bảng có 0 tới 5 chỉ mục (mỗi cái trên một cột `md5` ngẫu nhiên, trường hợp tệ nhất cho B-tree vì chèn rải khắp cây):
-
-```sql
-\pset null '∅'
-\echo '== chi phí GHI của chỉ mục: nạp 300.000 dòng ngẫu nhiên vào bảng có 0 đến 5 chỉ mục =='
-DROP TABLE IF EXISTS w;
-CREATE TABLE w (id int, c1 text, c2 text, c3 text, c4 text, c5 text);
-CREATE TEMP TABLE results (n_indexes int, insert_ms numeric, table_mb numeric, indexes_mb numeric);
-
-DO $$
-DECLARE
-  k int; t0 timestamp; ms numeric;
-BEGIN
-  FOR k IN 0..5 LOOP
-    TRUNCATE w;
-    DROP INDEX IF EXISTS w1, w2, w3, w4, w5;
-    IF k >= 1 THEN CREATE INDEX w1 ON w (c1); END IF;
-    IF k >= 2 THEN CREATE INDEX w2 ON w (c2); END IF;
-    IF k >= 3 THEN CREATE INDEX w3 ON w (c3); END IF;
-    IF k >= 4 THEN CREATE INDEX w4 ON w (c4); END IF;
-    IF k >= 5 THEN CREATE INDEX w5 ON w (c5); END IF;
-    t0 := clock_timestamp();
-    INSERT INTO w SELECT g, md5(g::text || 'a'), md5(g::text || 'b'), md5(g::text || 'c'), md5(g::text || 'd'), md5(g::text || 'e')
-      FROM generate_series(1, 300000) g;
-    ms := extract(epoch FROM clock_timestamp() - t0) * 1000;
-    INSERT INTO results SELECT k, round(ms), round(pg_relation_size('w') / 1048576.0, 1),
-      round(coalesce((SELECT sum(pg_relation_size(indexrelid)) FROM pg_stat_user_indexes WHERE relname = 'w'), 0) / 1048576.0, 1);
-  END LOOP;
-END $$;
-
-SELECT n_indexes AS indexes, insert_ms AS "insert (ms)",
-       round(insert_ms / (SELECT insert_ms FROM results WHERE n_indexes = 0), 2) AS "so với không chỉ mục",
-       table_mb AS "bảng (MB)", indexes_mb AS "các chỉ mục (MB)"
-FROM results ORDER BY n_indexes;
-```
-
-```text
-== chi phí GHI của chỉ mục: nạp 300.000 dòng ngẫu nhiên vào bảng có 0 đến 5 chỉ mục ==
- indexes | insert (ms) | so với không chỉ mục | bảng (MB) | các chỉ mục (MB) 
----------+-------------+----------------------+-----------+------------------
-       0 |        1078 |                 1.00 |      58.6 |              0.0
-       1 |        1840 |                 1.71 |      58.6 |             21.9
-       2 |        2629 |                 2.44 |      58.6 |             43.6
-       3 |        3605 |                 3.34 |      58.6 |             65.5
-       4 |        4512 |                 4.19 |      58.6 |             87.1
-       5 |        5224 |                 4.85 |      58.6 |            108.6
-(6 rows)
-```
-
-Mỗi chỉ mục thêm làm thời gian nạp tăng thêm khoảng **0,7 lần** thời gian không chỉ mục: 1,71 lần với một chỉ mục, **4,85 lần** với năm chỉ mục (1.078 ms lên 5.224 ms). Đồng thời kích thước tăng: bảng 58,6 MB, nhưng năm chỉ mục chiếm **108,6 MB**, gần gấp đôi bản thân dữ liệu. Phần chi phí này còn bị nhân lên ở `UPDATE`: PostgreSQL dùng MVCC nên mỗi `UPDATE` tạo một phiên bản dòng mới ở vị trí mới, và nếu không dùng được tối ưu HOT (dòng mới nằm cùng trang và không đổi cột có chỉ mục) thì **mọi** chỉ mục phải thêm một mục mới, không chỉ chỉ mục của cột bị đổi (chi tiết ở bài [Transactions](/docs/databases/transactions)).
-
-Nguyên tắc: **mỗi chỉ mục phải đánh đổi được bằng truy vấn đọc nó giúp**. Chỉ mục không bao giờ được dùng là phí thuần tuý; `pg_stat_user_indexes.idx_scan = 0` sau một thời gian dài là dấu hiệu để xoá.
-
-## Khi nào planner bỏ qua chỉ mục
-
-Có chỉ mục không có nghĩa nó được dùng. Sáu trường hợp thường gặp, trên bảng 500.000 dòng với đủ chỉ mục cần thiết:
-
-```sql
-\pset null '∅'
-\echo '== khi nào planner KHÔNG dùng chỉ mục (dù chỉ mục tồn tại) =='
-DROP TABLE IF EXISTS g;
-CREATE TABLE g AS
-SELECT i AS id, (i % 2) AS half, (i % 1000) AS thousandth, 'User' || (i % 5000) AS name, i::text AS id_text
-FROM generate_series(1, 500000) i;
-CREATE INDEX g_half ON g (half); CREATE INDEX g_th ON g (thousandth); CREATE INDEX g_name ON g (name); CREATE INDEX g_idtext ON g (id_text text_pattern_ops);
-CREATE INDEX g_id ON g (id);
-ANALYZE g;
-
-\echo '-- 1. lấy 90% số dòng: đọc tuần tự cả bảng rẻ hơn nhảy qua chỉ mục (dù chỉ mục có sẵn)'
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE thousandth < 900;
-\echo '-- lấy 0,5% số dòng: chỉ mục thắng'
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE thousandth < 5;
-
-\echo ''
-\echo '-- 2. bọc cột trong hàm: chỉ mục trên name không dùng được cho lower(name)'
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE lower(name) = 'user42';
-CREATE INDEX g_lower_name ON g (lower(name));
-ANALYZE g;
-\echo '-- sau khi tạo chỉ mục trên biểu thức lower(name):'
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE lower(name) = 'user42';
-
-\echo ''
-\echo '-- 3. tính toán trên cột ở vế trái: id + 1 = 100 không dùng được chỉ mục id'
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id + 1 = 100;
-\echo '-- viết lại để cột đứng một mình:'
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id = 99;
-
-\echo ''
-\echo '-- 4. LIKE: tiền tố dùng được (với text_pattern_ops), hậu tố hay chứa thì không'
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id_text LIKE '4999%';
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id_text LIKE '%999';
-
-\echo ''
-\echo '-- 5. ép kiểu cột: so sánh trực tiếp dùng chỉ mục, còn id_text::int thì không'
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id_text = '500';
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE id_text::int = 500;
-
-\echo ''
-\echo '-- 6. OR trên hai cột đều có chỉ mục: BitmapOr gộp hai chỉ mục; ORDER BY khớp chỉ mục id kèm LIMIT không cần sắp xếp'
-EXPLAIN (COSTS OFF) SELECT * FROM g WHERE thousandth = 7 OR id = 500;
-EXPLAIN (COSTS OFF) SELECT * FROM g ORDER BY id LIMIT 3;
-```
-
-```text
-== khi nào planner KHÔNG dùng chỉ mục (dù chỉ mục tồn tại) ==
--- 1. lấy 90% số dòng: đọc tuần tự cả bảng rẻ hơn nhảy qua chỉ mục (dù chỉ mục có sẵn)
-          QUERY PLAN          
-------------------------------
- Seq Scan on g
-   Filter: (thousandth < 900)
-(2 rows)
-
--- lấy 0,5% số dòng: chỉ mục thắng
-              QUERY PLAN              
---------------------------------------
- Bitmap Heap Scan on g
-   Recheck Cond: (thousandth < 5)
-   ->  Bitmap Index Scan on g_th
-         Index Cond: (thousandth < 5)
-(4 rows)
-
-
--- 2. bọc cột trong hàm: chỉ mục trên name không dùng được cho lower(name)
-                   QUERY PLAN                   
-------------------------------------------------
- Gather
-   Workers Planned: 2
-   ->  Parallel Seq Scan on g
-         Filter: (lower(name) = 'user42'::text)
-(4 rows)
-
--- sau khi tạo chỉ mục trên biểu thức lower(name):
-                     QUERY PLAN                     
-----------------------------------------------------
- Bitmap Heap Scan on g
-   Recheck Cond: (lower(name) = 'user42'::text)
-   ->  Bitmap Index Scan on g_lower_name
-         Index Cond: (lower(name) = 'user42'::text)
-(4 rows)
-
-
--- 3. tính toán trên cột ở vế trái: id + 1 = 100 không dùng được chỉ mục id
-            QUERY PLAN            
-----------------------------------
- Gather
-   Workers Planned: 2
-   ->  Parallel Seq Scan on g
-         Filter: ((id + 1) = 100)
-(4 rows)
-
--- viết lại để cột đứng một mình:
-         QUERY PLAN         
-----------------------------
- Index Scan using g_id on g
-   Index Cond: (id = 99)
-(2 rows)
-
-
--- 4. LIKE: tiền tố dùng được (với text_pattern_ops), hậu tố hay chứa thì không
-                                 QUERY PLAN                                 
-----------------------------------------------------------------------------
- Index Scan using g_idtext on g
-   Index Cond: ((id_text ~>=~ '4999'::text) AND (id_text ~<~ '499:'::text))
-   Filter: (id_text ~~ '4999%'::text)
-(3 rows)
-
-                QUERY PLAN                 
--------------------------------------------
- Gather
-   Workers Planned: 2
-   ->  Parallel Seq Scan on g
-         Filter: (id_text ~~ '%999'::text)
-(4 rows)
-
-
--- 5. ép kiểu cột: so sánh trực tiếp dùng chỉ mục, còn id_text::int thì không
-              QUERY PLAN               
----------------------------------------
- Index Scan using g_idtext on g
-   Index Cond: (id_text = '500'::text)
-(2 rows)
-
-                 QUERY PLAN                 
---------------------------------------------
- Gather
-   Workers Planned: 2
-   ->  Parallel Seq Scan on g
-         Filter: ((id_text)::integer = 500)
-(4 rows)
-
-
--- 6. OR trên hai cột đều có chỉ mục: BitmapOr gộp hai chỉ mục; ORDER BY khớp chỉ mục id kèm LIMIT không cần sắp xếp
-                    QUERY PLAN                    
---------------------------------------------------
- Bitmap Heap Scan on g
-   Recheck Cond: ((thousandth = 7) OR (id = 500))
-   ->  BitmapOr
-         ->  Bitmap Index Scan on g_th
-               Index Cond: (thousandth = 7)
-         ->  Bitmap Index Scan on g_id
-               Index Cond: (id = 500)
-(7 rows)
-
-            QUERY PLAN            
-----------------------------------
- Limit
-   ->  Index Scan using g_id on g
-(2 rows)
-```
-
-1. **Độ chọn lọc thấp**: lấy 90% số dòng thì đọc tuần tự cả bảng rẻ hơn nhảy qua chỉ mục (mỗi dòng một lần đọc ngẫu nhiên); lấy 0,5% thì chỉ mục thắng. Ngưỡng chuyển tuỳ phần cứng và thống kê, thường vài phần trăm tới vài chục phần trăm.
-2. **Bọc cột trong hàm**: `lower(name) = 'user42'` không dùng được chỉ mục trên `name`, vì chỉ mục sắp theo giá trị gốc chứ không theo `lower` của nó. Giải: tạo **chỉ mục trên biểu thức** `lower(name)`, và truy vấn sau đó dùng được.
-3. **Tính toán trên cột**: `id + 1 = 100` không dùng được chỉ mục `id`; viết lại để cột đứng một mình (`id = 99`).
-4. **`LIKE`**: tiền tố (`'4999%'`) chuyển được thành khoảng nên dùng chỉ mục (với toán tử `text_pattern_ops`, hoặc collation `C`); hậu tố hay chứa (`'%999'`) thì không, cần chỉ mục `pg_trgm` kiểu GIN.
-5. **Ép kiểu cột**: `id_text = '500'` dùng được chỉ mục, còn `id_text::int = 500` thì không (cột bị bọc trong phép ép kiểu).
-6. **Hai trường hợp planner vẫn dùng được chỉ mục**: `OR` trên hai cột đều có chỉ mục dùng **BitmapOr** (gộp hai chỉ mục), và `ORDER BY id LIMIT 3` chạy ngay trên chỉ mục `id` không sắp xếp.
-
-Trong cả sáu trường hợp, `EXPLAIN` cho biết lý do ngay lập tức. Ngoài ra còn hai nguyên nhân thường gặp mà không có trong script: **thống kê cũ** làm planner ước lượng sai số dòng (chạy `ANALYZE`), và **bảng quá nhỏ** (vài trăm dòng) nên quét tuần tự rẻ hơn mọi chỉ mục.
-
-## Trong hệ thống thật
-
-- **PostgreSQL** là heap cộng B-tree secondary mặc định; **InnoDB** là clustered B+ tree theo khoá chính (trang 16 KB), chỉ mục phụ chứa khoá chính; **SQLite** lưu bảng như B-tree theo `rowid`. Cơ sở dữ liệu kiểu **LSM-tree** (RocksDB, Cassandra, LevelDB) đánh đổi ngược lại: ghi tuần tự nhanh hơn B-tree rất nhiều, đọc phải kiểm tra nhiều tầng; chọn B-tree hay LSM là quyết định cốt lõi của một storage engine.
-- **Chèn khoá ngẫu nhiên** (UUID v4) vào chỉ mục lớn gây tách trang liên tục và làm chỉ mục phình, ép nhiều trang vào bộ nhớ đệm; khoá tăng theo thời gian (UUID v7, `bigserial`, ULID) chèn nối đuôi vào lá phải nhất và tránh được điều đó.
-- **Chỉ mục bị phình (bloat)** theo thời gian vì xoá và cập nhật; `REINDEX` (hoặc `REINDEX CONCURRENTLY`) dựng lại; `CREATE INDEX CONCURRENTLY` tạo mà không khoá ghi, đổi lại chậm hơn và có thể thất bại để lại chỉ mục "invalid".
-- **Chỉ mục có điều kiện** (`CREATE INDEX ... WHERE active`) chỉ đánh dấu một tập con dòng, nhỏ và nhanh hơn khi truy vấn luôn lọc điều kiện đó.
-
-## Quan sát và chẩn đoán
-
-- `EXPLAIN (ANALYZE, BUFFERS)`: nhìn kiểu quét (`Seq Scan`, `Index Scan`, `Bitmap`, `Index Only Scan`), `Buffers` (số trang), `Rows Removed by Filter` (công việc bỏ phí), `Heap Fetches` (index-only scan có thật sự không đụng heap).
-- `\di+` (psql) liệt kê chỉ mục và kích thước; `pg_stat_user_indexes` cho `idx_scan` (số lần dùng) để tìm chỉ mục thừa.
-- `pg_stats.correlation` cho biết thứ tự vật lý khớp thứ tự chỉ mục tới đâu; `pageinspect` (`bt_metap`, `bt_page_stats`) cho chiều cao và độ đầy.
-- Chỉ mục mới nên được thử trên bản sao dữ liệu thật: planner chọn dựa trên thống kê, và kết quả trên bảng nhỏ không phản ánh bảng lớn.
+- **Index bị phình (bloat)** theo thời gian vì xoá và cập nhật. `REINDEX CONCURRENTLY` dựng lại mà không khoá ghi.
+- `CREATE INDEX CONCURRENTLY` tạo index trên bảng đang chạy mà không chặn ghi, đổi lại chậm hơn và có thể thất bại, để lại một index "invalid" cần xoá.
+- **Partial index** (`CREATE INDEX ... WHERE active`) chỉ đánh index một phần dòng. Nó nhỏ và nhanh hơn khi truy vấn luôn lọc đúng điều kiện đó.
+- Cơ sở dữ liệu kiểu **LSM-tree** (RocksDB, Cassandra) đánh đổi ngược lại B-tree: ghi nhanh hơn nhiều, đọc phải kiểm tra nhiều tầng. Xem bài [Storage Engines](/docs/databases/storage-engines).
 
 | Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
 |---|---|---|
-| Truy vấn dùng `Seq Scan` dù đã có chỉ mục | độ chọn lọc thấp; cột bị bọc hàm hoặc phép tính; thống kê cũ | `EXPLAIN`, viết lại điều kiện, `ANALYZE`, chỉ mục biểu thức |
-| Chỉ mục composite không giúp | điều kiện bỏ qua cột đầu | đổi thứ tự cột hoặc tạo chỉ mục khác |
-| Ghi chậm dần khi thêm chỉ mục | mỗi chỉ mục tốn thêm mỗi lần ghi | bỏ chỉ mục không dùng (`idx_scan = 0`), gộp bằng composite |
-| Index-only scan vẫn có `Heap Fetches` lớn | visibility map chưa cập nhật | `VACUUM`, kiểm tra autovacuum |
-| Chỉ mục lớn gấp nhiều lần dữ liệu | khoá dài, hoặc phình sau nhiều lần cập nhật | khoá ngắn hơn, `REINDEX` |
-| Truy vấn khoảng chậm dù có chỉ mục | correlation thấp, mỗi dòng một trang | `CLUSTER`, chỉ mục covering, hoặc BRIN nếu dữ liệu theo thứ tự |
-| Chèn hàng loạt vào bảng chậm | nhiều chỉ mục cập nhật từng dòng | xoá chỉ mục, nạp dữ liệu, tạo lại chỉ mục |
+| `Seq Scan` dù đã có index | lấy quá nhiều dòng; cột bị bọc hàm hoặc phép tính; thống kê cũ | `EXPLAIN`, viết lại điều kiện, `ANALYZE`, index trên biểu thức |
+| Composite index không được dùng | điều kiện bỏ qua cột đầu | đổi thứ tự cột hoặc thêm index khác |
+| Ghi chậm dần | quá nhiều index | xoá index có `idx_scan = 0`, gộp bằng composite index |
+| Index-only scan vẫn nhiều `Heap Fetches` | visibility map chưa cập nhật | `VACUUM`, kiểm tra autovacuum |
+| Truy vấn khoảng chạm quá nhiều trang | correlation thấp, mỗi dòng một trang | covering index, `CLUSTER`, hoặc BRIN nếu dữ liệu theo thứ tự |
 
-## Lưu ý
-
-- Chỉ mục là một cấu trúc **phụ** chứa khoá cộng địa chỉ dòng; nó đổi **tốc độ đọc** lấy **tốc độ ghi và chỗ chứa**. Mỗi chỉ mục phải có truy vấn thực sự dùng nó.
-- B+ tree rất thấp (3 tầng cho một triệu đến vài chục triệu dòng) vì mỗi nút là một trang chứa hàng trăm khoá. Khoá càng ngắn, cây càng thấp và chỉ mục càng nhỏ.
-- Tìm khoảng và `ORDER BY` là sức mạnh của B+ tree nhờ các lá được nối theo thứ tự; hash index và bảng băm không làm được.
-- Với truy vấn khoảng, thứ tự vật lý của heap (correlation) quyết định số trang phải đọc: cùng 1% dòng có thể là 155 trang hay 10.213 trang.
-- Composite index theo quy tắc tiền tố trái: điều kiện `=` trước, khoảng và `ORDER BY` sau; bỏ qua cột đầu thì chỉ mục gần như vô dụng.
-- Covering index (`INCLUDE`) tránh về heap nhưng cần visibility map sạch (`VACUUM`) và làm chỉ mục lớn hơn.
-- Bọc cột trong hàm, phép tính, hay ép kiểu làm chỉ mục thường không dùng được; viết lại để cột đứng một mình, hoặc tạo chỉ mục trên biểu thức.
-- Planner bỏ chỉ mục khi nó rẻ hơn thật (độ chọn lọc thấp, bảng nhỏ) chứ không phải lúc nào cũng "sai"; kiểm tra bằng `EXPLAIN ANALYZE` trên dữ liệu thật trước khi ép bằng `SET enable_seqscan = off` (chỉ dùng để thử, không dùng ở production).
-- UUID ngẫu nhiên làm khoá chính hoặc khoá chỉ mục lớn gây tách trang và phình chỉ mục; khoá tăng dần tránh được.
+</Expand>
