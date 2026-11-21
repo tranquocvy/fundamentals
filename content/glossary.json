@@ -26,6 +26,13 @@
       "def": "Khối bộ nhớ liền nhau gồm các ô cùng cỡ; phần tử thứ i nằm ở địa chỉ đầu cộng i nhân cỡ ô nên truy cập theo chỉ số tốn O(1).",
       "subject": "dsa"
     },
+    "assembly": {
+      "def": "Dạng chữ của mã máy: mỗi dòng là một lệnh của CPU, như add rax, rdi.",
+      "subject": "architecture",
+      "aliases": [
+        "hợp ngữ"
+      ]
+    },
     "atomic operation": {
       "def": "Thao tác chạy trọn vẹn như một bước duy nhất: không thread nào thấy được trạng thái giữa chừng của nó.",
       "subject": "os",
@@ -93,6 +100,14 @@
         "cây tìm kiếm nhị phân"
       ]
     },
+    "branch prediction": {
+      "def": "Phần cứng trong CPU đoán hướng đi của mỗi lệnh rẽ nhánh trước khi điều kiện được tính, dựa trên các lần rẽ trước đó.",
+      "subject": "architecture",
+      "aliases": [
+        "dự đoán rẽ nhánh",
+        "branch predictor"
+      ]
+    },
     "ca": {
       "label": "CA",
       "def": "Certificate Authority: tổ chức được trình duyệt và hệ điều hành tin cậy sẵn, ký chứng chỉ để xác nhận một khoá công khai thuộc về một tên miền.",
@@ -101,9 +116,23 @@
         "certificate authority"
       ]
     },
+    "cache": {
+      "def": "Bộ nhớ nhỏ và nhanh nằm giữa CPU và RAM, tự động giữ bản sao của dữ liệu vừa được dùng; CPU hiện đại có các tầng L1, L2, L3.",
+      "subject": "architecture",
+      "aliases": [
+        "cpu cache"
+      ]
+    },
     "cache line": {
       "def": "Đơn vị CPU đọc từ RAM vào cache một lần, thường 64 byte; đọc một byte kéo theo cả dòng 64 byte quanh nó.",
       "subject": "dsa"
+    },
+    "calling convention": {
+      "def": "Thoả thuận về việc đối số truyền ở thanh ghi nào, giá trị trả về nằm ở đâu, và thanh ghi nào hàm được gọi phải giữ nguyên.",
+      "subject": "architecture",
+      "aliases": [
+        "quy ước gọi hàm"
+      ]
     },
     "cidr": {
       "label": "CIDR",
@@ -204,6 +233,14 @@
       "def": "Mỗi tầng mạng bọc dữ liệu của tầng trên vào bên trong gói của mình và thêm header riêng; bên nhận bóc ngược từng lớp.",
       "subject": "networking"
     },
+    "endianness": {
+      "def": "Thứ tự đặt các byte của một số nhiều byte trong bộ nhớ: little-endian đặt byte thấp nhất trước, big-endian đặt byte cao nhất trước.",
+      "subject": "architecture",
+      "aliases": [
+        "little-endian",
+        "big-endian"
+      ]
+    },
     "file descriptor": {
       "def": "Số nguyên nhỏ mà process dùng để chỉ một file, socket hay pipe đang mở; là chỉ số trong bảng file descriptor của process đó.",
       "subject": "os",
@@ -274,6 +311,15 @@
       "def": "Internet Control Message Protocol: giao thức đi kèm IP để báo lỗi và chẩn đoán, như port unreachable, TTL hết hạn, và là nền của ping và traceroute.",
       "subject": "networking"
     },
+    "ieee 754": {
+      "label": "IEEE 754",
+      "def": "Chuẩn biểu diễn số thực dấu chấm động trong máy tính: một bit dấu, một phần mũ và một phần định trị; float là 32 bit, double là 64 bit.",
+      "subject": "architecture",
+      "aliases": [
+        "floating point",
+        "số thực dấu chấm động"
+      ]
+    },
     "index": {
       "def": "Cấu trúc phụ (thường là B+ tree) lưu khoá cùng địa chỉ dòng để tìm dòng nhanh, đổi lại tốn chỗ và làm ghi chậm hơn.",
       "subject": "databases",
@@ -286,6 +332,14 @@
       "def": "Cấu trúc trên đĩa chứa mọi thông tin về một file trừ tên: kích thước, quyền, thời điểm và vị trí các block dữ liệu.",
       "subject": "os"
     },
+    "integer overflow": {
+      "def": "Kết quả phép tính vượt khoảng giá trị của kiểu; với số nguyên, các bit thừa bị bỏ và giá trị quấn vòng.",
+      "subject": "architecture",
+      "aliases": [
+        "tràn số",
+        "overflow"
+      ]
+    },
     "interrupt": {
       "def": "Tín hiệu từ phần cứng khiến CPU tạm dừng việc đang làm để chạy một trình xử lý của kernel, rồi quay lại.",
       "subject": "os",
@@ -297,6 +351,15 @@
       "label": "IPC",
       "def": "Inter-Process Communication: các cơ chế do kernel cung cấp để process trao đổi dữ liệu, như pipe, socket, shared memory.",
       "subject": "os"
+    },
+    "isa": {
+      "label": "ISA",
+      "def": "Instruction Set Architecture: tập lệnh, thanh ghi và cách đánh địa chỉ bộ nhớ mà một họ CPU cam kết hỗ trợ; là hợp đồng giữa phần mềm và phần cứng.",
+      "subject": "architecture",
+      "aliases": [
+        "instruction set architecture",
+        "tập lệnh"
+      ]
     },
     "isolation level": {
       "def": "Mức đảm bảo về việc các giao dịch chạy đồng thời thấy nhau ra sao, từ READ UNCOMMITTED tới SERIALIZABLE; mức thấp hơn nhanh hơn nhưng cho phép nhiều anomaly hơn.",
@@ -450,6 +513,13 @@
       "def": "Process Control Block: cấu trúc kernel lưu mọi thông tin về một process, như PID, trạng thái, register, bộ nhớ và file đang mở.",
       "subject": "os"
     },
+    "pipeline": {
+      "def": "Cách CPU chia việc chạy một lệnh thành nhiều công đoạn và cho nhiều lệnh nằm ở các công đoạn khác nhau cùng lúc, như dây chuyền lắp ráp.",
+      "subject": "architecture",
+      "aliases": [
+        "instruction pipeline"
+      ]
+    },
     "port": {
       "def": "Số 16 bit xác định chương trình nhận dữ liệu trên một máy; cặp địa chỉ IP + port xác định một đầu kết nối.",
       "subject": "networking",
@@ -511,6 +581,14 @@
         "resolver"
       ]
     },
+    "register": {
+      "def": "Ô nhớ cực nhanh nằm ngay trong CPU; x86-64 có 16 thanh ghi đa dụng 64 bit như rax, rdi, rsp.",
+      "subject": "architecture",
+      "aliases": [
+        "thanh ghi",
+        "registers"
+      ]
+    },
     "relational model": {
       "def": "Mô hình dữ liệu coi dữ liệu là các quan hệ (bảng) và truy vấn bằng ngôn ngữ khai báo, không phụ thuộc cách lưu bên dưới.",
       "subject": "databases",
@@ -563,6 +641,13 @@
       "def": "Server Name Indication: extension trong ClientHello của TLS cho server biết tên miền client muốn vào, để chọn đúng chứng chỉ khi nhiều site chung một IP; ở dạng rõ nên lộ tên site.",
       "subject": "networking"
     },
+    "speculative execution": {
+      "def": "CPU chạy trước các lệnh theo hướng đoán của một lệnh rẽ nhánh khi điều kiện chưa tính xong; đoán sai thì bỏ toàn bộ kết quả tạm và chạy lại.",
+      "subject": "architecture",
+      "aliases": [
+        "thực thi suy đoán"
+      ]
+    },
     "stable sort": {
       "def": "Thuật toán sắp xếp giữ nguyên thứ tự ban đầu của các phần tử có khoá bằng nhau.",
       "subject": "dsa",
@@ -574,6 +659,13 @@
     "stack": {
       "def": "Cấu trúc vào sau ra trước (LIFO): chỉ thêm và lấy ở một đầu.",
       "subject": "dsa"
+    },
+    "stack frame": {
+      "def": "Vùng trên stack thuộc về một lần gọi hàm: địa chỉ trả về, thanh ghi được cất và biến cục bộ; được dỡ khi hàm trả về.",
+      "subject": "architecture",
+      "aliases": [
+        "khung stack"
+      ]
     },
     "starvation": {
       "def": "Một thread hoặc job mãi không được cấp tài nguyên vì luôn có thứ khác được ưu tiên hơn, dù hệ thống vẫn chạy.",
@@ -653,10 +745,26 @@
       "def": "Thời gian từ lúc job đến tới lúc job hoàn thành.",
       "subject": "os"
     },
+    "two's complement": {
+      "label": "two's complement",
+      "def": "Cách biểu diễn số nguyên có dấu trong đó bit cao nhất có trọng số âm; số đối tính bằng đảo mọi bit rồi cộng 1.",
+      "subject": "architecture",
+      "aliases": [
+        "bù hai"
+      ]
+    },
     "udp": {
       "label": "UDP",
       "def": "User Datagram Protocol: giao thức transport không kết nối, gửi từng gói độc lập, không đảm bảo tới nơi hay đúng thứ tự.",
       "subject": "networking"
+    },
+    "ulp": {
+      "label": "ulp",
+      "def": "Unit in the last place: khoảng cách giữa một số thực và số thực biểu diễn được kế tiếp; tăng theo độ lớn của số.",
+      "subject": "architecture",
+      "aliases": [
+        "unit in the last place"
+      ]
     },
     "union-find": {
       "def": "Cấu trúc giữ các nhóm rời nhau với hai thao tác: tìm đại diện của nhóm chứa một phần tử, và gộp hai nhóm; có nén đường và hợp theo hạng thì gần như O(1) mỗi thao tác.",

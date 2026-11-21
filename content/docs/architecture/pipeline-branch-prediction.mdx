@@ -1,90 +1,223 @@
 ---
 title: CPU Pipeline & Branch Prediction
-description: Pipeline, superscalar và thực thi không theo thứ tự, độ trễ so với thông lượng của phép cộng (đo chênh 4 lần chỉ bằng cách chia chuỗi phụ thuộc), dự đoán rẽ nhánh và cái giá của một lần đoán sai, và bộ dự đoán nhớ được mẫu dài đến đâu, đo bằng C trên i7-12700H.
+description: Vì sao cùng một vòng lặp, cùng số lệnh, lại chạy chậm hơn cả chục lần chỉ vì dữ liệu chưa được sắp xếp?
 status: draft
 tags: [architecture, pipeline, branch-prediction]
 authors: [tranquocvy]
 references:
+  - title: "Bryant & O'Hallaron — Computer Systems: A Programmer's Perspective, Chapter 4 (Processor Architecture) and Chapter 5 (Optimizing Program Performance)"
+    kind: book
+    note: mục 4.4 cho pipeline; mục 5.7 tới 5.9 cho độ trễ, thông lượng và nhiều bộ tích luỹ; mục 5.11 cho rẽ nhánh
+  - title: "Hennessy & Patterson — Computer Architecture: A Quantitative Approach, Chapter 3: Instruction-Level Parallelism and Its Exploitation"
+    kind: book
+    note: hazard, thực thi không theo thứ tự, bộ đếm bão hoà 2 bit và dự đoán theo lịch sử
   - title: "Fog — The microarchitecture of Intel, AMD and VIA CPUs"
     url: https://www.agner.org/optimize/microarchitecture.pdf
     kind: paper
-    note: pipeline, đồ thị phụ thuộc, bộ dự đoán rẽ nhánh của từng đời CPU
-  - title: "Hennessy & Patterson — Computer Architecture: A Quantitative Approach, Chapter 3: Instruction-Level Parallelism and Its Exploitation"
-    kind: book
-    note: pipeline, hazard, thực thi không theo thứ tự, dự đoán rẽ nhánh
-  - title: "Bryant & O'Hallaron — Computer Systems: A Programmer's Perspective, Chapter 4 (Processor Architecture) and Chapter 5 (Optimizing Program Performance)"
-    kind: book
-    note: pipeline đơn giản, độ trễ và thông lượng, tối ưu vòng lặp bằng nhiều bộ tích luỹ
+    note: cho phần Đi sâu hơn; pipeline và bộ dự đoán rẽ nhánh của từng đời CPU
+  - title: "Seznec & Michaud — A case for (partially) TAgged GEometric history length branch prediction (2006)"
+    kind: paper
+    note: cho phần Đi sâu hơn; TAGE, nền của bộ dự đoán hiện đại
   - title: "Kocher et al. — Spectre Attacks: Exploiting Speculative Execution (2018)"
     url: https://spectreattack.com/spectre.pdf
     kind: paper
-    note: thực thi suy đoán để lại dấu vết trong cache và bị lợi dụng
-  - title: "Wikipedia — Branch predictor"
-    url: https://en.wikipedia.org/wiki/Branch_predictor
-    kind: web
-    note: bộ đếm bão hoà, dự đoán theo lịch sử, TAGE
-  - title: "Seznec & Michaud — A case for (partially) TAgged GEometric history length branch prediction (2006)"
-    kind: paper
-    note: nền của bộ dự đoán hiện đại
-  - title: "Intel — 64 and IA-32 Architectures Optimization Reference Manual"
-    kind: book
-    note: số liệu độ trễ và thông lượng của từng lệnh trên từng đời CPU
+    note: cho phần Đi sâu hơn; thực thi suy đoán để lại dấu vết trong cache
 ---
+
+**Cần biết trước:** lệnh so sánh, lệnh nhảy và `cmov` ở bài [ISA & Assembly](/docs/architecture/isa-assembly); độ trễ đọc bộ nhớ ở bài [Memory Hierarchy & Cache](/docs/architecture/memory-hierarchy); đọc được C cơ bản. Số đo chạy bằng C (`gcc -O2`) trên Intel Core i7-12700H trong WSL2.
+
+**Cách đọc bài:** mỗi mục có một câu **Đoán trước** và kết bằng một câu **Thử ngay**. Hãy tự trả lời trong đầu (hoặc ra giấy) rồi mới xem đáp án. Việc tự nhớ lại và tự đoán giúp nhớ lâu hơn nhiều so với chỉ đọc.
 
 ## Ý chính
 
-Một CPU không làm xong lệnh này rồi mới bắt đầu lệnh kia. Nó giống một **dây chuyền lắp ráp**: chia việc thực hiện một lệnh thành nhiều **giai đoạn** (lấy lệnh, giải mã, thực thi, truy cập bộ nhớ, ghi kết quả), và ở mỗi chu kỳ, các giai đoạn khác nhau đang xử lý các lệnh khác nhau. Một CPU hiện đại làm hơn thế: nó có **nhiều đơn vị thực thi** chạy song song, chạy lệnh **không theo thứ tự** khi các lệnh độc lập nhau, và **đoán** hướng đi của mỗi lệnh rẽ nhánh để khỏi phải dừng chờ. Kết quả là vài lệnh mỗi chu kỳ xung nhịp, nhưng chỉ khi chương trình cho phép: lệnh phụ thuộc nhau hoặc rẽ nhánh khó đoán thì dây chuyền chạy chậm lại hoặc bị **dội ngược**.
+CPU không làm xong một lệnh rồi mới bắt đầu lệnh kế. Nó chạy như **dây chuyền**: nhiều lệnh cùng nằm trong máy, mỗi lệnh ở một công đoạn khác nhau, và lệnh nào đã đủ dữ liệu thì chạy trước. Nhờ vậy CPU hoàn thành vài lệnh mỗi chu kỳ, nhưng chỉ khi các lệnh **không phải chờ nhau**. Một chuỗi phép tính mà bước sau cần kết quả bước trước sẽ chạy chậm hơn nhiều so với cùng số phép tính độc lập.
 
-Điều này khiến hiệu năng ở mức vi kiến trúc phản trực giác: **cùng số lệnh, nhanh chậm khác nhau hàng chục lần**. Bài này đi từ cơ chế sang số đo, trên một CPU thật (**Intel Core i7-12700H**, kiến trúc Golden Cove, chạy trong WSL2, `gcc -O2`). Ba thí nghiệm: (1) cộng số có điều kiện, trên dữ liệu đã sắp xếp và chưa sắp xếp, cho thấy **cái giá của một lần đoán sai rẽ nhánh**; (2) cộng dãy số với 1, 2, 4, 8 bộ tích luỹ, cho thấy **độ trễ so với thông lượng** và vì sao chuỗi phép tính phụ thuộc là kẻ thù; (3) rẽ nhánh theo một mẫu ngẫu nhiên lặp lại, cho thấy **bộ dự đoán nhớ được bao nhiêu**. Rồi các quy tắc viết code, và lỗ hổng Spectre là mặt trái của việc đoán. Bài trước trong chặng này là [Memory Hierarchy & Cache](/docs/architecture/memory-hierarchy) (chờ bộ nhớ); bài này là phần "chờ lệnh". Nó cũng nối với [CPU Scheduling](/docs/os/cpu-scheduling) (vì sao đổi ngữ cảnh làm nguội bộ dự đoán và cache) và [Sorting](/docs/dsa/sorting) (vì sao quicksort hiện đại có phép phân hoạch không rẽ nhánh).
+Lệnh rẽ nhánh (`if`, vòng lặp) là chỗ dây chuyền phải chờ nhiều nhất: chưa tính xong điều kiện thì chưa biết lệnh kế là lệnh nào. CPU không chờ mà **đoán** hướng đi, rồi chạy trước theo hướng đoán. Đoán đúng thì không mất gì; đoán sai thì phải bỏ hết việc đã làm và chạy lại, mất cỡ hai chục chu kỳ. Trên dữ liệu ngẫu nhiên, một `if` bị đoán sai nửa số lần; trên cùng dữ liệu đã sắp xếp, gần như không bao giờ sai. Đó là chênh lệch cả chục lần trong câu hỏi của bài.
 
-## Pipeline
+## Pipeline: dây chuyền lắp ráp
 
-Giả sử mỗi lệnh cần 5 giai đoạn, mỗi giai đoạn một chu kỳ:
+Giả sử mỗi lệnh đi qua 5 công đoạn, mỗi công đoạn một chu kỳ: lấy lệnh (F), giải mã (D), thực thi (X), truy cập bộ nhớ (M), ghi kết quả (W). **Đoán trước:** nếu mỗi lệnh phải xong hẳn mới tới lệnh kế, 4 lệnh tốn 20 chu kỳ. Nếu cho lệnh kế vào ngay khi công đoạn đầu rảnh thì tốn bao nhiêu?
 
 ```text
-chu kỳ:        1   2   3   4   5   6   7   8
-lệnh 1:        F   D   X   M   W
-lệnh 2:            F   D   X   M   W
-lệnh 3:                F   D   X   M   W
-lệnh 4:                    F   D   X   M   W
-(F = lấy lệnh, D = giải mã, X = thực thi, M = truy cập bộ nhớ, W = ghi kết quả)
+chu kỳ:   1   2   3   4   5   6   7   8
+lệnh 1:   F   D   X   M   W
+lệnh 2:       F   D   X   M   W
+lệnh 3:           F   D   X   M   W
+lệnh 4:               F   D   X   M   W
 ```
 
-Không có pipeline, 4 lệnh tốn 20 chu kỳ. Có pipeline, lệnh đầu xong ở chu kỳ 5 và **mỗi chu kỳ sau đó xong thêm một lệnh**: 4 lệnh trong 8 chu kỳ, và với hàng triệu lệnh thì tiến tới **một lệnh mỗi chu kỳ**. Pipeline không làm một lệnh nhanh hơn (**độ trễ** của lệnh vẫn 5 chu kỳ); nó tăng **thông lượng** (số lệnh xong mỗi chu kỳ). Hai khái niệm này, độ trễ và thông lượng, sẽ là chủ đề của thí nghiệm thứ hai. CPU hiện đại có pipeline dài hơn nhiều (cỡ 15 đến 20 giai đoạn hoặc hơn) để mỗi giai đoạn đơn giản hơn và chu kỳ ngắn hơn (xung nhịp cao hơn).
+8 chu kỳ. Lệnh đầu xong ở chu kỳ 5, sau đó **mỗi chu kỳ xong thêm một lệnh**. Cách tổ chức này gọi là <Term>pipeline</Term>. Với hàng triệu lệnh, tốc độ tiến tới một lệnh mỗi chu kỳ.
 
-### Ba loại hazard (hiểm hoạ)
+Để ý điều pipeline **không** làm: mỗi lệnh vẫn mất 5 chu kỳ từ lúc vào tới lúc ra. Hai đại lượng cần tách bạch:
 
-Pipeline giả định các lệnh độc lập nhau. Khi không phải vậy, có ba loại hazard:
+- **Độ trễ** (latency): thời gian một lệnh đi từ đầu tới cuối. Pipeline không giảm nó.
+- **Thông lượng** (throughput): số lệnh hoàn thành mỗi chu kỳ. Pipeline tăng nó.
 
-- **Structural hazard**: hai lệnh cần cùng một tài nguyên phần cứng trong cùng chu kỳ (ví dụ cùng một đơn vị bộ nhớ). Giải bằng nhân đôi phần cứng.
-- **Data hazard**: lệnh sau cần kết quả của lệnh trước chưa tính xong (`a = b + c; d = a * 2`). Phần cứng dùng **chuyển tiếp** (forwarding: đưa kết quả thẳng từ đầu ra bộ thực thi vào đầu vào lệnh kế, không đợi ghi vào thanh ghi) hoặc **dừng** pipeline (stall) vài chu kỳ.
-- **Control hazard**: lệnh nhảy có điều kiện (`if`, vòng lặp): không biết lệnh kế tiếp là gì cho tới khi điều kiện được tính. Đây là loại gây tốn kém nhất, và là chủ đề của phần dự đoán rẽ nhánh.
+CPU thật có pipeline dài 15 tới 20 công đoạn, và còn có nhiều dây chuyền chạy song song (mục sau).
 
-### Superscalar và thực thi không theo thứ tự
+**Thử ngay:** với pipeline 5 công đoạn như trên, 100 lệnh độc lập tốn bao nhiêu chu kỳ?
 
-CPU hiện đại không chỉ có một dây chuyền. **Superscalar**: lấy, giải mã và thực thi **nhiều lệnh mỗi chu kỳ** (Golden Cove giải mã tới 6 lệnh mỗi chu kỳ và có 12 cổng thực thi chia theo loại: cộng số nguyên, nhân, cộng số thực, tải, lưu). **Thực thi không theo thứ tự** (out-of-order): bộ lập lịch phần cứng nhìn một "cửa sổ" hàng trăm lệnh sắp tới, thực thi bất kỳ lệnh nào **đã có đủ toán hạng**, kể cả khi lệnh trước nó còn đang chờ (ví dụ chờ dữ liệu từ bộ nhớ), rồi **sắp xếp lại kết quả theo đúng thứ tự chương trình** ở bước cuối (reorder buffer) để chương trình thấy như chạy tuần tự. **Đổi tên thanh ghi** (register renaming) xoá các phụ thuộc giả do tên thanh ghi trùng nhau. Điều kiện duy nhất: phải có đủ lệnh **độc lập** trong cửa sổ để lấp các đơn vị. Đó là **song song mức lệnh** (instruction-level parallelism, ILP), và thí nghiệm sau đo nó.
+<Expand title="Đáp án">
 
-## Độ trễ so với thông lượng
+Lệnh đầu xong ở chu kỳ 5, 99 lệnh còn lại mỗi chu kỳ xong một: `5 + 99 = 104` chu kỳ. Công thức chung cho `n` lệnh qua `k` công đoạn: `k + n - 1`. Không có pipeline thì là `5 × 100 = 500`.
 
-Cộng `n` số float vào một biến là bài tập đơn giản nhất. Nhưng viết nó theo cách ngây thơ là một **chuỗi phụ thuộc**: `s += a[i]` cần `s` của lần trước, nên mỗi phép cộng phải **đợi phép cộng trước xong hoàn toàn**. Tốc độ bị giới hạn bởi **độ trễ** của lệnh cộng chứ không phải thông lượng. Chia việc ra `K` **bộ tích luỹ độc lập** (`s0 += a[i]; s1 += a[i+1]; ...`) thì các phép cộng của các bộ khác nhau **không phụ thuộc nhau**, và CPU chạy chúng song song trên nhiều đơn vị:
+</Expand>
+
+## Chuỗi phụ thuộc: độ trễ và thông lượng
+
+Dây chuyền chỉ chạy đầy khi lệnh sau **không cần** kết quả của lệnh trước. Xét việc cộng 4.096 số `float` (16 KiB, nằm gọn trong L1 nên bộ nhớ không làm chậm):
 
 ```c
-// Ba thí nghiệm về pipeline: (1) rẽ nhánh dễ và khó đoán, (2) chuỗi phép tính phụ thuộc so với độc lập,
-// (3) bộ dự đoán nhớ được mẫu rẽ nhánh dài đến đâu. Biên dịch -O2, đo bằng đồng hồ tường.
-#define _GNU_SOURCE
+for (size_t i = 0; i < n; i++)
+    s0 += a[i];              // mỗi phép cộng cần s0 của phép cộng trước
+```
+
+Mỗi phép cộng phải chờ phép cộng trước xong hẳn: đây là một **chuỗi phụ thuộc**. Chia tổng thành nhiều **bộ tích luỹ** độc lập thì các chuỗi không chờ nhau:
+
+```c
+for (size_t i = 0; i < n; i += 4) {
+    s0 += a[i];     s1 += a[i + 1];      // bốn chuỗi riêng, cộng lại ở cuối
+    s2 += a[i + 2]; s3 += a[i + 3];
+}
+```
+
+**Đoán trước:** cùng số phép cộng, dùng 2 bộ tích luỹ thì nhanh gấp mấy lần? 8 bộ thì gấp 8 lần không?
+
+<Expand title="Code accum.c">
+
+```c
+// accum.c: cộng 4096 float (16 KiB, nằm trong L1) 200000 lần với 1, 2, 4, 8 bộ tích luỹ độc lập
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
 #include <time.h>
 
-static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+static double now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
+
+// Mỗi bộ tích luỹ là một biến riêng để trình biên dịch giữ trong thanh ghi.
+// Biên dịch với -fno-tree-vectorize: không cho gcc gộp nhiều bộ tích luỹ vào một lệnh vector,
+// để mỗi lệnh cộng đúng một số và phép đo cho thấy độ trễ, thông lượng của lệnh cộng thường.
+#define LOOP(BODY, K) for (int r = 0; r < reps; r++) for (size_t i = 0; i < n; i += K) { BODY }
+__attribute__((noinline)) static float sum1(const float *a, size_t n, int reps) {
+    float s0 = 0;
+    LOOP(s0 += a[i];, 1)
+    return s0;
+}
+__attribute__((noinline)) static float sum2(const float *a, size_t n, int reps) {
+    float s0 = 0, s1 = 0;
+    LOOP(s0 += a[i]; s1 += a[i + 1];, 2)
+    return s0 + s1;
+}
+__attribute__((noinline)) static float sum4(const float *a, size_t n, int reps) {
+    float s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+    LOOP(s0 += a[i]; s1 += a[i + 1]; s2 += a[i + 2]; s3 += a[i + 3];, 4)
+    return s0 + s1 + s2 + s3;
+}
+__attribute__((noinline)) static float sum8(const float *a, size_t n, int reps) {
+    float s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
+    LOOP(s0 += a[i]; s1 += a[i + 1]; s2 += a[i + 2]; s3 += a[i + 3];
+         s4 += a[i + 4]; s5 += a[i + 5]; s6 += a[i + 6]; s7 += a[i + 7];, 8)
+    return s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7;
+}
+
+int main(void) {
+    size_t n = 4096;
+    int reps = 200000;
+    float *a = malloc(n * sizeof(float));
+    for (size_t i = 0; i < n; i++) a[i] = 1.0f;
+    float (*fn[4])(const float *, size_t, int) = { sum1, sum2, sum4, sum8 };
+    int ks[4] = { 1, 2, 4, 8 };
+    double base = 0;
+    printf("bộ tích luỹ   ns / phép cộng   nhanh hơn\n");
+    for (int q = 0; q < 4; q++) {
+        double t0 = now();
+        float v = fn[q](a, n, reps);
+        double dt = now() - t0;
+        if (q == 0) base = dt;
+        printf("%11d %16.3f %10.1fx%s\n", ks[q], dt / ((double)n * reps) * 1e9, base / dt, v < 0 ? "!" : "");
+    }
+    return 0;
+}
+```
+
+</Expand>
+
+```bash
+gcc -O2 -fno-tree-vectorize -o accum accum.c && ./accum
+```
+
+```text
+bộ tích luỹ   ns / phép cộng   nhanh hơn
+          1            0.480        1.0x
+          2            0.241        2.0x
+          4            0.118        4.1x
+          8            0.118        4.1x
+```
+
+Với 1 bộ tích luỹ, tốc độ bị khoá ở **độ trễ** của phép cộng số thực: mỗi phép tốn khoảng 0,5 ns, cỡ 2 chu kỳ. Với 2 bộ, hai chuỗi chạy xen nhau: nhanh gấp đôi. Với 4 bộ: gần gấp 4. Nhưng 8 bộ không nhanh hơn 4 bộ: CPU đã chạy hết số phép cộng số thực nó làm được mỗi chu kỳ, tức đã chạm **thông lượng**. Thêm chuỗi độc lập không giúp được nữa.
+
+Vì sao CPU chạy được các chuỗi song song? CPU hiện đại có nhiều bộ thực thi cùng loại (chạy được vài lệnh mỗi chu kỳ), và **thực thi không theo thứ tự** (out-of-order): nó nhìn trước vài trăm lệnh sắp tới, chạy bất kỳ lệnh nào đã có đủ dữ liệu, rồi sắp kết quả lại theo đúng thứ tự chương trình. Điều kiện duy nhất là phải **có** lệnh độc lập để chạy. Một chuỗi phụ thuộc không cho nó lệnh nào.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ cùng số lệnh thì cùng thời gian chạy. Thật ra thời gian phụ thuộc vào việc các lệnh có phải chờ nhau không: ở đây cùng một số phép cộng mà chênh nhau gần 4 lần, chỉ do cách xếp chuỗi phụ thuộc.
+
+Trình biên dịch có tự chia bộ tích luỹ không? Với số nguyên thì có. Với số thực thì **không**, vì đổi thứ tự cộng số thực làm đổi kết quả ([Data Representation](/docs/architecture/data-representation)):
+
+```bash
+python3 -c "print((0.1 + 0.2) + 0.3, 0.1 + (0.2 + 0.3))"
+```
+
+```text
+0.6000000000000001 0.6
+```
+
+Muốn trình biên dịch tự làm, phải cho phép bằng `-ffast-math` và chấp nhận kết quả hơi khác; hoặc tự viết nhiều bộ tích luỹ như trên. Các thư viện số (BLAS, `numpy.sum`) đã làm sẵn việc này.
+
+**Thử ngay:** dùng 16 bộ tích luỹ thì nhanh hơn 8 bộ không?
+
+<Expand title="Đáp án">
+
+Không. Ở 8 bộ, CPU đã chạy tối đa số phép cộng số thực mỗi chu kỳ; 16 chuỗi độc lập chỉ cho thêm việc để chờ, không thêm bộ thực thi. Có khi còn chậm hơn một chút vì hết thanh ghi để giữ 16 biến.
+
+</Expand>
+
+## Rẽ nhánh: CPU phải đoán
+
+Lệnh nhảy có điều kiện là vấn đề của dây chuyền: điều kiện chỉ được tính ở công đoạn thực thi, nhưng công đoạn lấy lệnh cần biết **ngay** lệnh kế là lệnh nào. Chờ thì mỗi `if` làm dây chuyền đứng cả chục chu kỳ.
+
+CPU không chờ. Bộ <Term>branch prediction</Term> (**dự đoán rẽ nhánh**) đoán hướng đi, và CPU chạy trước các lệnh theo hướng đoán, gọi là <Term>speculative execution</Term> (**thực thi suy đoán**). Khi điều kiện tính xong: đoán đúng thì giữ kết quả, không mất gì; đoán sai thì vứt hết việc đã chạy theo hướng sai và bắt đầu lại từ hướng đúng.
+
+Thí nghiệm: một mảng 32.768 byte ngẫu nhiên, cộng các byte `>= 128`, lặp 30.000 lần. Điều kiện đúng khoảng một nửa số lần.
+
+```c
+for (size_t i = 0; i < n; i++)
+    if (d[i] >= 128)
+        s += d[i];
+```
+
+**Đoán trước:** chạy vòng lặp này trên mảng ngẫu nhiên, rồi sắp xếp mảng và chạy lại. Cùng số phần tử, cùng kết quả. Lần nào nhanh hơn, và gấp mấy lần?
+
+<Expand title="Code branch.c">
+
+```c
+// branch.c: cộng các byte >= 128 trên dữ liệu ngẫu nhiên và đã sắp xếp, có rẽ nhánh và không rẽ nhánh
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+static double now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
 static int cmp_u8(const void *a, const void *b) { return *(const uint8_t *)a - *(const uint8_t *)b; }
-static volatile uint64_t sink;
 static uint64_t rng = 88172645463325252ull;
 static uint32_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return (uint32_t)rng; }
 
-// asm rỗng có "memory" clobber: trình biên dịch không được đoán trước (speculate) hay chuyển thành cmov, nên PHẢI giữ một lệnh rẽ nhánh thật.
+// Lệnh asm rỗng trong nhánh ngăn gcc tự đổi if thành cmov hay vector hoá, để vòng lặp giữ một lệnh nhảy thật.
 __attribute__((noinline)) static uint64_t sum_branchy(const uint8_t *d, size_t n, int reps) {
     uint64_t s = 0;
     for (int r = 0; r < reps; r++)
@@ -92,205 +225,346 @@ __attribute__((noinline)) static uint64_t sum_branchy(const uint8_t *d, size_t n
             if (d[i] >= 128) { s += d[i]; __asm__ volatile("" ::: "memory"); }
     return s;
 }
+// Không rẽ nhánh: mặt nạ toàn bit 1 nếu điều kiện đúng, toàn bit 0 nếu sai.
 __attribute__((noinline)) static uint64_t sum_branchless(const uint8_t *d, size_t n, int reps) {
     uint64_t s = 0;
     for (int r = 0; r < reps; r++)
-        for (size_t i = 0; i < n; i++) { uint64_t m = -(uint64_t)(d[i] >= 128); s += d[i] & m; }   // mặt nạ: không còn rẽ nhánh
+        for (size_t i = 0; i < n; i++) {
+            uint64_t mask = -(uint64_t)(d[i] >= 128);
+            s += d[i] & mask;
+        }
     return s;
 }
 
-// phép cộng float với 1, 2, 4, 8 bộ tích luỹ độc lập; mảng 16 KiB nằm gọn trong L1 nên bộ nhớ không phải điểm nghẽn
-// các bộ tích luỹ viết thành biến riêng để trình biên dịch giữ trong thanh ghi (một mảng s[K] dễ bị đẩy ra bộ nhớ và làm hỏng phép đo)
-#define LOOP(BODY, K) for (int r = 0; r < reps; r++) for (size_t i = 0; i < n; i += K) { BODY }
-__attribute__((noinline)) static float sum1(const float *a, size_t n, int reps) {
-    float s0 = 0; LOOP(s0 += a[i];, 1) return s0; }
-__attribute__((noinline)) static float sum2(const float *a, size_t n, int reps) {
-    float s0 = 0, s1 = 0; LOOP(s0 += a[i]; s1 += a[i + 1];, 2) return s0 + s1; }
-__attribute__((noinline)) static float sum4(const float *a, size_t n, int reps) {
-    float s0 = 0, s1 = 0, s2 = 0, s3 = 0; LOOP(s0 += a[i]; s1 += a[i + 1]; s2 += a[i + 2]; s3 += a[i + 3];, 4) return s0 + s1 + s2 + s3; }
-__attribute__((noinline)) static float sum8(const float *a, size_t n, int reps) {
-    float s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
-    LOOP(s0 += a[i]; s1 += a[i + 1]; s2 += a[i + 2]; s3 += a[i + 3]; s4 += a[i + 4]; s5 += a[i + 5]; s6 += a[i + 6]; s7 += a[i + 7];, 8)
-    return s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7; }
+static double run(uint64_t (*f)(const uint8_t *, size_t, int), const uint8_t *d, size_t n, int reps, uint64_t *out) {
+    double t0 = now();
+    *out = f(d, n, reps);
+    return (now() - t0) / ((double)n * reps) * 1e9;
+}
+
+int main(void) {
+    size_t n = 32768;
+    int reps = 30000;
+    uint8_t *d = malloc(n);
+    for (size_t i = 0; i < n; i++) d[i] = rnd() & 255;
+    uint64_t r1, r2, r3, r4;
+    double b_rand = run(sum_branchy, d, n, reps, &r1), m_rand = run(sum_branchless, d, n, reps, &r2);
+    qsort(d, n, 1, cmp_u8);
+    double b_sort = run(sum_branchy, d, n, reps, &r3), m_sort = run(sum_branchless, d, n, reps, &r4);
+    printf("cách viết        dữ liệu      ns / phần tử\n");
+    printf("rẽ nhánh (if)    ngẫu nhiên   %6.2f\n", b_rand);
+    printf("rẽ nhánh (if)    đã sắp xếp   %6.2f\n", b_sort);
+    printf("không rẽ nhánh   ngẫu nhiên   %6.2f\n", m_rand);
+    printf("không rẽ nhánh   đã sắp xếp   %6.2f\n", m_sort);
+    printf("cùng kết quả: %s\n", (r1 == r2 && r2 == r3 && r3 == r4) ? "đúng" : "SAI");
+    printf("ước lượng một lần đoán sai: (%.2f - %.2f) / 0.5 = %.1f ns\n", b_rand, b_sort, (b_rand - b_sort) / 0.5);
+    return 0;
+}
+```
+
+</Expand>
+
+```bash
+gcc -O2 -o branch branch.c && ./branch
+```
+
+```text
+cách viết        dữ liệu      ns / phần tử
+rẽ nhánh (if)    ngẫu nhiên     3.17
+rẽ nhánh (if)    đã sắp xếp     0.24
+không rẽ nhánh   ngẫu nhiên     0.25
+không rẽ nhánh   đã sắp xếp     0.24
+cùng kết quả: đúng
+ước lượng một lần đoán sai: (3.17 - 0.24) / 0.5 = 5.9 ns
+```
+
+Hai dòng đầu: cùng vòng lặp, cùng số lệnh, cùng kết quả, mà dữ liệu ngẫu nhiên chậm hơn **cả chục lần**. Trên dữ liệu đã sắp xếp, nửa đầu mảng toàn `< 128`, nửa sau toàn `>= 128`: nhánh chỉ đổi hướng một lần mỗi lượt duyệt, và bộ dự đoán gần như luôn đúng. Trên dữ liệu ngẫu nhiên, mỗi lần rẽ là một lần tung đồng xu: đoán sai khoảng một nửa số lần.
+
+Tính cái giá của một lần đoán sai: chênh lệch mỗi phần tử chia cho tỉ lệ đoán sai (0,5) cho khoảng **6 ns**, tức cỡ 25 chu kỳ ở xung nhịp khoảng 4,5 GHz, đúng cỡ độ dài đoạn dây chuyền phải xả bỏ. (Dòng cuối của output tính đúng phép chia đó.)
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ một `if` chỉ tốn một phép so sánh, rẻ như phép cộng. Thật ra `if` dễ đoán thì gần như miễn phí, còn `if` khó đoán tốn cỡ 20 chu kỳ mỗi lần đoán sai, đắt hơn phép cộng hàng chục lần. Cái giá nằm ở **khả năng đoán**, không ở phép so sánh.
+
+**Thử ngay:** nếu dữ liệu ngẫu nhiên nhưng điều kiện đúng 99% số lần (ví dụ `d[i] >= 3`), vòng lặp rẽ nhánh nhanh hay chậm?
+
+<Expand title="Đáp án">
+
+Nhanh. Bộ dự đoán luôn đoán "đúng" và chỉ sai ở 1% số lần: chi phí cỡ `0,01 × 6 ns = 0,06 ns` mỗi phần tử, gần như không đáng kể. Nhánh khó đoán nhất là nhánh đúng sai ngẫu nhiên khoảng 50/50.
+
+</Expand>
+
+## Bỏ nhánh: tính cả hai rồi chọn
+
+Hai dòng cuối của output trên dùng cách viết **không rẽ nhánh**: thay `if` bằng một mặt nạ.
+
+```c
+uint64_t mask = -(uint64_t)(d[i] >= 128);   // điều kiện đúng: 1 -> -1 = toàn bit 1; sai: 0 -> 0
+s += d[i] & mask;                          // cộng d[i] hoặc cộng 0
+```
+
+Không có lệnh nhảy nên không có gì để đoán sai: thời gian **như nhau** trên dữ liệu ngẫu nhiên và đã sắp xếp. Cái giá là luôn làm phép tính của cả hai trường hợp.
+
+| Cách viết | Dữ liệu dễ đoán | Dữ liệu khó đoán |
+|---|---|---|
+| có rẽ nhánh (`if`) | nhanh: gần như không đoán sai | chậm: mỗi lần đoán sai mất cỡ 20 chu kỳ |
+| không rẽ nhánh (mặt nạ, `cmov`) | nhanh như nhau, có khi chậm hơn `if` một chút | nhanh như nhau |
+
+Trình biên dịch thường tự làm việc này: `clamp` ở bài [ISA & Assembly](/docs/architecture/isa-assembly) thành `cmov`, và trong `branch.c` phải chèn một lệnh `asm` rỗng vào nhánh thì gcc mới giữ lại lệnh nhảy để đo. Với nhánh phức tạp (gọi hàm, ghi bộ nhớ) thì trình biên dịch không tự bỏ được.
+
+Một cách bỏ chi phí đoán sai khác là **làm cho nhánh dễ đoán**: sắp xếp hay phân nhóm dữ liệu trước, như phép đo trên. Bản quicksort hiện đại (pdqsort, xem [Sorting](/docs/dsa/sorting)) có bước phân hoạch không rẽ nhánh vì chính lý do này.
+
+**Thử ngay:** dữ liệu của bạn luôn đã sắp xếp sẵn. Nên đổi `if` thành mặt nạ không?
+
+<Expand title="Đáp án">
+
+Không cần. Trên dữ liệu đã sắp xếp nhánh gần như luôn đúng, `if` đã nhanh, và cách mặt nạ không nhanh hơn (có lúc chậm hơn một chút vì luôn tính cả hai phía). Chỉ bỏ nhánh khi đo thấy nhánh khó đoán.
+
+</Expand>
+
+## Bộ đếm 2 bit: ba ví dụ
+
+Bộ dự đoán đơn giản nhất cho mỗi lệnh rẽ nhánh một **bộ đếm bão hoà 2 bit**, có 4 trạng thái:
+
+```text
+0 (chắc chắn N)  <->  1 (hơi N)  <->  2 (hơi T)  <->  3 (chắc chắn T)
+```
+
+T là "có nhảy", N là "không nhảy". Trạng thái 0, 1 đoán N; trạng thái 2, 3 đoán T. Sau mỗi lần rẽ, kết quả thật là T thì cộng 1 (tối đa 3), là N thì trừ 1 (tối thiểu 0). Nhờ có hai mức, một lần ngoại lệ không đủ đổi dự đoán. Script nhỏ dưới mô phỏng bộ đếm để kiểm tay:
+
+<Expand title="Code predictor.py">
+
+```python
+# predictor.py: mô phỏng bộ đếm bão hoà 2 bit trên một chuỗi kết quả rẽ nhánh (T = nhảy, N = không nhảy)
+# dùng: python3 predictor.py <chuỗi T/N> <trạng thái đầu 0..3>
+import sys
+
+pattern, state = sys.argv[1], int(sys.argv[2])
+steps, wrong = [], 0
+for actual in pattern:
+    guess = "T" if state >= 2 else "N"
+    ok = guess == actual
+    wrong += not ok
+    steps.append(f"{state}:{guess}{'' if ok else '✗'}")
+    state = min(state + 1, 3) if actual == "T" else max(state - 1, 0)
+print(f"mẫu {pattern}, trạng thái đầu {sys.argv[2]}: đoán sai {wrong}/{len(pattern)}")
+print("trạng thái:đoán  ", " ".join(steps))
+```
+
+</Expand>
+
+### Ví dụ 1 (giải sẵn): vòng lặp 4 lần, chạy lặp lại
+
+Vòng `for (j = 0; j < 4; j++)` nằm trong một vòng ngoài. Lệnh nhảy cuối thân vòng có kết quả T, T, T rồi N (thoát), lặp lại: `TTTN TTTN TTTN`. Bắt đầu ở trạng thái 3.
+
+1. Ba lần T đầu: trạng thái 3 đoán T, đúng, giữ 3.
+2. Lần N: trạng thái 3 đoán T, **sai**, giảm còn 2.
+3. Lần T kế: trạng thái 2 vẫn đoán T, đúng, tăng lại 3.
+4. Mỗi chu kỳ 4 lần chỉ sai 1 lần (lúc thoát vòng): sai 3/12.
+
+```bash
+python3 predictor.py TTTNTTTNTTTN 3
+```
+
+```text
+mẫu TTTNTTTNTTTN, trạng thái đầu 3: đoán sai 3/12
+trạng thái:đoán   3:T 3:T 3:T 3:T✗ 2:T 3:T 3:T 3:T✗ 2:T 3:T 3:T 3:T✗
+```
+
+Nếu dùng bộ đếm 1 bit (chỉ nhớ lần trước), lần thoát vòng sai, rồi lần vào vòng kế cũng sai vì nó vừa nhớ N: sai gấp đôi. Đó là lý do có bit thứ hai.
+
+### Ví dụ 2 (giải một nửa): nhánh luân phiên
+
+Một nhánh luân phiên `TNTNTNTN`, bắt đầu ở trạng thái 1. Điền bảng:
+
+| Lần | Thật | Trạng thái trước | Đoán | Đúng? | Trạng thái sau |
+|---|---|---|---|---|---|
+| 1 | T | 1 | N | sai | 2 |
+| 2 | N | 2 | T | sai | 1 |
+| 3 | T | 1 | ___ | ___ | ___ |
+| 4 | N | ___ | ___ | ___ | ___ |
+
+Sau 8 lần, sai bao nhiêu lần?
+
+<Expand title="Đáp án">
+
+Lần 3 giống hệt lần 1 (trạng thái 1, đoán N, sai, lên 2), lần 4 giống lần 2 (trạng thái 2, đoán T, sai, xuống 1). Bộ đếm bị kẹt giữa 1 và 2 và luôn đoán ngược: **sai cả 8/8**.
+
+```bash
+python3 predictor.py TNTNTNTN 1
+```
+
+```text
+mẫu TNTNTNTN, trạng thái đầu 1: đoán sai 8/8
+trạng thái:đoán   1:N✗ 2:T✗ 1:N✗ 2:T✗ 1:N✗ 2:T✗ 1:N✗ 2:T✗
+```
+
+Bộ đếm 2 bit chỉ nhớ "thường nhảy hay thường không", nên mẫu luân phiên làm nó thất bại hoàn toàn. Bắt đầu ở trạng thái 2 thì sai 4/8, vẫn tệ.
+
+</Expand>
+
+### Ví dụ 3 (tự làm)
+
+Mảng đã sắp xếp ở mục trước cho nhánh `d[i] >= 128` một mẫu kiểu `NNNNNNNNTTTTTTTT`. Bắt đầu ở trạng thái 3, bộ đếm 2 bit đoán sai mấy lần? Nếu mảng dài 32.768 phần tử (16.384 N rồi 16.384 T) thì sao?
+
+<Expand title="Đáp án">
+
+Hai lần N đầu sai (3 xuống 2 rồi xuống 1), sau đó N đúng tới hết; hai lần T đầu sai (0 lên 1 rồi lên 2), sau đó T đúng tới hết. Tổng **4 lần sai**, bất kể mảng dài bao nhiêu: với 32.768 phần tử vẫn chỉ 4 lần. Đó là lý do dữ liệu đã sắp xếp nhanh như vậy.
+
+```bash
+python3 predictor.py NNNNNNNNTTTTTTTT 3
+```
+
+```text
+mẫu NNNNNNNNTTTTTTTT, trạng thái đầu 3: đoán sai 4/16
+trạng thái:đoán   3:T✗ 2:T✗ 1:N 0:N 0:N 0:N 0:N 0:N 0:N✗ 1:N✗ 2:T 3:T 3:T 3:T 3:T 3:T
+```
+
+</Expand>
+
+## Bộ dự đoán thật nhớ được bao xa
+
+Ví dụ 2 cho thấy bộ đếm 2 bit thua mẫu luân phiên. Bộ dự đoán trong CPU thật mạnh hơn nhiều: nó dùng **lịch sử** của vài chục tới vài trăm lần rẽ gần nhất làm chìa khoá tra bảng, nên nhận ra được các mẫu lặp lại. Nó nhớ được mẫu dài tới đâu?
+
+Thí nghiệm: một nhánh rẽ theo một chuỗi **ngẫu nhiên** dài `P`, lặp đi lặp lại (chu kỳ `P`). Nếu bộ dự đoán nhớ được cả chuỗi, nó đoán đúng hết; nếu không, nó đoán sai một nửa.
+
+**Đoán trước:** với `P = 64` (một chuỗi ngẫu nhiên 64 kết quả, lặp lại), CPU đoán đúng hay sai? Còn `P = 65536`?
+
+<Expand title="Code pattern.c">
+
+```c
+// pattern.c: một nhánh rẽ theo chuỗi ngẫu nhiên dài P lặp lại; đo thời gian mỗi lần lặp theo P
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+static double now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
+static uint64_t rng = 88172645463325252ull;
+static uint32_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return (uint32_t)rng; }
 
 __attribute__((noinline)) static uint64_t pattern_loop(const uint8_t *p, size_t period, size_t iters) {
-    uint64_t s = 0; size_t j = 0;
-    for (size_t i = 0; i < iters; i++) { if (p[j]) { s += i; __asm__ volatile("" ::: "memory"); } if (++j == period) j = 0; }
+    uint64_t s = 0;
+    size_t j = 0;
+    for (size_t i = 0; i < iters; i++) {
+        if (p[j]) { s += i; __asm__ volatile("" ::: "memory"); }   // nhánh cần đoán
+        if (++j == period) j = 0;
+    }
     return s;
 }
 
 int main(void) {
-    // ---------- (1) dữ liệu 32768 byte ngẫu nhiên; so sánh >= 128 đúng khoảng một nửa ----------
-    size_t n = 32768; int reps = 30000;
-    uint8_t *d = malloc(n); for (size_t i = 0; i < n; i++) d[i] = rnd() & 255;
-    uint64_t iters = (uint64_t)n * reps;
-    double t0 = now(); uint64_t a = sum_branchy(d, n, reps); double t_unsorted = now() - t0;
-    t0 = now(); uint64_t b = sum_branchless(d, n, reps); double t_less_unsorted = now() - t0;
-    qsort(d, n, 1, cmp_u8);
-    t0 = now(); uint64_t c = sum_branchy(d, n, reps); double t_sorted = now() - t0;
-    t0 = now(); uint64_t e = sum_branchless(d, n, reps); double t_less_sorted = now() - t0;
-    sink = a + b + c + e;
-    printf("(1) %zu byte ngẫu nhiên, %.2f tỉ lần lặp, cùng kết quả: %s\n", n, iters / 1e9, (a == b && b == c && c == e) ? "đúng" : "SAI");
-    printf("%-36s %10s %12s\n", "", "ms", "ns / phần tử");
-    printf("%-36s %10.0f %12.2f\n", "rẽ nhánh, dữ liệu CHƯA sắp xếp", t_unsorted * 1e3, t_unsorted / iters * 1e9);
-    printf("%-36s %10.0f %12.2f\n", "rẽ nhánh, dữ liệu ĐÃ sắp xếp", t_sorted * 1e3, t_sorted / iters * 1e9);
-    printf("%-36s %10.0f %12.2f\n", "không rẽ nhánh, chưa sắp xếp", t_less_unsorted * 1e3, t_less_unsorted / iters * 1e9);
-    printf("%-36s %10.0f %12.2f\n", "không rẽ nhánh, đã sắp xếp", t_less_sorted * 1e3, t_less_sorted / iters * 1e9);
-    double penalty = (t_unsorted - t_sorted) / iters / 0.5 * 1e9;
-    printf("   chênh lệch chia cho 50%% số lần đoán sai => mỗi lần đoán sai tốn khoảng %.1f ns (cỡ %.0f chu kỳ ở 4,5 GHz)\n", penalty, penalty * 4.5);
-    free(d);
-
-    // ---------- (2) độ trễ so với thông lượng của phép cộng float ----------
-    size_t m = 4096; int r2 = 200000; float *f = malloc(m * sizeof(float));
-    for (size_t i = 0; i < m; i++) f[i] = 1.0f;
-    printf("\n(2) cộng %zu float (16 KiB, nằm trong L1) lặp %d lần, chỉ đổi số bộ tích luỹ độc lập:\n", m, r2);
-    printf("%-26s %10s %14s %16s\n", "số bộ tích luỹ", "ms", "ns / phép cộng", "phép cộng / giây");
-    float (*fn[4])(const float *, size_t, int) = {sum1, sum2, sum4, sum8}; int ks[4] = {1, 2, 4, 8};
-    double base = 0;
-    for (int q = 0; q < 4; q++) {
-        t0 = now(); float v = fn[q](f, m, r2); double dt = now() - t0; sink = (uint64_t)v;
-        if (q == 0) base = dt;
-        printf("%-26d %10.0f %14.3f %13.2f tỉ   (nhanh gấp %.1fx)\n", ks[q], dt * 1e3, dt / ((double)m * r2) * 1e9, (double)m * r2 / dt / 1e9, base / dt);
-    }
-    free(f);
-
-    // ---------- (3) bộ dự đoán nhớ được chu kỳ dài đến đâu ----------
-    printf("\n(3) rẽ nhánh theo một mẫu ngẫu nhiên lặp lại với chu kỳ P (cứ P lần lại lặp đúng mẫu cũ), 200 triệu lần lặp:\n");
-    printf("%10s %12s %14s\n", "chu kỳ P", "ms", "ns / lần lặp");
-    size_t its = 200000000;
+    size_t iters = 200000000;
+    printf("chu kỳ P   ns / lần lặp\n");
     for (size_t P = 1; P <= 65536; P *= 4) {
-        uint8_t *p = malloc(P); for (size_t i = 0; i < P; i++) p[i] = rnd() & 1;
-        t0 = now(); uint64_t v = pattern_loop(p, P, its); double dt = now() - t0; sink = v;
-        printf("%10zu %12.0f %14.3f\n", P, dt * 1e3, dt / its * 1e9);
+        uint8_t *p = malloc(P);
+        for (size_t i = 0; i < P; i++) p[i] = rnd() & 1;
+        double t0 = now();
+        uint64_t v = pattern_loop(p, P, iters);
+        double dt = now() - t0;
+        printf("%8zu %14.3f%s\n", P, dt / iters * 1e9, v == 1 ? "!" : "");
         free(p);
     }
     return 0;
 }
 ```
 
-```text
-(1) 32768 byte ngẫu nhiên, 0.98 tỉ lần lặp, cùng kết quả: đúng
-                                             ms ns / phần tử
-rẽ nhánh, dữ liệu CHƯA sắp xếp       2851         2.90
-rẽ nhánh, dữ liệu ĐÃ sắp xếp        219         0.22
-không rẽ nhánh, chưa sắp xếp        287         0.29
-không rẽ nhánh, đã sắp xếp        307         0.31
-   chênh lệch chia cho 50% số lần đoán sai => mỗi lần đoán sai tốn khoảng 5.4 ns (cỡ 24 chu kỳ ở 4,5 GHz)
+</Expand>
 
-(2) cộng 4096 float (16 KiB, nằm trong L1) lặp 200000 lần, chỉ đổi số bộ tích luỹ độc lập:
-số bộ tích luỹ              ms ns / phép cộng phép cộng / giây
-1                                 362          0.442          2.26 tỉ   (nhanh gấp 1.0x)
-2                                 184          0.224          4.46 tỉ   (nhanh gấp 2.0x)
-4                                  93          0.113          8.83 tỉ   (nhanh gấp 3.9x)
-8                                  91          0.111          9.02 tỉ   (nhanh gấp 4.0x)
-
-(3) rẽ nhánh theo một mẫu ngẫu nhiên lặp lại với chu kỳ P (cứ P lần lại lặp đúng mẫu cũ), 200 triệu lần lặp:
-chu kỳ P           ms ns / lần lặp
-         1          133          0.666
-         4           99          0.493
-        16          105          0.523
-        64          140          0.700
-       256          153          0.763
-      1024          158          0.792
-      4096          165          0.825
-     16384          551          2.757
-     65536          734          3.670
+```bash
+gcc -O2 -o pattern pattern.c && ./pattern
 ```
 
-Phần (2) của output, mảng 16 KiB nằm gọn trong L1 nên bộ nhớ không làm nghẽn:
-
-| Số bộ tích luỹ | ns mỗi phép cộng | Phép cộng mỗi giây | Nhanh hơn |
-|---|---|---|---|
-| 1 | 0,442 | 2,26 tỉ | 1,0x |
-| 2 | 0,224 | 4,46 tỉ | 2,0x |
-| 4 | 0,113 | 8,83 tỉ | **3,9x** |
-| 8 | 0,111 | 9,02 tỉ | 4,0x |
-
-Cùng đúng số phép cộng, nhanh gấp **4 lần** chỉ vì tổ chức lại chuỗi phép tính. Giải thích: với 1 bộ tích luỹ, mỗi phép cộng chờ phép trước, nên tốc độ là `1 / độ trễ`: 0,442 ns mỗi phép (khoảng 2 chu kỳ nếu xung nhịp cỡ 4,5 GHz, chính là độ trễ của một lệnh cộng số thực). Với 2 bộ, hai chuỗi chạy xen kẽ: gấp đôi. Với 4 bộ, **vẫn còn tăng**; nhưng ở 8 bộ, tốc độ **dừng ở khoảng 9 tỉ phép cộng mỗi giây**: lúc này CPU đã **bão hoà thông lượng** (khoảng hai lệnh cộng số thực mỗi chu kỳ), thêm bộ tích luỹ không giúp được nữa. Vì thế: **độ trễ ≠ thông lượng**; "một phép cộng mất 2 chu kỳ" và "CPU làm 2 phép cộng mỗi chu kỳ" cùng đúng, và chương trình đạt cái nào là do **có chuỗi phụ thuộc hay không**.
-
-Thí nghiệm này tương tự bài tập kinh điển về "loop unrolling" trong CS:APP, và là lý do **trình biên dịch không tự làm** cho float: cộng số thực **không có tính kết hợp**. Python cho thấy:
-
 ```text
-(0.1 + 0.2) + 0.3 = 0.6000000000000001
-0.1 + (0.2 + 0.3) = 0.6
-tổng tuần tự của 100.000 số = -1244340212.5250154
-tổng 4 bộ tích luỹ          = -1244340212.5250123
+chu kỳ P   ns / lần lặp
+       1          0.630
+       4          0.655
+      16          0.477
+      64          0.581
+     256          0.607
+    1024          0.712
+    4096          0.715
+   16384          2.887
+   65536          3.668
 ```
 
-Đổi thứ tự cộng đổi vài chữ số cuối, nên trình biên dịch chỉ làm vậy khi bạn cho phép bằng `-ffast-math` (hoặc `-fassociative-math`). Với số **nguyên**, cộng có tính kết hợp chính xác nên trình biên dịch (và vector hoá) tự do hơn. Bài học: với tính toán cần tốc độ, **tự viết nhiều bộ tích luỹ** hoặc dùng thư viện đã làm (BLAS, `numpy.sum` dùng cộng từng cặp), và biết rằng kết quả làm tròn có thể khác nhau chút ít.
+Tới chu kỳ vài nghìn, mỗi lần lặp vẫn dưới 1 ns: CPU đã **thuộc lòng** một chuỗi ngẫu nhiên dài hàng nghìn kết quả. Vượt ngưỡng đó, thời gian tăng vài lần: chuỗi quá dài để nhớ, và mỗi lần rẽ lại thành tung đồng xu.
 
-## Dự đoán rẽ nhánh
+Quy tắc: bộ dự đoán hiện đại đoán tốt mọi nhánh **có mẫu**, kể cả mẫu phức tạp và khá dài. Thứ nó không đoán được là nhánh phụ thuộc **dữ liệu thật sự ngẫu nhiên**, như mảng chưa sắp xếp ở trên, vì ở đó không có mẫu nào để học.
 
-Một lệnh rẽ nhánh có điều kiện làm pipeline không biết lệnh kế tiếp là gì cho tới khi điều kiện được tính, tức sau nhiều giai đoạn. Đợi thì mất cả chục chu kỳ nhàn rỗi mỗi nhánh. Vì vậy CPU **đoán** hướng đi và **chạy suy đoán** (speculative execution) các lệnh theo hướng đoán, ghi kết quả tạm. Khi nhánh được tính xong: đoán **đúng** thì giữ kết quả, không mất gì; đoán **sai** thì **vứt toàn bộ công việc suy đoán**, xoá pipeline và bắt đầu lại từ hướng đúng. Cái giá của một lần đoán sai bằng độ sâu pipeline tới khi nhánh được giải quyết (cỡ 15 đến 25 chu kỳ). Vì vậy CPU đầu tư rất nhiều transistor vào **bộ dự đoán**:
+**Thử ngay:** một hàm kiểm tra `if (user.is_admin)` trên danh sách người dùng mà admin rải rác ngẫu nhiên, chiếm 0,1%. Nhánh này có đáng lo không?
 
-- **Tĩnh**: nhảy lùi (vòng lặp) coi là "có nhảy", nhảy tiến coi là "không nhảy".
-- **Bộ đếm bão hoà 2 bit** cho từng lệnh nhánh: nhớ 4 trạng thái (chắc chắn không nhảy, có thể không nhảy, có thể nhảy, chắc chắn nhảy), nên một lần ngoại lệ (kết thúc vòng lặp) không đổi dự đoán.
-- **Dự đoán theo lịch sử**: nhớ **kết quả vài chục lần rẽ gần đây** (của chính nhánh đó và của các nhánh khác) làm chỉ mục vào một bảng bộ đếm, nên nhận ra các mẫu như "luân phiên đúng sai" hay "đúng ba lần rồi sai một lần".
-- **TAGE** và biến thể (nền của các CPU hiện đại): dùng nhiều bảng với **độ dài lịch sử khác nhau** (ngắn tới rất dài) và chọn bảng có lịch sử khớp dài nhất.
+<Expand title="Đáp án">
 
-### Cái giá của một lần đoán sai
+Không. Dù vị trí admin ngẫu nhiên, nhánh gần như luôn N; bộ dự đoán luôn đoán N và chỉ sai ở 0,1% số lần. Nhánh tốn kém là nhánh ngẫu nhiên **và** cân bằng hai phía.
 
-Thí nghiệm cổ điển: cộng các byte có giá trị `>= 128` trong một mảng 32.768 byte ngẫu nhiên, lặp 30.000 lần. Điều kiện `d[i] >= 128` đúng khoảng một nửa số lần. Khi dữ liệu **ngẫu nhiên**, kết quả của mỗi lần rẽ nhánh là một đồng xu: bộ dự đoán đoán sai khoảng một nửa số lần. Khi dữ liệu **đã sắp xếp**, nửa đầu toàn `< 128` và nửa sau toàn `>= 128`: nhánh đổi hướng đúng một lần, dự đoán gần như hoàn hảo. Phần (1) của output:
+</Expand>
 
-| Cách viết | Dữ liệu | ns mỗi phần tử |
-|---|---|---|
-| rẽ nhánh (`if`) | **chưa sắp xếp** | **2,86** |
-| rẽ nhánh (`if`) | đã sắp xếp | **0,22** |
-| không rẽ nhánh (mặt nạ) | chưa sắp xếp | 0,24 |
-| không rẽ nhánh (mặt nạ) | đã sắp xếp | 0,22 |
+## Tự kiểm tra tổng hợp
 
-Cùng một vòng lặp, cùng số lệnh, **chậm gấp 13 lần** chỉ vì dữ liệu chưa sắp xếp. Nếu nửa số lần đoán sai, độ chênh `(2,86 - 0,22)` chia cho `0,5` cho **khoảng 5,3 ns mỗi lần đoán sai**, tức cỡ 24 chu kỳ ở xung nhịp khoảng 4,5 GHz: khớp với độ sâu pipeline. Cách viết **không rẽ nhánh** (nhân kết quả với một mặt nạ `-(d[i] >= 128)` toàn bit 0 hoặc toàn bit 1) chạy **đều 0,22 đến 0,24 ns bất kể dữ liệu**: không có nhánh nào để đoán sai. Nó trả giá bằng việc luôn làm phép tính (nhanh hơn rẽ nhánh nếu nhánh khó đoán, chậm hơn một chút nếu nhánh dễ đoán, như 0,24 so với 0,22).
+1. Một hàm đếm số phần tử thoả điều kiện chạy nhanh trong test (dữ liệu sinh tăng dần) nhưng chậm gấp nhiều lần trên production (dữ liệu từ người dùng). Thuật toán không đổi. Giải thích và nêu hai cách sửa.
+2. Vòng lặp tính tích vô hướng `s += a[i] * b[i]` trên mảng `float` nằm gọn trong L1 chạy ở khoảng một phép nhân cộng mỗi 0,4 ns, dù CPU làm được vài phép mỗi chu kỳ. Vì sao, và sửa thế nào? Vì sao trình biên dịch không tự sửa?
+3. Duyệt danh sách liên kết `while (p) { s += p->val; p = p->next; }` cũng là một chuỗi phụ thuộc. Chuỗi đó dài bao nhiêu nano giây mỗi bước nếu danh sách lớn hơn L3, và chia bộ tích luỹ có giúp không?
+4. Vì sao pipeline làm tăng số lệnh mỗi giây nhưng không làm một lệnh riêng lẻ chạy nhanh hơn? Điều đó liên quan gì tới câu 2?
+5. Có người đề nghị viết lại mọi `if` trong code thành dạng mặt nạ cho "nhanh hơn". Bạn trả lời thế nào?
 
-Hai ghi chú về cách đo. Một: tôi phải chèn một lệnh `asm volatile("" ::: "memory")` bên trong nhánh, vì nếu không, `gcc -O2` **tự biến `if` thành lệnh `cmov`** (di chuyển có điều kiện, không phải nhảy) hoặc vector hoá, và phép đo mất ý nghĩa: trình biên dịch hiện đại thường tự loại bỏ nhánh khi rẻ. Hai: đây là trường hợp bạn nên **đo thật**; nhiều lời khuyên "dùng `if` hay dùng mặt nạ" phụ thuộc vào việc dữ liệu thực tế có đoán được không.
+<Expand title="Đáp án">
 
-### Bộ dự đoán nhớ được bao nhiêu
+1. Hàm có một `if` phụ thuộc dữ liệu. Dữ liệu tăng dần làm nhánh chỉ đổi hướng một lần, nên bộ dự đoán gần như luôn đúng; dữ liệu thật lộn xộn làm nhánh đoán sai khoảng một nửa số lần, mỗi lần mất cỡ 20 chu kỳ. Sửa: viết không rẽ nhánh (`count += (x > t);` thường được dịch thành lệnh không nhảy), hoặc sắp xếp, phân nhóm dữ liệu trước nếu nó được dùng nhiều lần. Bài học thêm: test hiệu năng phải dùng dữ liệu giống production.
+2. `s` là một chuỗi phụ thuộc: mỗi phép cộng chờ phép trước, nên tốc độ bị khoá ở độ trễ phép cộng số thực, không phải thông lượng. Sửa: chia thành 4 tới 8 bộ tích luỹ độc lập rồi cộng ở cuối (hoặc dùng thư viện đã làm sẵn). Trình biên dịch không tự làm vì đổi thứ tự cộng số thực làm đổi kết quả; phải cho phép bằng `-ffast-math`.
+3. Mỗi bước phải đọc `p->next` xong mới biết địa chỉ bước sau, nên mỗi bước chờ trọn một lần đọc RAM, cỡ 100 ns trở lên ([Memory Hierarchy & Cache](/docs/architecture/memory-hierarchy)). Chia bộ tích luỹ cho `s` không giúp, vì chuỗi phụ thuộc chậm là chuỗi `p = p->next`, không phải chuỗi cộng. Phải đổi cấu trúc dữ liệu (mảng), hoặc duyệt nhiều danh sách xen nhau.
+4. Pipeline cho nhiều lệnh chồng lên nhau, mỗi lệnh ở một công đoạn khác, nên số lệnh xong mỗi chu kỳ tăng; nhưng mỗi lệnh vẫn phải đi đủ các công đoạn (độ trễ không đổi). Câu 2 chính là trường hợp chương trình chỉ hưởng được độ trễ: lệnh sau cần kết quả lệnh trước nên không thể chồng lên nhau.
+5. Chỉ có lợi với nhánh khó đoán (ngẫu nhiên, cân bằng). Nhánh dễ đoán thì `if` đã gần như miễn phí, còn mặt nạ luôn tính cả hai phía nên có thể chậm hơn, và làm code khó đọc. Trình biên dịch cũng tự đổi các nhánh đơn giản thành `cmov` khi có lợi. Hãy đo (ví dụ `perf stat -e branch-misses`) và chỉ sửa chỗ thật sự đoán sai nhiều.
 
-Một câu hỏi tinh hơn: nếu mẫu rẽ nhánh **ngẫu nhiên nhưng lặp lại** với chu kỳ `P` (cứ `P` lần rẽ nhánh thì lặp đúng chuỗi kết quả cũ), bộ dự đoán học được tới chu kỳ bao nhiêu? Phần (3):
+</Expand>
 
-| Chu kỳ P | ns mỗi lần lặp |
-|---|---|
-| 1 đến 4.096 | **0,48 đến 0,67** (đoán gần như hoàn hảo) |
-| 16.384 | **2,58** |
-| 65.536 | **3,31** |
+## Đi sâu hơn
 
-Với chu kỳ tới **4.096** (một chuỗi 4.096 bit **ngẫu nhiên** lặp đi lặp lại), CPU đoán đúng gần như mọi lần: nó đã **nhớ** cả chuỗi dài qua lịch sử và các bảng của nó. Vượt qua ngưỡng đó (16.384), dự đoán sụp đổ và thời gian tăng gấp 4 đến 5 lần. Con số này cho thấy bộ dự đoán hiện đại **rất mạnh** với mẫu lặp, nên "dữ liệu có mẫu" thường đoán được. Điều nó **không** làm được là đoán các nhánh phụ thuộc vào **dữ liệu ngẫu nhiên thật sự** (như mảng chưa sắp xếp ở trên), vì không có mẫu nào để học.
+<Expand title="Ba loại hazard">
 
-## Chuyện gì xảy ra khi đoán lệch: Spectre
+Pipeline giả định các lệnh độc lập. Khi không phải vậy có ba loại **hazard**:
 
-Thực thi suy đoán còn một mặt trái. Khi CPU chạy suy đoán qua một nhánh đoán sai, nó **không ghi** kết quả vào thanh ghi hay bộ nhớ, nhưng nó **để lại dấu vết trong cache** (dòng cache được nạp, kiểm tra được bằng đo thời gian truy cập, như thang độ trễ ở bài Memory Hierarchy). **Spectre** (công bố đầu năm 2018) lợi dụng điều này: kẻ tấn công huấn luyện bộ dự đoán để CPU chạy suy đoán một đoạn mã đọc dữ liệu mà chương trình không được phép đọc (ví dụ bộ nhớ của kernel hay của tiến trình khác), rồi đo thời gian cache để suy ra giá trị đã đọc. Sửa chữa không đơn giản vì nó nằm ở thiết kế phần cứng; các biện pháp giảm nhẹ (chèn rào chắn suy đoán, `retpoline`, làm sạch bộ dự đoán khi đổi ngữ cảnh, cô lập bảng trang kernel) **có chi phí hiệu năng đo được**, và là một lý do việc đổi ngữ cảnh trên Linux hiện đắt hơn trước 2018 (xem [Process vs Thread](/docs/os/process-thread) về chi phí context switch).
+- **Structural**: hai lệnh cần cùng một bộ phận phần cứng trong cùng chu kỳ. Giải bằng thêm phần cứng.
+- **Data**: lệnh sau cần kết quả lệnh trước chưa xong (`a = b + c; d = a * 2`). Phần cứng **chuyển tiếp** (forwarding) kết quả thẳng từ đầu ra bộ thực thi sang lệnh kế mà không chờ ghi vào thanh ghi, hoặc cho dây chuyền **dừng** (stall) vài chu kỳ. Chuỗi phụ thuộc trong bài là loại này.
+- **Control**: lệnh rẽ nhánh, chưa biết lệnh kế. Dự đoán rẽ nhánh là lời giải.
 
-## Quy tắc viết code
+</Expand>
 
-1. **Bỏ rẽ nhánh khó đoán khỏi vòng lặp nóng**: dùng mặt nạ, `cmov`, bảng tra, hoặc **sắp xếp/phân vùng dữ liệu trước** để nhánh đoán được. (Phép phân hoạch của các quicksort hiện đại như pdqsort, xem [Sorting](/docs/dsa/sorting), có phiên bản không rẽ nhánh vì chính lý do này.)
-2. **Phá chuỗi phụ thuộc**: chia tổng, tích, đếm thành nhiều bộ tích luỹ độc lập rồi gộp ở cuối; đừng để mỗi bước chờ bước trước nếu không cần.
-3. **Đừng đuổi con trỏ** trong vòng lặp nóng: danh sách liên kết là chuỗi phụ thuộc bộ nhớ **tệ nhất** (mỗi bước chờ cả độ trễ RAM), xem [Array & Linked List](/docs/dsa/arrays-linked-lists).
-4. **Để trình biên dịch giúp**: bật `-O2` hoặc `-O3`, khai báo `const`/`restrict`, viết vòng lặp đơn giản để nó vector hoá và bỏ nhánh; xem assembly bằng Compiler Explorer để biết nó đã làm gì.
-5. **Gợi ý dự đoán chỉ khi chắc**: `likely`/`unlikely` (`__builtin_expect`) chủ yếu ảnh hưởng **bố trí mã** (đặt nhánh thường gặp thẳng hàng) hơn là bộ dự đoán động, và sai thì phản tác dụng.
-6. **Đo trước khi tối ưu**: bài này chọn các ví dụ có chênh lệch lớn vì chúng được **dựng** để thấy hiệu ứng; trong chương trình thật, nút thắt thường nằm ở bộ nhớ ([Memory Hierarchy & Cache](/docs/architecture/memory-hierarchy)) hoặc I/O trước khi tới vi kiến trúc.
+<Expand title="Bên trong một lõi hiện đại: superscalar, đổi tên thanh ghi, reorder buffer">
 
-## Quan sát và chẩn đoán
+Lõi Golden Cove (lõi hiệu năng của i7-12700H) giải mã tới 6 lệnh mỗi chu kỳ và có khoảng 12 cổng thực thi chia theo loại (cộng số nguyên, nhân, cộng số thực, đọc, ghi). Ba cơ chế cho phép nó lấp đầy các cổng đó:
 
-- **`perf stat -e cycles,instructions,branches,branch-misses ./chuong_trinh`** cho **IPC** (lệnh mỗi chu kỳ) và **tỉ lệ đoán sai nhánh**. IPC thấp (dưới 1) trên CPU có thể tới 4 đến 6 là dấu hiệu chờ (bộ nhớ hoặc đoán sai); `branch-misses` trên vài phần trăm của `branches` là đáng chú ý. (Bài này không chạy `perf` trong WSL2 nên không có output của nó.)
-- `perf record -e branch-misses` rồi `perf annotate` chỉ ra **dòng mã** có nhiều lần đoán sai.
-- Tra độ trễ và thông lượng từng lệnh trong **bảng lệnh của Agner Fog** hoặc sổ tay tối ưu của Intel, để biết một chuỗi phép tính bị giới hạn bởi cái gì.
-- Compiler Explorer (godbolt.org) hiển thị assembly của một đoạn C; tìm `cmov`, vòng lặp đã mở ra (unroll), lệnh vector (`ymm`, `xmm`).
+- **Superscalar**: lấy, giải mã và gửi đi nhiều lệnh mỗi chu kỳ.
+- **Đổi tên thanh ghi** (register renaming): chương trình chỉ có 16 tên thanh ghi, nhưng phần cứng có vài trăm thanh ghi vật lý; hai lệnh tình cờ dùng cùng tên `rax` cho hai giá trị không liên quan được gán hai thanh ghi vật lý khác nhau, xoá phụ thuộc giả.
+- **Reorder buffer**: lệnh chạy xong theo bất kỳ thứ tự nào, nhưng kết quả chỉ được "chốt" theo đúng thứ tự chương trình; nhờ vậy khi đoán sai rẽ nhánh hay gặp lỗi, CPU bỏ được mọi lệnh sau điểm đó như chưa từng chạy. Cửa sổ này dài vài trăm lệnh.
 
-| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
-|---|---|---|
-| Vòng lặp trên dữ liệu ngẫu nhiên chậm gấp nhiều lần so với dữ liệu đã sắp xếp | nhánh phụ thuộc dữ liệu, đoán sai nhiều | sắp xếp hoặc phân vùng trước, hoặc viết không rẽ nhánh |
-| Tổng, tích, đếm chạy chậm dù chỉ vài lệnh mỗi vòng | một chuỗi phụ thuộc, bị giới hạn bởi độ trễ lệnh | nhiều bộ tích luỹ độc lập, hoặc vector hoá |
-| IPC thấp trong khi CPU báo bận 100% | chờ bộ nhớ hoặc đoán sai nhánh | `perf stat` để phân biệt; sửa cấu trúc dữ liệu hoặc nhánh |
-| Kết quả float khác nhau giữa các lần biên dịch hoặc máy | thứ tự cộng khác nhau (`-ffast-math`, vector hoá) | chấp nhận sai số, hoặc ép thứ tự và đo chi phí |
-| Hiệu năng giảm sau bản vá bảo mật CPU | biện pháp giảm nhẹ Spectre và Meltdown | đo trước và sau, cân nhắc cấu hình theo mô hình đe doạ |
-| Số đo trên máy ảo không ổn định | nhiễu từ máy chủ, đổi lõi giữa chừng | ghim lõi (`taskset`), lặp nhiều lần lấy giá trị nhỏ nhất |
+</Expand>
 
-## Lưu ý
+<Expand title="Dự đoán theo lịch sử và TAGE">
 
-- Pipeline tăng **thông lượng**, không giảm **độ trễ** của từng lệnh; thực thi không theo thứ tự cho phép lệnh độc lập chạy chồng nhau, nhưng chỉ khi chương trình **có** lệnh độc lập.
-- Một chuỗi phép tính phụ thuộc bị khoá ở tốc độ `1 / độ trễ`: chia thành nhiều chuỗi độc lập cho nhanh hơn bốn lần trong đo ở đây, tới khi chạm giới hạn thông lượng của CPU.
-- Cộng số thực không có tính kết hợp, nên trình biên dịch không tự tách bộ tích luỹ; cần tự viết hoặc cho phép `-ffast-math` và chấp nhận kết quả hơi khác.
-- Một lần đoán sai rẽ nhánh tốn cỡ 20 chu kỳ trở lên; nhánh phụ thuộc dữ liệu ngẫu nhiên có thể làm vòng lặp chậm cả chục lần so với cùng vòng lặp trên dữ liệu đoán được.
-- Bộ dự đoán hiện đại rất mạnh với mẫu lặp (nhớ được chuỗi hàng nghìn kết quả), nhưng bó tay với dữ liệu ngẫu nhiên thật.
-- Trình biên dịch thường tự đổi `if` thành `cmov` khi có thể; khi viết phép đo vi mô phải kiểm tra assembly để biết mình đang đo cái gì.
-- Thực thi suy đoán để lại dấu vết trong cache, là nền của họ lỗ hổng Spectre; biện pháp giảm nhẹ có chi phí hiệu năng.
-- Chỉ tối ưu ở mức vi kiến trúc sau khi đã chắc nút thắt nằm ở đó (đo bằng `perf`); phần lớn chương trình thực bị chặn bởi bộ nhớ hoặc I/O trước.
+- **Lịch sử toàn cục**: ghi kết quả của vài chục lần rẽ gần nhất (của mọi nhánh) thành một chuỗi bit, trộn với địa chỉ của nhánh để chọn bộ đếm. Mẫu luân phiên `TNTN` ở ví dụ 2 trở nên dễ: sau lịch sử "...T" thì luôn là N.
+- **TAGE**: dùng nhiều bảng, mỗi bảng tra theo một độ dài lịch sử khác nhau (ngắn tới hàng trăm hay hàng nghìn lần rẽ, tăng theo cấp số nhân), và tin bảng có lịch sử khớp dài nhất. Đây là nền của bộ dự đoán trong các CPU hiện đại, và giải thích vì sao thí nghiệm chu kỳ `P` nhớ được chuỗi hàng nghìn kết quả.
+- Ngoài hướng đi, CPU còn phải đoán **đích** của lệnh nhảy gián tiếp (`switch` qua bảng nhảy, gọi hàm ảo, `ret`); có bộ đệm riêng cho từng loại.
+
+</Expand>
+
+<Expand title="Spectre: mặt trái của thực thi suy đoán">
+
+Khi đoán sai, CPU bỏ kết quả trong thanh ghi, nhưng **dấu vết trong cache** vẫn còn: dòng cache mà các lệnh suy đoán đã đọc vẫn nằm trong cache, và đo thời gian đọc lại cho biết dòng nào. **Spectre** (công bố năm 2018) lợi dụng điều này: kẻ tấn công huấn luyện bộ dự đoán để CPU chạy suy đoán một đoạn mã đọc dữ liệu bí mật (vượt kiểm tra biên mảng), dùng giá trị đó làm chỉ số đọc một mảng khác, rồi đo thời gian cache để suy ra giá trị.
+
+Lỗi nằm ở thiết kế phần cứng nên không vá triệt để được. Các biện pháp giảm nhẹ (rào chắn suy đoán, `retpoline`, xoá trạng thái bộ dự đoán khi đổi ngữ cảnh, tách bảng trang của kernel) có chi phí đo được, và là một lý do context switch trên Linux đắt hơn trước 2018 ([Process vs Thread](/docs/os/process-thread)).
+
+</Expand>
+
+<Expand title="Đo IPC và số lần đoán sai bằng perf">
+
+- `perf stat -e cycles,instructions,branches,branch-misses ./chuong_trinh` cho **IPC** (lệnh mỗi chu kỳ) và tỉ lệ đoán sai. IPC dưới 1 trên CPU chạy được 4 tới 6 lệnh mỗi chu kỳ là dấu hiệu đang chờ (bộ nhớ hoặc đoán sai); `branch-misses` trên vài phần trăm của `branches` đáng xem kỹ.
+- `perf record -e branch-misses` rồi `perf annotate` chỉ ra dòng code đoán sai nhiều.
+- Độ trễ và thông lượng của từng lệnh: bảng lệnh của Agner Fog, hoặc sổ tay tối ưu của Intel.
+- Gợi ý `likely`/`unlikely` (`__builtin_expect`) chủ yếu đổi **cách sắp xếp mã** (đặt nhánh thường gặp liền mạch), ít ảnh hưởng bộ dự đoán động; gợi ý sai thì phản tác dụng.
+
+Bài này không chạy `perf` trong WSL2 nên không có output của nó. Trong chương trình thật, nút thắt thường nằm ở bộ nhớ ([Memory Hierarchy & Cache](/docs/architecture/memory-hierarchy)) hay I/O trước khi tới pipeline; đo trước khi tối ưu ở mức này.
+
+</Expand>

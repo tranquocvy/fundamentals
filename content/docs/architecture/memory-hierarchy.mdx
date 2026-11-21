@@ -1,311 +1,618 @@
 ---
 title: Memory Hierarchy & Cache
-description: Thang độ trễ từ L1 tới RAM đo bằng đuổi con trỏ, cache line và cách cache ánh xạ địa chỉ, bước nhảy truy cập, duyệt ma trận theo hàng và theo cột, nhân ma trận chia khối, và quy tắc viết code thân thiện với cache, đo bằng C trên i7-12700H.
+description: Vì sao hai đoạn code làm cùng số phép tính lại chạy nhanh chậm khác nhau cả chục lần, chỉ vì thứ tự đọc bộ nhớ?
 status: draft
 tags: [architecture, cache, memory-hierarchy]
 authors: [tranquocvy]
 references:
+  - title: "Bryant & O'Hallaron — Computer Systems: A Programmer's Perspective, Chapter 6: The Memory Hierarchy"
+    kind: book
+    note: mục 6.2 cho locality, 6.4 cho cache (tập, đường, tag), 6.5 tới 6.6 cho viết code thân thiện cache và nhân ma trận
   - title: "Drepper — What Every Programmer Should Know About Memory (2007)"
     url: https://people.freebsd.org/~lstewart/articles/cpumemory.pdf
     kind: paper
-    note: DRAM, cache, TLB, NUMA và tối ưu truy cập bộ nhớ; nguồn gốc của nhiều thí nghiệm kiểu đuổi con trỏ
-  - title: "Bryant & O'Hallaron — Computer Systems: A Programmer's Perspective, Chapter 6: The Memory Hierarchy"
+    note: mục 3 cho cache và thí nghiệm đuổi con trỏ; mục 6 cho tối ưu truy cập bộ nhớ
+  - title: "Hennessy & Patterson — Computer Architecture: A Quantitative Approach, Appendix B: Review of Memory Hierarchy"
     kind: book
-    note: SRAM và DRAM, locality, cache nhiều tầng, nhân ma trận chia khối, thang đo bộ nhớ
-  - title: "Hennessy & Patterson — Computer Architecture: A Quantitative Approach, Appendix B and Chapter 2: Memory Hierarchy Design"
-    kind: book
-    note: ánh xạ trực tiếp, kết hợp tập, chính sách thay thế, các loại miss
-  - title: "Nand to Tetris — Part II (computer architecture and memory)"
-    url: https://www.nand2tetris.org/
-    kind: video
-    note: dựng một máy tính từ cổng logic, nền để hiểu bộ nhớ nằm ở đâu
+    note: ánh xạ trực tiếp, kết hợp tập, ba loại miss
   - title: "Jeff Dean — Latency Numbers Every Programmer Should Know (bản tổng hợp)"
     url: https://gist.github.com/jboner/2841832
     kind: web
-    note: bảng độ trễ tham khảo từ cache tới mạng; con số cũ, chỉ dùng cho bậc độ lớn
-  - title: "Arpaci-Dusseau — Operating Systems: Three Easy Pieces, Chapter 19: Translation Lookaside Buffers"
-    url: https://pages.cs.wisc.edu/~remzi/OSTEP/
+    note: bậc độ lớn từ cache tới mạng; số đã cũ, chỉ dùng để so bậc
+  - title: "Intel — 64 and IA-32 Architectures Optimization Reference Manual"
     kind: book
-    note: TLB cũng là một cache, nối với phần bộ nhớ ảo
+    note: cho phần Đi sâu hơn; thông số cache của lõi Golden Cove, prefetcher
 ---
+
+**Cần biết trước:** đọc được C cơ bản (vòng lặp, mảng, mảng hai chiều lưu thành mảng một chiều), và ý "mảng là một dãy ô liền nhau" ở bài [Array & Linked List](/docs/dsa/arrays-linked-lists). Đọc [ISA & Assembly](/docs/architecture/isa-assembly) trước thì tốt (biết thanh ghi), nhưng không bắt buộc. Mọi số đo trong bài chạy bằng C (`gcc -O2`) trên Intel Core i7-12700H trong WSL2.
+
+**Cách đọc bài:** mỗi mục có một câu **Đoán trước** và kết bằng một câu **Thử ngay**. Hãy tự trả lời trong đầu (hoặc ra giấy) rồi mới xem đáp án. Việc tự nhớ lại và tự đoán giúp nhớ lâu hơn nhiều so với chỉ đọc.
 
 ## Ý chính
 
-Một CPU hiện đại thực hiện vài lệnh trong **một nano giây**, nhưng đọc một giá trị từ RAM mất cỡ **một trăm nano giây**: chênh nhau hai bậc độ lớn. Nếu CPU phải chờ RAM ở mỗi lần đọc thì nó chạy chậm hơn trăm lần. Lời giải là **phân cấp bộ nhớ**: xếp vài tầng bộ nhớ nhỏ hơn, nhanh hơn, đắt hơn (**cache** L1, L2, L3) giữa CPU và RAM, tự động giữ lại những thứ vừa được dùng. Nó chỉ hiệu quả vì chương trình thật có tính chất **locality** (cục bộ): thứ vừa dùng thường sắp được dùng lại (locality theo thời gian), và thứ nằm cạnh thứ vừa dùng thường sắp được dùng tới (locality theo không gian).
+CPU làm một phép cộng trong chưa tới một nano giây, nhưng đọc một giá trị từ RAM mất gần trăm nano giây. Để CPU không phải chờ, giữa CPU và RAM có vài tầng bộ nhớ nhỏ và nhanh gọi là **cache**, tự động giữ lại dữ liệu vừa dùng và dữ liệu nằm cạnh nó. Cache chỉ có ích khi chương trình dùng lại dữ liệu khi nó còn trong cache, và đọc những ô nằm cạnh nhau.
 
-Hệ quả cho người viết code là **thứ tự truy cập bộ nhớ quan trọng hơn số phép tính**. Hai đoạn code làm cùng số phép cộng có thể chạy nhanh chậm khác nhau hơn mười lần. Bài [Array & Linked List](/docs/dsa/arrays-linked-lists) và [Big-O & Complexity](/docs/dsa/complexity) đã chạm vào điều này bằng Python; nhưng Python che đi phần lớn chênh lệch bằng chi phí thông dịch. Bài này đo trực tiếp bằng **C** (biên dịch `-O2`), nơi chênh lệch lộ nguyên hình. Trình tự: vì sao có phân cấp và các tầng làm bằng gì; **đo thang độ trễ** của máy viết bài bằng đuổi con trỏ và đối chiếu với thông số CPU; cache hoạt động thế nào (cache line, ánh xạ địa chỉ, hai loại locality); ba thí nghiệm về thứ tự truy cập (bước nhảy, duyệt ma trận, nhân ma trận) và quy tắc rút ra; cuối cùng là cache trong lập trình đa luồng và trong phần mềm (bộ nhớ đệm trang của OS, buffer pool của cơ sở dữ liệu). Máy đo: **Intel Core i7-12700H** (chạy trong WSL2, kernel 6.6), L1d 48 KiB mỗi lõi, L2 12,5 MiB tổng, L3 24 MiB.
+Vì vậy hiệu năng phụ thuộc vào **thứ tự đọc bộ nhớ**, không chỉ vào số phép tính. Cache nhận dữ liệu theo từng khối 64 byte; đọc tuần tự thì mỗi khối phục vụ nhiều lần đọc, đọc nhảy cóc thì mỗi lần đọc trả giá một khối. Đổi thứ tự hai vòng lặp, không đổi một phép tính nào, có thể nhanh hơn cả chục lần.
 
-## Vì sao phải có phân cấp
+## Thang độ trễ: từ L1 tới RAM
 
-Bộ nhớ nhanh thì nhỏ và đắt, bộ nhớ lớn thì chậm và rẻ; không có thứ nào vừa lớn vừa nhanh vừa rẻ. Hai công nghệ chính:
-
-| | SRAM (cache) | DRAM (RAM chính) |
-|---|---|---|
-| Một bit | khoảng sáu transistor (một mạch lật) | một transistor và một tụ điện |
-| Tốc độ | rất nhanh, chip logic tự dùng được | chậm hơn: đọc phải sạc lại tụ |
-| Mật độ, giá | thấp, đắt | cao, rẻ |
-| Giữ dữ liệu | miễn có điện | tụ rò điện, mỗi hàng phải được **làm tươi** (refresh) định kỳ, cỡ vài chục mili giây một lần |
-| Nằm ở | ngay trong chip CPU | các thanh RAM ngoài chip |
-
-Vì tụ điện của DRAM nhỏ và truy cập phải đi qua bus ra ngoài chip, **độ trễ DRAM đã gần như không cải thiện trong hai chục năm** dù băng thông tăng mạnh; trong khi tốc độ CPU tăng nhanh hơn nhiều. Khoảng cách ngày càng rộng đó gọi là "memory wall" (bức tường bộ nhớ), và là lý do cache ngày càng nhiều tầng và to hơn.
-
-## Đo thang độ trễ
-
-Cách đo độ trễ sạch nhất là **đuổi con trỏ** (pointer chasing): dựng một mảng các nút, mỗi nút chứa chỉ số của nút kế tiếp theo một **thứ tự ngẫu nhiên khép kín** (thuật toán Sattolo cho một chu trình duy nhất), rồi cứ đi theo `p = a[p].next`. Vì **mỗi lần đọc phụ thuộc kết quả lần đọc trước**, CPU không thể đọc trước hay chồng lấp nhiều lần đọc; thời gian chia cho số bước chính là độ trễ của **một lần truy cập** ở tầng bộ nhớ nơi vùng làm việc nằm vừa. Mỗi nút là một cache line (64 byte) để mỗi bước chạm một dòng cache mới. Lặp lại với vùng làm việc từ 4 KiB tới 512 MiB:
+Muốn biết một lần đọc bộ nhớ tốn bao lâu, phải đo sao cho CPU không đọc trước hay đọc nhiều chỗ cùng lúc được. Cách sạch nhất là **đuổi con trỏ**: mỗi nút lưu chỉ số của nút kế tiếp theo một thứ tự ngẫu nhiên, và chương trình cứ đi theo:
 
 ```c
-// Đo độ trễ truy cập bộ nhớ theo kích thước vùng làm việc bằng "đuổi con trỏ" (pointer chasing).
-// Mỗi phần tử trỏ tới một phần tử ngẫu nhiên khác, nên mỗi lần đọc PHỤ THUỘC lần trước: CPU không thể đọc trước hay chồng lấp.
-#define _GNU_SOURCE
+for (size_t i = 0; i < steps; i++)
+    p = a[p].next;          // lần đọc sau cần kết quả của lần đọc trước
+```
+
+Vì lần đọc sau cần kết quả lần đọc trước, mỗi bước phải chờ trọn một lần đọc. Thời gian chia số bước là **độ trễ** của một lần đọc. Chương trình lặp lại phép đo với vùng dữ liệu từ 8 KiB tới 256 MiB.
+
+**Đoán trước:** khi vùng dữ liệu lớn dần, thời gian mỗi lần đọc tăng đều, hay tăng theo bậc? Và một lần đọc từ RAM chậm hơn lần đọc nhanh nhất bao nhiêu lần?
+
+<Expand title="Code latency.c">
+
+```c
+// latency.c: đo độ trễ một lần đọc bộ nhớ theo kích thước vùng dữ liệu, bằng cách đuổi con trỏ
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <time.h>
 
-typedef struct { size_t next; char pad[56]; } Node;     // một nút = một cache line 64 byte
+typedef struct { size_t next; char pad[56]; } Node;   // một nút = 64 byte = một cache line
 
-static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+static double now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
 
-static uint64_t rng = 88172645463325252ull;
+static unsigned long long rng = 88172645463325252ull;
 static size_t rnd(size_t n) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng % n; }
 
 int main(void) {
-    printf("%12s %14s %12s\n", "vùng làm việc", "số cache line", "ns / lần đọc");
-    for (size_t bytes = 4096; bytes <= (size_t)512 << 20; bytes *= 2) {
+    printf("vùng dữ liệu   ns / lần đọc\n");
+    for (size_t bytes = 8 << 10; bytes <= (size_t)256 << 20; bytes *= 2) {
         size_t n = bytes / sizeof(Node);
         Node *a = aligned_alloc(64, n * sizeof(Node));
         size_t *perm = malloc(n * sizeof(size_t));
         for (size_t i = 0; i < n; i++) perm[i] = i;
-        for (size_t i = n - 1; i > 0; i--) { size_t j = rnd(i); size_t t = perm[i]; perm[i] = perm[j]; perm[j] = t; }   // Sattolo: một chu trình duy nhất
+        for (size_t i = n - 1; i > 0; i--) {          // thuật toán Sattolo: một vòng duy nhất đi qua mọi nút
+            size_t j = rnd(i), t = perm[i];
+            perm[i] = perm[j]; perm[j] = t;
+        }
         for (size_t i = 0; i < n; i++) a[perm[i]].next = perm[(i + 1) % n];
         size_t steps = 20000000, p = 0;
-        for (size_t i = 0; i < n * 2 && i < steps; i++) p = a[p].next;   // làm nóng
+        for (size_t i = 0; i < n; i++) p = a[p].next;  // làm nóng
         double t0 = now();
-        for (size_t i = 0; i < steps; i++) p = a[p].next;
+        for (size_t i = 0; i < steps; i++)
+            p = a[p].next;                              // lần đọc sau cần kết quả của lần đọc trước
         double dt = now() - t0;
-        volatile size_t sink = p; (void)sink;
-        char label[32];
-        if (bytes < (1 << 20)) snprintf(label, sizeof label, "%zu KiB", bytes >> 10); else snprintf(label, sizeof label, "%zu MiB", bytes >> 20);
-        printf("%12s %14zu %12.2f\n", label, n, dt / steps * 1e9);
+        char label[16];
+        if (bytes < (1 << 20)) snprintf(label, sizeof label, "%zu KiB", bytes >> 10);
+        else snprintf(label, sizeof label, "%zu MiB", bytes >> 20);
+        printf("%12s %14.2f%s\n", label, dt / steps * 1e9, p == (size_t)-1 ? " " : "");
         free(a); free(perm);
     }
     return 0;
 }
 ```
 
-```text
-vùng làm việc số cache line ns / lần đọc
-       4 KiB             64         1.67
-       8 KiB            128         1.35
-      16 KiB            256         1.36
-      32 KiB            512         1.35
-      64 KiB           1024         3.60
-     128 KiB           2048         3.61
-     256 KiB           4096         3.64
-     512 KiB           8192         4.06
-       1 MiB          16384         7.78
-       2 MiB          32768        13.44
-       4 MiB          65536        15.24
-       8 MiB         131072        15.80
-      16 MiB         262144        42.00
-      32 MiB         524288        94.01
-      64 MiB        1048576       100.79
-     128 MiB        2097152       107.53
-     256 MiB        4194304       115.54
-     512 MiB        8388608       124.57
+</Expand>
+
+```bash
+gcc -O2 -o latency latency.c && ./latency
 ```
 
-Đồ thị hiện ra bốn bậc thang, khớp thông số CPU (`lscpu`: L1d 48 KiB mỗi lõi, L2 tổng 12,5 MiB, L3 24 MiB):
+```text
+vùng dữ liệu   ns / lần đọc
+       8 KiB           1.47
+      16 KiB           1.47
+      32 KiB           1.42
+      64 KiB           3.85
+     128 KiB           3.89
+     256 KiB           3.91
+     512 KiB           4.43
+       1 MiB           6.92
+       2 MiB          15.32
+       4 MiB          38.98
+       8 MiB         105.96
+      16 MiB         111.28
+      32 MiB         115.53
+      64 MiB         117.31
+     128 MiB         124.50
+     256 MiB         142.52
+```
 
-| Vùng làm việc | ns mỗi lần đọc | Tầng |
+Thời gian tăng theo **bậc thang**, và các bậc khớp với thông số CPU (`lscpu`: L1d 48 KiB mỗi lõi, L2 tổng 12,5 MiB, L3 24 MiB):
+
+| Vùng dữ liệu | ns mỗi lần đọc | Dữ liệu nằm ở |
 |---|---|---|
-| 4 KiB đến 32 KiB | **1,3** | **L1**: vùng vừa 48 KiB, bước nhảy lên ở 64 KiB là tràn L1 |
-| 64 KiB đến 512 KiB | **3,5 đến 4,0** | **L2** |
-| 1 MiB đến 16 MiB | 6,4 rồi **14 đến 15** (26 ở 16 MiB) | chuyển từ L2 sang **L3**; dốc nhẹ ở 16 MiB vì vùng bắt đầu tranh L3 24 MiB với tiến trình khác |
-| 32 MiB trở lên | **83 rồi 100 đến 134** | **RAM** (DRAM) |
+| tới 32 KiB | ~1,4 | **L1**, cache nhỏ nhất và gần lõi nhất |
+| 64 KiB tới 512 KiB | ~3,8 tới 4,5 | **L2** |
+| 1 MiB tới 4 MiB | ~7 tới 39 | **L3**, dùng chung cho mọi lõi |
+| từ 8 MiB | ~105 tới 140 | **RAM** |
 
-Một lần đọc từ RAM chậm hơn L1 **khoảng 60 đến 100 lần** (1,3 ns so với 83 đến 134 ns). Trong 100 ns đó CPU có thể đã thực hiện vài trăm lệnh. Hai chi tiết nhỏ: độ trễ RAM còn **tăng dần** từ 83 lên 134 ns khi vùng lớn hơn (nhiều trang hơn, kéo theo **TLB miss** và duyệt bảng trang, xem [Virtual Memory](/docs/os/virtual-memory)), và máy đo là một máy ảo (WSL2) nên mọi con số hơi cao hơn máy thật. Con số tuyệt đối thay đổi theo máy; **cấu trúc bậc thang** thì không.
+Mỗi tầng là một <Term>cache</Term>. Khi vùng dữ liệu vừa trong một tầng, mọi lần đọc trúng tầng đó. Khi vượt dung lượng, dữ liệu phải lấy từ tầng chậm hơn bên dưới, và thời gian nhảy lên bậc kế. Đọc từ RAM chậm hơn đọc từ L1 cỡ **70 tới 100 lần**. Trong thời gian chờ một lần đọc RAM, CPU có thể đã chạy vài trăm lệnh.
 
-Bảng độ trễ thường được nhắc ("Latency Numbers Every Programmer Should Know") còn kéo dài tới tầng xa hơn: SSD vào cỡ chục tới trăm micro giây, mạng trong cùng trung tâm dữ liệu cỡ trăm micro giây tới mili giây, mạng liên lục địa cỡ trăm mili giây. Đó là cùng một nguyên lý áp dụng cho tầng cao hơn: bộ nhớ đệm của file system ([File Systems](/docs/os/file-systems)), buffer pool của cơ sở dữ liệu, CDN, Redis đều là **cache** cho một tầng chậm hơn bên dưới. (Các con số xa hơn L1 đến RAM không do bài này đo, chỉ là bậc độ lớn tham khảo.)
+Bậc RAM bắt đầu ở 8 MiB, sớm hơn con số 24 MiB của L3 trên giấy. L3 dùng chung với các lõi và chương trình khác, và đọc ngẫu nhiên trên hàng nghìn trang bộ nhớ còn tốn thêm công dịch địa chỉ ([Virtual Memory](/docs/os/virtual-memory)). Con số tuyệt đối đổi theo máy và lúc đo; **hình bậc thang** thì máy nào cũng có.
 
-## Cache hoạt động thế nào
+Cache có ích là nhờ một tính chất của chương trình thật: thứ vừa dùng thường sắp được dùng lại. Đó là <Term>locality</Term> **theo thời gian**. Vòng lặp chạy đi chạy lại trên một mảng nhỏ, biến đếm, đỉnh stack đều có tính chất này.
 
-**Cache line.** Cache không lưu từng byte mà lưu từng **dòng** cố định, 64 byte trên hầu hết CPU x86 và ARM hiện đại. Đọc một byte làm cả dòng 64 byte chứa nó được kéo từ tầng dưới lên. Đó là cách locality theo không gian được khai thác: 63 byte kế bên đã nằm sẵn trong cache. Nó cũng là lý do cấu trúc dữ liệu nhỏ gọn và liền khối nhanh hơn: một dòng cache chứa 16 số `int32`, hay 8 số `double`.
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ đọc bộ nhớ là một thao tác có chi phí cố định, như Big-O vẫn ngầm coi. Thật ra cùng một lệnh đọc có thể tốn 1 ns hay 100 ns tuỳ dữ liệu đang ở tầng nào. Big-O đếm số lần đọc; cache quyết định mỗi lần đọc giá bao nhiêu.
 
-**Ánh xạ địa chỉ.** Một địa chỉ bộ nhớ được cắt làm ba phần: **offset** (vị trí trong dòng, 6 bit cho dòng 64 byte), **index** (chọn **tập** chứa dòng) và **tag** (phần còn lại, để nhận ra đúng dòng nào đang nằm trong tập). Cache **kết hợp tập** (set-associative) với `W` đường: mỗi tập chứa tối đa `W` dòng, một địa chỉ chỉ có thể nằm trong **đúng một tập** nhưng ở **bất kỳ đường nào** trong tập đó. Tính tay cho một cache 32 KiB, 8 đường, dòng 64 byte: số dòng là `32768 / 64 = 512`; số tập là `512 / 8 = 64`, nên index cần 6 bit (`2^6 = 64`) và offset 6 bit, còn lại là tag. Hai địa chỉ **cách nhau đúng 4 KiB** (64 tập × 64 byte) có cùng index và tranh nhau cùng một tập 8 đường: truy cập 9 địa chỉ như vậy luân phiên làm chúng đá nhau ra liên tục dù cache còn trống hầu hết, đó là **conflict miss**. (Cache ở máy đo là kết hợp tập, nhưng bài không đọc được số đường từ `sysfs` trong WSL, nên ví dụ tính tay dùng cấu hình điển hình.)
+**Thử ngay:** chương trình của bạn liên tục tra cứu một bảng băm 2 MiB. Theo bảng trên, mỗi lần tra (một lần đọc ngẫu nhiên) tốn cỡ bao nhiêu? Nếu bảng lớn lên 200 MiB thì sao?
 
-**Ba loại miss.** *Compulsory miss*: lần đầu chạm một dòng, không tránh được (trừ khi prefetch). *Capacity miss*: vùng làm việc lớn hơn cache nên dòng bị đẩy ra rồi cần lại (bậc thang ở trên). *Conflict miss*: cache còn chỗ nhưng nhiều dòng tranh cùng một tập.
+<Expand title="Đáp án">
 
-**Ghi và thay thế.** Khi cache đầy, dòng nào bị đẩy ra? Xấp xỉ **LRU** (ít dùng gần đây nhất). Khi ghi: cache **ghi lại sau** (write-back): chỉ sửa dòng trong cache và đánh dấu "bẩn", chỉ ghi xuống tầng dưới khi dòng bị đẩy ra. **Prefetcher** của phần cứng nhận ra các mẫu truy cập tuần tự hoặc bước nhảy đều và đọc trước các dòng sắp cần, che đi độ trễ: đó là lý do truy cập tuần tự nhanh hơn nhiều so với con số 1,3 ns đến 100 ns của đuổi con trỏ gợi ý.
+2 MiB nằm ở vùng L3: theo số đo, cỡ 15 ns mỗi lần đọc. 200 MiB vượt L3, nên gần như mỗi lần tra là một lần đọc RAM, cỡ 120 tới 140 ns: chậm hơn chừng 8 lần, dù số phép tính không đổi. Đó là lý do bảng băm lớn chậm hơn Big-O gợi ý ([Hash Table](/docs/dsa/hash-tables)).
 
-## Thứ tự truy cập: ba thí nghiệm
+</Expand>
 
-Cùng một lượng việc, chỉ đổi thứ tự đọc bộ nhớ:
+## Cache line: đọc một byte, nhận 64 byte
+
+Cache không chép từng byte. Nó chép từng khối 64 byte gọi là <Term>cache line</Term>. Đọc một byte làm cả 64 byte quanh nó được kéo lên cache. Chương trình dưới đọc 16 triệu số `int` (4 byte) trong một mảng 256 MiB, mỗi lần nhảy `stride` phần tử:
 
 ```c
-// Cùng lượng việc, khác thứ tự truy cập: (1) bước nhảy (stride), (2) duyệt ma trận theo hàng và theo cột, (3) nhân ma trận ba thứ tự vòng lặp.
-#define _GNU_SOURCE
+for (size_t i = 0; i < reads; i++) {
+    s += a[pos];
+    pos += stride;
+    if (pos >= n) pos -= n;
+}
+```
+
+**Đoán trước:** cùng 16 triệu lần đọc, bước 1 (đọc liền nhau) so với bước 16 (cách nhau 64 byte) chậm hơn bao nhiêu? Bước 16 so với bước 1024 thì sao?
+
+<Expand title="Code stride.c">
+
+```c
+// stride.c: đọc 16 triệu phần tử int của một mảng 256 MiB, với các bước nhảy khác nhau
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <time.h>
 
-static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
-static volatile double sink;
+static double now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
 
 int main(void) {
-    // (1) Cộng mảng int 256 MiB với bước nhảy khác nhau; tổng số lần đọc cố định bằng cách lặp lại với điểm bắt đầu lệch nhau.
-    size_t n = (size_t)64 << 20;                      // 64M phần tử x 4 byte = 256 MiB
+    size_t n = (size_t)64 << 20;                  // 64 triệu int = 256 MiB, lớn hơn L3 nhiều
     int *a = malloc(n * sizeof(int));
     for (size_t i = 0; i < n; i++) a[i] = 1;
-    printf("(1) cộng mảng 256 MiB, mỗi cấu hình đọc đúng 16M phần tử:\n");
-    printf("%8s %10s %14s %14s\n", "bước", "byte", "ms", "ns / lần đọc");
     size_t reads = (size_t)16 << 20;
+    printf("   bước   cách nhau (byte)   ns / lần đọc\n");
     for (size_t stride = 1; stride <= 4096; stride *= 4) {
-        double t0 = now(); long s = 0; size_t pos = 0;
-        for (size_t i = 0; i < reads; i++) { s += a[pos]; pos += stride; if (pos >= n) pos -= n; }
-        double dt = now() - t0; sink = (double)s;
-        printf("%8zu %10zu %14.1f %14.2f\n", stride, stride * 4, dt * 1e3, dt / reads * 1e9);
+        long s = 0;
+        size_t pos = 0;
+        double t0 = now();
+        for (size_t i = 0; i < reads; i++) {
+            s += a[pos];
+            pos += stride;
+            if (pos >= n) pos -= n;
+        }
+        double dt = now() - t0;
+        printf("%7zu %18zu %14.2f%s\n", stride, stride * sizeof(int), dt / reads * 1e9, s == 0 ? "!" : "");
     }
     free(a);
-
-    // (2) Ma trận 4096 x 4096 double (128 MiB): theo hàng so với theo cột.
-    int N = 4096;
-    double *m = malloc((size_t)N * N * sizeof(double));
-    for (size_t i = 0; i < (size_t)N * N; i++) m[i] = 1.0;
-    double t0 = now(); double s1 = 0;
-    for (int i = 0; i < N; i++) for (int j = 0; j < N; j++) s1 += m[(size_t)i * N + j];
-    double t_row = now() - t0;
-    t0 = now(); double s2 = 0;
-    for (int j = 0; j < N; j++) for (int i = 0; i < N; i++) s2 += m[(size_t)i * N + j];
-    double t_col = now() - t0; sink = s1 + s2;
-    printf("\n(2) cộng ma trận %dx%d double (%zu MiB): theo hàng %.1f ms | theo cột %.1f ms | chậm gấp %.1fx\n", N, N, (size_t)N * N * 8 >> 20, t_row * 1e3, t_col * 1e3, t_col / t_row);
-    free(m);
-
-    // (3) Nhân ma trận C = A x B, 768 x 768 float, ba thứ tự vòng lặp.
-    int M = 1536;
-    float *A = malloc((size_t)M * M * 4), *B = malloc((size_t)M * M * 4), *C = malloc((size_t)M * M * 4);
-    for (size_t i = 0; i < (size_t)M * M; i++) { A[i] = 1.0f; B[i] = 2.0f; }
-    printf("\n(3) nhân ma trận %dx%d float, cùng %.2f tỉ phép nhân-cộng:\n", M, M, (double)M * M * M / 1e9);
-    t0 = now();
-    for (int i = 0; i < M; i++) for (int j = 0; j < M; j++) { float s = 0; for (int k = 0; k < M; k++) s += A[(size_t)i * M + k] * B[(size_t)k * M + j]; C[(size_t)i * M + j] = s; }
-    double t_ijk = now() - t0; sink = C[5];
-    t0 = now();
-    for (size_t i = 0; i < (size_t)M * M; i++) C[i] = 0;
-    for (int i = 0; i < M; i++) for (int k = 0; k < M; k++) { float aik = A[(size_t)i * M + k]; for (int j = 0; j < M; j++) C[(size_t)i * M + j] += aik * B[(size_t)k * M + j]; }
-    double t_ikj = now() - t0; sink = C[5];
-    int BS = 48;
-    t0 = now();
-    for (size_t i = 0; i < (size_t)M * M; i++) C[i] = 0;
-    for (int ii = 0; ii < M; ii += BS) for (int kk = 0; kk < M; kk += BS) for (int jj = 0; jj < M; jj += BS)
-        for (int i = ii; i < ii + BS; i++) for (int k = kk; k < kk + BS; k++) { float aik = A[(size_t)i * M + k]; for (int j = jj; j < jj + BS; j++) C[(size_t)i * M + j] += aik * B[(size_t)k * M + j]; }
-    double t_blk = now() - t0; sink = C[5];
-    printf("   thứ tự i-j-k (B đọc theo cột)      : %7.0f ms\n", t_ijk * 1e3);
-    printf("   thứ tự i-k-j (mọi thứ đọc theo hàng): %7.0f ms  (nhanh gấp %.1fx so với i-j-k)\n", t_ikj * 1e3, t_ijk / t_ikj);
-    printf("   chia khối %dx%d (vừa L1/L2)          : %7.0f ms  (nhanh gấp %.1fx so với i-j-k)\n", BS, BS, t_blk * 1e3, t_ijk / t_blk);
     return 0;
 }
 ```
 
-```text
-(1) cộng mảng 256 MiB, mỗi cấu hình đọc đúng 16M phần tử:
- bước       byte             ms ns / lần đọc
-       1          4           16.9           1.01
-       4         16           18.6           1.11
-      16         64           44.2           2.64
-      64        256           96.8           5.77
-     256       1024          104.2           6.21
-    1024       4096          185.0          11.03
-    4096      16384          202.9          12.09
+</Expand>
 
-(2) cộng ma trận 4096x4096 double (128 MiB): theo hàng 18.8 ms | theo cột 216.7 ms | chậm gấp 11.5x
-
-(3) nhân ma trận 1536x1536 float, cùng 3.62 tỉ phép nhân-cộng:
-   thứ tự i-j-k (B đọc theo cột)      :    2528 ms
-   thứ tự i-k-j (mọi thứ đọc theo hàng):     487 ms  (nhanh gấp 5.2x so với i-j-k)
-   chia khối 48x48 (vừa L1/L2)          :     343 ms  (nhanh gấp 7.4x so với i-j-k)
+```bash
+gcc -O2 -o stride stride.c && ./stride
 ```
 
-### Bước nhảy (stride)
+```text
+   bước   cách nhau (byte)   ns / lần đọc
+      1                  4           1.08
+      4                 16           1.41
+     16                 64           3.42
+     64                256           7.56
+    256               1024           8.16
+   1024               4096          13.26
+   4096              16384          13.18
+```
 
-Cộng 16 triệu phần tử `int` trong mảng 256 MiB, mỗi lần nhảy `stride` phần tử:
+Bước 1: 16 số `int` liền nhau nằm chung một cache line, nên chỉ lần đọc đầu trong mỗi 16 lần phải chờ, 15 lần sau trúng cache. Thêm nữa, phần cứng nhận ra mẫu đọc tuần tự và **đọc trước** (prefetch) các dòng kế tiếp. Kết quả là khoảng 1 ns mỗi lần đọc dù mảng lớn hơn L3 gấp mười.
 
-| Bước (phần tử) | Khoảng cách (byte) | ns mỗi lần đọc |
+Từ bước 16 (64 byte), **mỗi lần đọc rơi vào một dòng mới**: lợi ích của cache line mất hết, thời gian tăng vài lần. Nhảy xa hơn nữa (1 KiB, 4 KiB) còn chậm thêm vì việc đọc trước kém hiệu quả dần và mỗi lần đọc chạm một trang bộ nhớ khác (xem [Virtual Memory](/docs/os/virtual-memory) về TLB).
+
+Đây là <Term>locality</Term> **theo không gian**: thứ nằm cạnh thứ vừa dùng thường sắp được dùng. Quy tắc: **đọc dữ liệu theo đúng thứ tự nó nằm trong bộ nhớ**, và đặt những thứ dùng cùng nhau vào gần nhau.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người đọc bảng này rồi nghĩ đọc RAM chỉ tốn vài nano giây. Thật ra ở đây các lần đọc **độc lập** nhau (vị trí kế tiếp không phụ thuộc giá trị vừa đọc), nên CPU gửi nhiều yêu cầu đọc cùng lúc và chồng thời gian chờ lên nhau. Độ trễ thật của một lần đọc RAM vẫn là ~100 ns như mục trước; nó lộ ra khi mỗi lần đọc phụ thuộc lần trước, như khi đi theo con trỏ của danh sách liên kết ([Array & Linked List](/docs/dsa/arrays-linked-lists)).
+
+**Thử ngay:** mảng các struct 16 byte, duyệt tuần tự. Mỗi cache line chứa mấy phần tử, và bao nhiêu phần trăm số lần đọc phải chờ một dòng mới?
+
+<Expand title="Đáp án">
+
+`64 / 16 = 4` phần tử mỗi dòng. Cứ 4 phần tử thì 1 phần tử đầu dòng gây miss: 25% số lần đọc phải chờ (trước khi tính tới việc đọc trước của phần cứng, thứ còn che bớt phần chờ này).
+
+</Expand>
+
+## Đổi thứ tự truy cập: ba ví dụ
+
+Kỹ năng của mục này: nhìn **vòng lặp trong cùng**, hỏi mỗi vòng nó nhảy bao nhiêu byte trong mỗi mảng. Nhảy 4 hay 8 byte (liền nhau) là tốt; nhảy cả một hàng là xấu. Ma trận trong C lưu **theo hàng**: phần tử `[i][j]` của ma trận `N × N` nằm ở vị trí `i * N + j`.
+
+### Ví dụ 1 (giải sẵn): cộng ma trận theo hàng và theo cột
+
+Ma trận `4096 × 4096` số `double` (128 MiB). Hai cách cộng mọi phần tử, chỉ khác thứ tự hai vòng lặp:
+
+```c
+for (int i = 0; i < N; i++)          // theo hàng
+    for (int j = 0; j < N; j++)
+        s1 += m[(size_t)i * N + j];
+
+for (int j = 0; j < N; j++)          // theo cột
+    for (int i = 0; i < N; i++)
+        s2 += m[(size_t)i * N + j];
+```
+
+1. Theo hàng: vòng trong tăng `j`, địa chỉ tăng 8 byte mỗi vòng. Tám phần tử chung một cache line, và việc đọc trước hoạt động.
+2. Theo cột: vòng trong tăng `i`, địa chỉ tăng `N × 8 = 32 KiB` mỗi vòng. Mỗi lần đọc rơi vào một dòng mới, và lúc quay lại dòng đó (ở cột kế tiếp) thì nó đã bị đẩy khỏi cache từ lâu.
+3. Dự đoán: theo cột chậm hơn nhiều lần, dù cùng 16,7 triệu phép cộng.
+
+<Expand title="Code matrix.c">
+
+```c
+// matrix.c: cộng mọi phần tử ma trận 4096 x 4096 double (128 MiB), theo hàng và theo cột
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+static double now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
+
+int main(void) {
+    int N = 4096;
+    double *m = malloc((size_t)N * N * sizeof(double));
+    for (size_t i = 0; i < (size_t)N * N; i++) m[i] = 1.0;
+
+    double t0 = now(), s1 = 0;
+    for (int i = 0; i < N; i++)          // theo hàng
+        for (int j = 0; j < N; j++)
+            s1 += m[(size_t)i * N + j];
+    double t_row = now() - t0;
+
+    t0 = now();
+    double s2 = 0;
+    for (int j = 0; j < N; j++)          // theo cột
+        for (int i = 0; i < N; i++)
+            s2 += m[(size_t)i * N + j];
+    double t_col = now() - t0;
+
+    printf("theo hàng: %6.1f ms\n", t_row * 1e3);
+    printf("theo cột : %6.1f ms  (chậm hơn %.1f lần; tổng %.0f và %.0f)\n", t_col * 1e3, t_col / t_row, s1, s2);
+    free(m);
+    return 0;
+}
+```
+
+</Expand>
+
+```bash
+gcc -O2 -o matrix matrix.c && ./matrix
+```
+
+```text
+theo hàng:   10.7 ms
+theo cột :  186.3 ms  (chậm hơn 17.4 lần; tổng 16777216 và 16777216)
+```
+
+Kiểm lại: đúng như dự đoán, cùng số phép cộng mà theo cột chậm hơn cả chục lần.
+
+### Ví dụ 2 (giải một nửa): nhân ma trận
+
+Công thức giáo khoa `C = A × B` với ma trận `1024 × 1024` số `float`, viết theo thứ tự `i-j-k`:
+
+```c
+for (int i = 0; i < M; i++)
+    for (int j = 0; j < M; j++) {
+        float s = 0;
+        for (int k = 0; k < M; k++)
+            s += A[i * M + k] * B[k * M + j];
+        C[i * M + j] = s;
+    }
+```
+
+1. Vòng trong tăng `k`. Mỗi vòng, `A[i * M + k]` nhảy ___ byte; `B[k * M + j]` nhảy ___ byte.
+2. Mảng nào đọc theo cột? ___
+3. Đổi thứ tự hai vòng trong thành `i-k-j` (vòng trong tăng `j`):
+
+```c
+for (int i = 0; i < M; i++)
+    for (int k = 0; k < M; k++) {
+        float a = A[i * M + k];
+        for (int j = 0; j < M; j++)
+            C[i * M + j] += a * B[k * M + j];
+    }
+```
+
+Lúc này mỗi vòng trong, `B` và `C` nhảy ___ byte. Dự đoán `i-k-j` nhanh hơn hay chậm hơn, cỡ bao nhiêu lần?
+
+<Expand title="Đáp án">
+
+1. `A` nhảy 4 byte (liền nhau); `B` nhảy `M × 4 = 4096` byte, tức một hàng.
+2. `B` đọc theo cột: mỗi lần một dòng cache mới, và `B` (4 MiB) không vừa L1 hay L2.
+3. Ở `i-k-j`, `B[k][*]` và `C[i][*]` đều nhảy 4 byte, đọc theo hàng; `A[i][k]` được đọc một lần ra biến `a` rồi dùng cho cả hàng. Dự đoán nhanh hơn nhiều lần. Đo:
+
+```c
+// matmul.c: nhân hai ma trận 1024 x 1024 float theo thứ tự i-j-k và i-k-j
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+static double now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
+
+int main(void) {
+    int M = 1024;
+    float *A = malloc((size_t)M * M * 4), *B = malloc((size_t)M * M * 4), *C = malloc((size_t)M * M * 4);
+    for (int i = 0; i < M * M; i++) { A[i] = 1.0f; B[i] = 2.0f; }
+
+    double t0 = now();
+    for (int i = 0; i < M; i++)
+        for (int j = 0; j < M; j++) {
+            float s = 0;
+            for (int k = 0; k < M; k++)
+                s += A[i * M + k] * B[k * M + j];
+            C[i * M + j] = s;
+        }
+    double t_ijk = now() - t0;
+    float check1 = C[5];
+
+    for (int i = 0; i < M * M; i++) C[i] = 0;
+    t0 = now();
+    for (int i = 0; i < M; i++)
+        for (int k = 0; k < M; k++) {
+            float a = A[i * M + k];
+            for (int j = 0; j < M; j++)
+                C[i * M + j] += a * B[k * M + j];
+        }
+    double t_ikj = now() - t0;
+
+    printf("i-j-k: %6.0f ms\n", t_ijk * 1e3);
+    printf("i-k-j: %6.0f ms  (nhanh hơn %.1f lần; cùng kết quả: %s)\n", t_ikj * 1e3, t_ijk / t_ikj, check1 == C[5] ? "đúng" : "SAI");
+    return 0;
+}
+```
+
+```bash
+gcc -O2 -o matmul matmul.c && ./matmul
+```
+
+```text
+i-j-k:    695 ms
+i-k-j:    120 ms  (nhanh hơn 5.8 lần; cùng kết quả: đúng)
+```
+
+Cùng hơn một tỉ phép nhân cộng, cùng kết quả, chỉ đổi thứ tự hai dòng `for`.
+
+</Expand>
+
+### Ví dụ 3 (tự làm)
+
+Một chương trình mô phỏng 4 triệu hạt. Cách A lưu mỗi hạt thành một struct 64 byte (`x, y, z, vx, vy, vz, mass, charge`, mỗi trường 8 byte) trong một mảng (array of structs). Cách B lưu mỗi trường thành một mảng riêng (struct of arrays). Vòng lặp nóng chỉ cộng trường `x` của mọi hạt. Cách nào nhanh hơn, và cỡ bao nhiêu lần?
+
+```c
+for (size_t i = 0; i < n; i++) s += parts[i].x;   // cách A
+for (size_t i = 0; i < n; i++) s += xs[i];        // cách B
+```
+
+<Expand title="Đáp án">
+
+Cách A: mỗi vòng nhảy 64 byte (cả một struct), nên mỗi lần đọc `x` kéo về một cache line mà 56 byte còn lại không dùng, giống bước 16 ở mục cache line. Cách B: các `x` liền nhau, 8 giá trị mỗi dòng, mọi byte kéo về đều được dùng. Dự đoán cách B nhanh hơn vài lần. Đo:
+
+```c
+// layout.c: cộng trường x của 4 triệu hạt, lưu kiểu array of structs và struct of arrays
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+typedef struct { double x, y, z, vx, vy, vz, mass, charge; } Particle;   // 64 byte
+
+static double now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
+
+int main(void) {
+    size_t n = (size_t)4 << 20;
+    Particle *parts = malloc(n * sizeof(Particle));                         // 256 MiB
+    double *xs = malloc(n * sizeof(double));                                // 32 MiB
+    for (size_t i = 0; i < n; i++) { parts[i] = (Particle){ .x = 1.0 }; xs[i] = 1.0; }
+
+    double t0 = now(), sa = 0;
+    for (size_t i = 0; i < n; i++) sa += parts[i].x;
+    double t_aos = now() - t0;
+
+    t0 = now();
+    double sb = 0;
+    for (size_t i = 0; i < n; i++) sb += xs[i];
+    double t_soa = now() - t0;
+
+    printf("array of structs: %5.2f ns mỗi hạt\n", t_aos / n * 1e9);
+    printf("struct of arrays: %5.2f ns mỗi hạt  (nhanh hơn %.1f lần; tổng %.0f và %.0f)\n", t_soa / n * 1e9, t_aos / t_soa, sa, sb);
+    return 0;
+}
+```
+
+```bash
+gcc -O2 -o layout layout.c && ./layout
+```
+
+```text
+array of structs:  3.67 ns mỗi hạt
+struct of arrays:  0.98 ns mỗi hạt  (nhanh hơn 3.7 lần; tổng 4194304 và 4194304)
+```
+
+Nếu vòng lặp nóng dùng **cả** struct (cập nhật vị trí từ vận tốc), cách A lại hợp lý: mọi byte của dòng đều được dùng. Chọn bố cục theo cách vòng lặp nóng đọc dữ liệu.
+
+</Expand>
+
+## Cache tìm một địa chỉ thế nào
+
+Cache 48 KiB không thể so địa chỉ cần đọc với mọi dòng đang giữ; như vậy quá chậm. Thay vào đó, cache chia thành các **tập** (set), mỗi tập chứa vài dòng, gọi là số **đường** (way). Một địa chỉ chỉ có thể nằm ở **đúng một tập**, xác định bằng vài bit của chính địa chỉ đó. Địa chỉ được cắt làm ba phần:
+
+```text
+| tag (phần còn lại) | index (chọn tập) | offset (vị trí trong dòng 64 byte: 6 bit) |
+```
+
+Tính tay cho cache L1 dữ liệu của lõi hiệu năng cao trên máy đo (48 KiB, 12 đường, dòng 64 byte, theo thông số của Intel):
+
+| Bước | Phép tính | Kết quả |
 |---|---|---|
-| 1 | 4 | **0,96** |
-| 4 | 16 | 1,19 |
-| 16 | **64** | 2,88 |
-| 64 | 256 | 6,09 |
-| 256 | 1.024 | 6,61 |
-| 1.024 | 4.096 | 11,39 |
-| 4.096 | 16.384 | 12,21 |
+| Số dòng | `48 × 1024 / 64` | 768 dòng |
+| Số tập | `768 / 12` | 64 tập |
+| Bit index | `2^6 = 64` | 6 bit |
+| Bit offset | `2^6 = 64` byte | 6 bit |
+| Hai địa chỉ rơi vào cùng tập khi | chúng cách nhau bội số của `64 tập × 64 byte` | 4 KiB |
 
-Đọc tuần tự (bước 1) tốn dưới 1 ns mỗi phần tử: **16 phần tử chung một cache line**, nên chỉ một trong 16 lần đọc gây miss, và prefetcher đọc trước các dòng kế tiếp. Khi bước đạt **64 byte** (bước 16), **mỗi lần đọc chạm một dòng mới**: 2,88 ns, tức mất hết lợi ích của dòng cache. Tiếp tục nhảy xa hơn, cost tăng vì vượt khả năng prefetch và tới bước **4 KiB** (một trang) mỗi lần đọc còn gây thêm **TLB miss** vì chạm trang mới: 11,4 ns. Chú ý: cả bảng này **không phải độ trễ** 100 ns của đuổi con trỏ, mà thấp hơn nhiều, vì các lần đọc ở đây **độc lập với nhau** nên CPU chồng lấp được nhiều lần miss cùng lúc (memory-level parallelism) và prefetcher giúp thêm. Độ trễ thật chỉ lộ ra khi mỗi lần đọc phụ thuộc lần trước, như danh sách liên kết (xem [Array & Linked List](/docs/dsa/arrays-linked-lists) về cùng hiện tượng).
+Hệ quả: 13 địa chỉ cách nhau đúng 4 KiB tranh nhau 12 chỗ trong cùng một tập, và đá nhau ra liên tục, dù 63 tập còn lại trống. Bảng ba loại **miss** (lần đọc không có trong cache):
 
-### Duyệt ma trận theo hàng và theo cột
-
-Ma trận 4096x4096 `double` (128 MiB) lưu **theo hàng** trong bộ nhớ (phần tử `[i][j]` ở vị trí `i * N + j`). Cộng mọi phần tử bằng hai vòng lặp đổi chỗ cho nhau:
-
-- **Theo hàng** (vòng ngoài là `i`, trong là `j`): đọc các địa chỉ liên tiếp. **18,8 ms**.
-- **Theo cột** (vòng ngoài là `j`, trong là `i`): mỗi lần đọc nhảy `N × 8 = 32 KiB`. **216,7 ms**, chậm hơn **11,5 lần**.
-
-Cùng 16,7 triệu phép cộng. Chênh lệch này lớn hơn nhiều so với phép đo cùng ý tưởng ở bài Big-O bằng Python (chỉ khoảng 2,9 lần, vì chi phí thông dịch che mất). Trong C, mỗi phép cộng quá rẻ nên chi phí truy cập bộ nhớ chiếm gần như toàn bộ thời gian.
-
-### Nhân ma trận
-
-`C = A × B` với ma trận 1536x1536 `float` (mỗi ma trận 9 MiB, cùng 3,62 tỉ phép nhân-cộng). Ba cách viết:
-
-| Cách | Thời gian | So với cách đầu |
+| Loại miss | Nguyên nhân | Ví dụ trong bài |
 |---|---|---|
-| `i-j-k` (công thức giáo khoa: mỗi phần tử `C[i][j]` là tích vô hướng hàng `i` của A với cột `j` của B) | **2.528 ms** | 1,0x |
-| `i-k-j` (đổi thứ tự hai vòng trong để cả `B` và `C` đọc **theo hàng**) | **487 ms** | **5,2x nhanh hơn** |
-| chia khối 48x48 (blocking) | **343 ms** | **7,4x nhanh hơn** |
+| **compulsory** | lần đầu chạm dòng đó, không tránh được | lần duyệt đầu tiên qua mảng |
+| **capacity** | vùng dữ liệu lớn hơn cache | các bậc thang ở mục đầu |
+| **conflict** | cache còn chỗ, nhưng nhiều dòng tranh cùng một tập | đọc theo cột với hàng dài bội số của 4 KiB |
 
-Ở `i-j-k`, vòng trong chạy `k` và đọc `B[k][j]`: mỗi lần `k` tăng, nhảy một hàng (6 KiB), tức mỗi lần đọc một dòng cache khác nhau, và 9 MiB của `B` không nằm vừa L1/L2. Chỉ cần **hoán đổi hai vòng lặp** (`i-k-j`), vòng trong đi dọc `B[k][*]` và `C[i][*]` theo hàng nên chung dòng cache và prefetcher hoạt động: nhanh gấp 5 lần **không đổi một phép tính nào**. **Chia khối** đi thêm một bước: chia ma trận thành ô 48x48 (mỗi ô `48 × 48 × 4 = 9 KiB`, ba ô cùng lúc cỡ 27 KiB vừa trong L1 48 KiB) và làm trọn các phép tính liên quan tới ba ô đó trước khi chuyển sang ô khác, nên dữ liệu **được dùng lại nhiều lần khi còn nằm trong L1** thay vì đọc lại từ L3 hoặc RAM. Đây là **locality theo thời gian** được tạo ra có chủ ý, và là nền của mọi thư viện đại số tuyến tính (BLAS, cuBLAS, các nhân của framework học máy): chúng không phải "thuật toán khác" mà là **cùng thuật toán với thứ tự truy cập khéo hơn**, thêm lệnh SIMD.
+Khi tập đã đầy, cache đẩy ra dòng ít được dùng gần đây nhất (xấp xỉ LRU, giống chính sách thay trang ở [Virtual Memory](/docs/os/virtual-memory)).
 
-### Quy tắc rút ra
+**Thử ngay:** cache L1 dữ liệu của lõi tiết kiệm điện trên cùng chip là 32 KiB, 8 đường, dòng 64 byte. Có bao nhiêu tập, và hai địa chỉ cách nhau bao xa thì rơi vào cùng tập?
 
-1. **Dùng mảng liền khối** thay cho cấu trúc nhiều con trỏ (danh sách liên kết, cây nhị phân cấp phát riêng lẻ): xem [Array & Linked List](/docs/dsa/arrays-linked-lists), B-tree nhồi nhiều khoá mỗi nút chính vì lý do này ([Tree](/docs/dsa/trees)).
-2. **Duyệt theo thứ tự lưu trữ**: mảng hai chiều theo hàng trong C (theo cột trong Fortran và MATLAB).
-3. **Gộp dữ liệu được dùng cùng nhau vào cùng một dòng**: *array of structs* tốt khi luôn dùng cả struct; *struct of arrays* tốt khi mỗi vòng lặp chỉ dùng một trường (nạp vào cache chỉ trường cần).
-4. **Giữ vùng làm việc nhỏ**: dùng kiểu nhỏ hơn (`int16` thay `int64` nếu đủ), tách dữ liệu "nóng" khỏi dữ liệu "lạnh".
-5. **Tái sử dụng dữ liệu khi còn trong cache** (blocking, loop fusion): làm nhiều việc trên một khối trước khi chuyển sang khối khác.
-6. **Chia nhỏ theo thứ tự, không theo kích thước đầu vào**: xử lý theo lô vừa cache (như executor theo lô ở [Query Processing](/docs/databases/query-processing)) thay vì cả bảng cho mỗi bước.
+<Expand title="Đáp án">
 
-## Cache và lập trình đa luồng
+`32 × 1024 / 64 = 512` dòng, chia 8 đường được **64 tập**. Hai địa chỉ cùng tập khi cách nhau bội số của `64 × 64 = 4 KiB`. Cùng con số 4 KiB như cache 48 KiB ở trên: cache lớn hơn nhờ thêm đường, không thêm tập.
 
-Mỗi lõi có L1 và L2 riêng, nên nhiều lõi có thể đang giữ **bản sao của cùng một dòng**. Phần cứng phải giữ chúng **nhất quán** bằng giao thức **cache coherence** (họ **MESI**: mỗi bản sao của một dòng ở một trong bốn trạng thái Modified, Exclusive, Shared, Invalid). Khi một lõi **ghi** vào dòng, mọi bản sao ở lõi khác bị **vô hiệu hoá**; lõi khác muốn đọc lại phải xin dòng từ lõi vừa ghi, mất cỡ vài chục tới cả trăm nano giây. Hai hệ quả mà người viết code song song phải biết:
+</Expand>
 
-- **True sharing**: nhiều luồng ghi cùng một biến (bộ đếm dùng chung, khoá spinlock) làm dòng cache **nảy** giữa các lõi liên tục. Đó là lý do một spinlock bận (xem [Synchronization](/docs/os/synchronization)) chậm dần theo số lõi, và là lý do các cấu trúc "lock-free" đếm theo từng luồng rồi mới gộp.
-- **False sharing**: hai luồng ghi hai biến **khác nhau nhưng nằm chung một dòng 64 byte** vẫn tranh nhau dòng đó dù về logic không chia sẻ gì. Cách chữa là **đệm** (padding) cho mỗi biến nóng chiếm một dòng riêng, hoặc căn `alignas(64)` trong C++/C. Bài đã thử đo điều này trên WSL2 nhưng **không tái hiện được hiệu ứng** (hai luồng chạy trên hai vCPU của một máy ảo, không rõ có đứng trên hai lõi vật lý khác nhau không, nên số đo không đáng tin); trên máy vật lý thường chậm đi nhiều lần. Vì vậy phần này chỉ nêu cơ chế chứ không đưa con số.
+## Tự kiểm tra tổng hợp
 
-## Trong hệ thống thật
+1. Hai thuật toán cùng `O(n)` xử lý cùng một triệu phần tử: một duyệt mảng, một duyệt danh sách liên kết mà các nút được cấp phát rải rác. Cái nào nhanh hơn, cỡ bao nhiêu, và vì sao Big-O không cho thấy điều đó?
+2. Ma trận 4096 × 4096 trong NumPy mặc định lưu theo hàng (như C), trong Fortran và MATLAB lưu theo cột. Nếu chuyển một vòng lặp từ MATLAB sang C mà giữ nguyên thứ tự vòng, chuyện gì xảy ra?
+3. Đoạn mã sau chậm. Chỉ ra vì sao và sửa, không đổi kết quả:
+   ```c
+   for (int j = 0; j < W; j++)
+       for (int i = 0; i < H; i++)
+           img[i * W + j] = 255 - img[i * W + j];
+   ```
+4. Ở thí nghiệm bước nhảy, bước 1 tốn khoảng 1 ns mỗi lần đọc trên mảng 256 MiB, dù đọc RAM tốn khoảng 100 ns. Giải thích bằng hai cơ chế.
+5. Một service giữ cache trong bộ nhớ 2 MiB và chạy tốt. Sau khi tăng lên 100 MiB, tỉ lệ trúng cache tăng nhưng thời gian trả lời trung bình không giảm như mong đợi. Gợi ý một nguyên nhân dựa trên bài này.
 
-- **Xem thông số cache**: `lscpu` (tổng dung lượng các tầng), `lscpu -C` hoặc `/sys/devices/system/cpu/cpu0/cache/index*/` trên Linux thường (số đường, kích thước dòng, số tập; bên trong WSL2 các file này không có), `getconf -a | grep CACHE`, Windows có `coreinfo -c`.
-- **Đo cache miss thật**: `perf stat -e cache-references,cache-misses,L1-dcache-load-misses ./chuong_trinh` và `perf record` kèm `perf annotate` để tìm dòng code gây miss; `valgrind --tool=cachegrind` mô phỏng cache và chỉ miss theo từng dòng mã (rất chậm nhưng không cần quyền phần cứng). (Bài này không chạy `perf` nên không có output của chúng.)
-- **Page cache của OS** là cache của đĩa nằm trong RAM; `free -h` có cột `buff/cache`; thao tác đọc file lần hai nhanh hơn lần một hàng nghìn lần là cache này ([File Systems](/docs/os/file-systems)).
-- **TLB** là cache cho phép dịch địa chỉ ảo sang vật lý ([Virtual Memory](/docs/os/virtual-memory)); trang lớn (huge page) làm mỗi mục TLB phủ nhiều bộ nhớ hơn, có lợi cho cơ sở dữ liệu và JVM với vùng làm việc lớn.
-- **Cơ sở dữ liệu** chọn kích thước nút B-tree, kích thước trang, và dạng lưu theo cột (columnar) hầu hết vì lý do cache và băng thông bộ nhớ: lưu theo cột nghĩa là quét một cột chỉ đọc đúng cột đó, liền khối, hoàn toàn thân thiện cache (xem executor theo vector ở [Query Processing](/docs/databases/query-processing)).
+<Expand title="Đáp án">
 
-## Quan sát và chẩn đoán
+1. Mảng nhanh hơn nhiều lần (bài [Array & Linked List](/docs/dsa/arrays-linked-lists) đo được vài lần tới hàng chục lần tuỳ kích thước). Duyệt mảng đọc liền nhau: mỗi cache line phục vụ nhiều phần tử và phần cứng đọc trước. Duyệt danh sách là đuổi con trỏ: mỗi bước chờ trọn một lần đọc, và khi danh sách lớn hơn cache, mỗi bước là một lần đọc RAM ~100 ns. Big-O đếm số bước như nhau và không phân biệt bước 1 ns với bước 100 ns.
+2. Vòng trong sẽ đi theo chiều không liền nhau trong bộ nhớ của C (nhảy cả một hàng mỗi vòng), giống cộng theo cột ở ví dụ 1: chậm hơn cả chục lần với ma trận lớn. Phải đổi thứ tự vòng lặp sao cho vòng trong chạy theo chỉ số cuối (`j`).
+3. Vòng trong tăng `i`, mỗi vòng nhảy `W` byte (một hàng ảnh): đọc theo cột. Đổi hai dòng `for` cho vòng trong chạy theo `j`:
+   ```c
+   for (int i = 0; i < H; i++)
+       for (int j = 0; j < W; j++)
+           img[i * W + j] = 255 - img[i * W + j];
+   ```
+   Mỗi phần tử vẫn được xử lý đúng một lần nên kết quả không đổi.
+4. Một: 16 số `int` chung một cache line, nên chỉ 1 trong 16 lần đọc phải lấy dòng mới. Hai: các lần đọc độc lập và tuần tự, nên phần cứng đọc trước các dòng kế tiếp và có nhiều lần đọc RAM đang chạy cùng lúc; thời gian chờ chồng lên nhau thay vì cộng dồn.
+5. 2 MiB nằm trong vùng L3, 100 MiB thì không. Mỗi lần tra cache của service trước đây là một lần đọc L3 (~15 ns), giờ thành đọc RAM (~120 ns trở lên). Trúng cache nhiều hơn, nhưng mỗi lần trúng đắt hơn. (Thường vẫn đáng giá nếu mỗi lần trượt cache phải gọi database tốn hàng mili giây; nhưng phải đo.)
 
-| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
+</Expand>
+
+## Đi sâu hơn
+
+<Expand title="Vì sao không làm RAM nhanh như cache: SRAM, DRAM và bức tường bộ nhớ">
+
+| | SRAM (cache) | DRAM (RAM chính) |
 |---|---|---|
-| Chương trình chậm nhưng CPU chỉ chạy ở mức thấp, `IPC` (lệnh mỗi chu kỳ) thấp | chờ bộ nhớ: nhiều cache miss | `perf stat`, tìm vòng lặp có truy cập nhảy cóc, đổi cấu trúc dữ liệu |
-| Duyệt mảng nhiều chiều chậm bất thường | duyệt ngược thứ tự lưu trữ | đổi thứ tự vòng lặp để vòng trong chạy theo hướng liên tục |
-| Danh sách liên kết hay cây con trỏ chậm hơn mảng dù Big-O như nhau | mỗi bước đuổi con trỏ chờ cả độ trễ RAM | dùng mảng, hoặc cấp phát nút gần nhau, hoặc cấu trúc nhiều khoá mỗi nút |
-| Thời gian tăng vọt khi dữ liệu vượt một ngưỡng (L2, L3) | vùng làm việc tràn tầng cache | giảm vùng làm việc, chia khối, nén dữ liệu |
-| Thêm luồng mà chương trình không nhanh hơn, hoặc chậm đi | true sharing hoặc false sharing, tranh dòng cache | mỗi luồng giữ dữ liệu riêng rồi gộp, đệm biến nóng ra từng dòng 64 byte |
-| Hiệu năng không ổn định giữa các lần chạy | cache bị chia với tiến trình khác, hoặc lõi bị đổi | ghim luồng vào lõi (`taskset`), đo nhiều lần lấy giá trị nhỏ nhất |
-| Kết quả đo không giống nhau giữa máy ảo và máy thật | ảo hoá cộng thêm tầng dịch địa chỉ, độ trễ cao hơn | đo trên cùng môi trường sẽ chạy thật |
+| Một bit | khoảng sáu transistor | một transistor và một tụ điện |
+| Tốc độ | rất nhanh, nằm ngay trong chip CPU | chậm hơn: đọc phải sạc lại tụ, và đi qua bus ra ngoài chip |
+| Mật độ, giá | thấp, đắt | cao, rẻ |
+| Giữ dữ liệu | miễn có điện | tụ rò điện, phải làm tươi (refresh) định kỳ |
 
-## Lưu ý
+Không có công nghệ nào vừa lớn, vừa nhanh, vừa rẻ, nên máy tính xếp nhiều tầng. Độ trễ của DRAM gần như không cải thiện trong hai mươi năm (băng thông thì tăng mạnh), còn CPU nhanh lên nhiều; khoảng cách ngày càng rộng đó gọi là **memory wall**, và là lý do cache ngày càng nhiều tầng và lớn hơn.
 
-- Chênh lệch giữa L1 và RAM cỡ 60 đến 100 lần; chương trình nhanh hay chậm thường quyết định bởi **số lần chạm RAM**, không chỉ số phép tính.
-- Đơn vị của cache là **dòng 64 byte**, không phải byte: đọc một byte kéo cả dòng; dữ liệu cùng dùng nên nằm cùng dòng.
-- Thứ tự truy cập quyết định hiệu năng: đổi thứ tự hai vòng lặp có thể nhanh gấp 5 đến 11 lần mà không đổi thuật toán hay số phép tính.
-- Truy cập **phụ thuộc** (đuổi con trỏ) lộ ra độ trễ thật; truy cập **độc lập** được CPU chồng lấp và prefetch che đi phần lớn.
-- Big-O không thấy cache; hằng số do cache có thể lớn hơn chênh lệch tiệm cận ở kích thước thật. Luôn đo.
-- Mỗi tầng cache có một ngưỡng dung lượng; đo thời gian theo kích thước dữ liệu và tìm các bước nhảy để biết vùng làm việc đang nằm ở tầng nào.
-- Nhiều luồng ghi cùng một dòng cache làm nó nảy giữa các lõi (true sharing, false sharing); giữ dữ liệu ghi theo từng luồng, đệm biến nóng ra dòng riêng.
-- Số đo trên máy ảo (như WSL2) chỉ đáng tin cho **cấu trúc** (bậc thang, tỉ lệ), không cho con số tuyệt đối; hiệu ứng nhạy với topology lõi như false sharing có thể không tái hiện được.
+Cùng nguyên lý lặp lại ở các tầng cao hơn: page cache của OS là cache cho đĩa ([File Systems](/docs/os/file-systems)), buffer pool là cache của database, Redis và CDN là cache cho dịch vụ ở xa. Bậc độ lớn tham khảo (không đo trong bài này): đọc SSD cỡ chục tới trăm micro giây, một vòng mạng trong cùng trung tâm dữ liệu cỡ trăm micro giây, mạng liên lục địa cỡ trăm mili giây.
+
+</Expand>
+
+<Expand title="Chia khối (blocking) cho nhân ma trận">
+
+`i-k-j` đọc theo hàng nhưng vẫn đọc lại cả ma trận `B` (4 MiB) cho mỗi hàng `i`, và `B` không vừa L1, L2. **Chia khối** cắt các ma trận thành ô nhỏ (ở đây 64 × 64 `float` = 16 KiB) và làm xong mọi phép tính trên các ô đang có trong cache trước khi chuyển ô khác. Đây là locality theo thời gian được tạo ra có chủ ý:
+
+```c
+// blocked.c: nhân ma trận 1024 x 1024 float, i-k-j so với chia khối 64 x 64
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+static double now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
+
+int main(void) {
+    int M = 1024, BS = 64;
+    float *A = malloc((size_t)M * M * 4), *B = malloc((size_t)M * M * 4), *C = calloc((size_t)M * M, 4);
+    for (int i = 0; i < M * M; i++) { A[i] = 1.0f; B[i] = 2.0f; }
+
+    double t0 = now();
+    for (int i = 0; i < M; i++)
+        for (int k = 0; k < M; k++) {
+            float a = A[i * M + k];
+            for (int j = 0; j < M; j++) C[i * M + j] += a * B[k * M + j];
+        }
+    double t_ikj = now() - t0;
+    float check = C[5];
+
+    for (int i = 0; i < M * M; i++) C[i] = 0;
+    t0 = now();
+    for (int ii = 0; ii < M; ii += BS)
+        for (int kk = 0; kk < M; kk += BS)
+            for (int jj = 0; jj < M; jj += BS)
+                for (int i = ii; i < ii + BS; i++)
+                    for (int k = kk; k < kk + BS; k++) {
+                        float a = A[i * M + k];
+                        for (int j = jj; j < jj + BS; j++) C[i * M + j] += a * B[k * M + j];
+                    }
+    double t_blk = now() - t0;
+    printf("i-k-j       : %5.0f ms\n", t_ikj * 1e3);
+    printf("chia khối 64: %5.0f ms  (cùng kết quả: %s)\n", t_blk * 1e3, check == C[5] ? "đúng" : "SAI");
+    return 0;
+}
+```
+
+```bash
+gcc -O2 -o blocked blocked.c && ./blocked
+```
+
+```text
+i-k-j       :   140 ms
+chia khối 64:   117 ms  (cùng kết quả: đúng)
+```
+
+Với ma trận nhỏ cỡ này, `B` vẫn vừa L2 lớn của máy đo nên lợi ích của chia khối khiêm tốn; với ma trận lớn hơn L2, khoảng cách rõ hơn. Các thư viện đại số tuyến tính (BLAS, cuBLAS, các nhân của framework học máy) chính là cùng thuật toán với chia khối nhiều tầng (cho thanh ghi, L1, L2, L3) cộng lệnh SIMD.
+
+</Expand>
+
+<Expand title="Nhiều lõi: cache coherence và false sharing">
+
+Mỗi lõi có L1, L2 riêng, nên nhiều lõi có thể giữ bản sao của cùng một dòng. Phần cứng giữ chúng nhất quán bằng giao thức **cache coherence** (họ MESI: mỗi bản sao ở một trong các trạng thái Modified, Exclusive, Shared, Invalid). Khi một lõi ghi vào dòng, bản sao ở mọi lõi khác bị vô hiệu hoá; lõi khác muốn đọc lại phải lấy dòng từ lõi vừa ghi, tốn vài chục tới cả trăm nano giây.
+
+- **True sharing**: nhiều thread ghi cùng một biến (bộ đếm chung, spinlock) làm dòng đó chuyền qua lại giữa các lõi liên tục; đó là lý do spinlock bị tranh chấp chậm dần khi thêm lõi ([Synchronization](/docs/os/synchronization)), và các bộ đếm hiệu năng cao đếm riêng theo thread rồi mới cộng.
+- **False sharing**: hai thread ghi hai biến **khác nhau** nhưng nằm chung một dòng 64 byte vẫn tranh nhau dòng đó. Cách chữa là đệm (padding) để mỗi biến nóng nằm trên một dòng riêng, ví dụ `alignas(64)`.
+
+Bài đã thử đo false sharing trong WSL2 nhưng không tái hiện được hiệu ứng ổn định (hai thread chạy trên hai CPU ảo, không chắc đứng trên hai lõi vật lý khác nhau), nên mục này chỉ nêu cơ chế, không đưa số.
+
+</Expand>
+
+<Expand title="Công cụ xem thông số cache và đếm miss">
+
+- Thông số: `lscpu` và `lscpu -C` (dung lượng, số đường, kích thước dòng); trên Linux thường còn có `/sys/devices/system/cpu/cpu0/cache/index*/` (trong WSL2 các file này không có); `getconf -a | grep CACHE`.
+- Đếm miss thật: `perf stat -e cache-references,cache-misses,L1-dcache-load-misses ./chuong_trinh`, và `perf record` kèm `perf annotate` để tìm dòng code gây miss. `valgrind --tool=cachegrind` mô phỏng cache và báo miss theo từng dòng (chậm nhưng không cần quyền phần cứng). Bài này không chạy `perf` trong WSL2.
+- Đo ổn định: chạy nhiều lần lấy giá trị nhỏ nhất, ghim thread vào một lõi (`taskset -c 2 ./chuong_trinh`). Số đo trong máy ảo (như WSL2) đáng tin về **hình dạng** (bậc thang, tỉ lệ) hơn là con số tuyệt đối.
+
+</Expand>
