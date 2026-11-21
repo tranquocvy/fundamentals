@@ -1,6 +1,6 @@
 ---
 title: Dynamic Programming
-description: Nhận ra bài con chồng lấp và cấu trúc con tối ưu, quy trình năm bước dựng lời giải, đổi tiền, knapsack, LCS, edit distance và LIS có bảng tính tay và truy vết, top-down so với bottom-up, tối ưu bộ nhớ, và khi nào tham lam là đủ.
+description: Làm sao giải những bài toán mà đệ quy thẳng phải gọi hàm hàng triệu lần, chỉ bằng cách nhớ lại kết quả đã tính?
 status: draft
 tags: [dsa, dynamic-programming]
 authors: [tranquocvy]
@@ -8,305 +8,270 @@ references:
   - title: "Jeff Erickson — Algorithms, Chapter 3: Dynamic Programming; Chapter 4: Greedy Algorithms"
     url: https://jeffe.cs.illinois.edu/teaching/algorithms/
     kind: book
-    note: cách đặt recurrence, thứ tự điền bảng, LIS, edit distance, khi nào tham lam đúng
+    note: cách đặt recurrence, thứ tự điền bảng, edit distance, LIS, khi nào tham lam đúng
   - title: "CLRS (ấn bản 4) — Chapter 14: Dynamic Programming; Chapter 15: Greedy Algorithms"
     kind: book
-    note: elements of dynamic programming, LCS, rod cutting, thành phần của bài tối ưu
-  - title: "MIT 6.006 (Spring 2020) — Dynamic Programming lectures"
+    note: bài con chồng lấp, cấu trúc con tối ưu, LCS, knapsack
+  - title: "MIT 6.006 (Spring 2020) — Lectures 15-18: Dynamic Programming"
     url: https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/
     kind: video
     note: khung SRT BOT (subproblems, relation, topological order, base, original, time)
+  - title: "Dasgupta, Papadimitriou, Vazirani — Algorithms, Chapter 6: Dynamic programming"
+    kind: book
+    note: nhìn DP như đường đi trên DAG các bài con
   - title: "Wagner & Fischer — The String-to-String Correction Problem (1974)"
     kind: paper
     note: thuật toán DP cho edit distance
   - title: "Myers — An O(ND) Difference Algorithm and Its Variations (1986)"
     kind: paper
-    note: thuật toán diff nền của git diff
-  - title: "Bellman — Dynamic Programming (1957)"
-    kind: book
-    note: nguồn gốc của tên gọi và nguyên lý tối ưu
-  - title: "Dasgupta, Papadimitriou, Vazirani — Algorithms, Chapter 6: Dynamic programming"
-    kind: book
-    note: trình bày DP qua đồ thị DAG của các bài con, edit distance, knapsack, đường đi ngắn nhất
+    note: thuật toán diff của git; cho phần đi sâu hơn
 ---
+
+**Cần biết trước:** đệ quy, cây lời gọi và ví dụ Fibonacci có memo ở bài [Big-O & Complexity](/docs/dsa/complexity); từ điển ở bài [Hash Table](/docs/dsa/hash-tables).
+
+**Cách đọc bài:** mỗi mục có một câu **Đoán trước** và kết bằng một câu **Thử ngay**. Hãy tự trả lời trong đầu (hoặc ra giấy) rồi mới xem đáp án. Việc tự nhớ lại và tự đoán giúp nhớ lâu hơn nhiều so với chỉ đọc.
 
 ## Ý chính
 
-Một lớp bài toán tối ưu hay đếm có thể giải bằng đệ quy rất đẹp nhưng chạy mãi không xong, vì đệ quy giải đi giải lại **cùng một bài con** hàng triệu lần. Ở bài [Big-O & Complexity](/docs/dsa/complexity), Fibonacci đệ quy gọi hàm 2.692.537 lần cho `n = 30` trong khi chỉ có 31 bài con khác nhau; thêm một cái từ điển nhớ kết quả là xong. <Term>Dynamic programming</Term> (quy hoạch động) là việc làm điều đó một cách có hệ thống: tách bài toán thành các bài con, **giải mỗi bài con đúng một lần**, lưu lại, và dùng lại.
+Nhiều bài tối ưu hay đếm có lời giải đệ quy rất tự nhiên nhưng chạy mãi không xong, vì đệ quy giải đi giải lại **cùng một bài con**. Bài Complexity đã thấy: Fibonacci đệ quy thẳng gọi hàm 2,7 triệu lần cho `n = 30`, trong khi chỉ có 31 bài con khác nhau. <Term>Dynamic programming</Term> (quy hoạch động) là cách làm có hệ thống: chia bài thành các bài con, **giải mỗi bài con đúng một lần**, lưu lại, rồi dùng lại. Chi phí từ hàm mũ rơi xuống **số bài con nhân chi phí mỗi bài con**.
 
-Hai điều kiện để áp dụng được: **bài con chồng lấp** (cùng một bài con xuất hiện nhiều lần, nếu không thì chia để trị thuần như merge sort đã đủ) và **cấu trúc con tối ưu** (lời giải tối ưu của bài lớn được ghép từ lời giải tối ưu của bài con). Phần khó nhất không phải code mà là **định nghĩa đúng "trạng thái"**: bảng của bạn lưu cái gì. Khi đã định nghĩa được, công thức truy hồi và vòng lặp gần như tự ra.
+Phần khó không phải code, mà là **định nghĩa trạng thái**: một ô trong bảng nghĩa là gì, viết được thành một câu rõ ràng. Có trạng thái rồi thì công thức truy hồi chỉ là liệt kê các lựa chọn ở bước cuối, và vòng lặp gần như tự ra. DP thử mọi lựa chọn nên luôn đúng; cách tham lam (chọn cái tốt nhất trước mắt) nhanh hơn nhưng chỉ đúng với một số bài.
 
-Bài đi theo trình tự: dấu hiệu nhận biết và quy trình năm bước; đổi tiền (ví dụ kinh điển nhất, có bảng tính tay, so đệ quy với bảng và so với tham lam); knapsack, LCS và edit distance với bảng đầy đủ, truy vết lời giải; các cách tối ưu (bộ nhớ, LIS ở `O(n log n)`); và top-down so với bottom-up. Mọi code là Python 3.13 chạy thật, mọi số khớp với bảng tính tay. Bài này cần kiến thức đệ quy và recurrence ở [Big-O & Complexity](/docs/dsa/complexity), và dùng [mảng](/docs/dsa/arrays-linked-lists), [bảng băm](/docs/dsa/hash-tables) (memo), tìm nhị phân.
+## Đệ quy thẳng giải lại cùng một bài con
 
-## Quy trình năm bước
+Bài đổi tiền: có các loại đồng `coins`, trả đúng `amount` bằng **ít đồng nhất**. Lời giải đệ quy: thử dùng từng loại đồng `c` làm đồng cuối cùng, phần còn lại `amount − c` là một bài nhỏ hơn cùng dạng.
 
-Hầu hết bài DP giải được bằng cùng một khuôn:
+```python
+INF = float("inf")
+calls = 0
 
-1. **Định nghĩa trạng thái**: `dp[...]` nghĩa là gì, bằng một câu tiếng Việt chính xác. Ví dụ "số đồng ít nhất để trả đúng `a` đồng".
-2. **Công thức truy hồi**: `dp` của trạng thái này tính từ `dp` của những trạng thái **nhỏ hơn** thế nào (các lựa chọn ở bước cuối).
-3. **Trường hợp cơ sở**: trạng thái nhỏ nhất, đáp án không cần đệ quy (`dp[0] = 0`).
-4. **Thứ tự tính**: phải tính trạng thái mà công thức phụ thuộc trước. Với đệ quy có nhớ thứ tự này tự động; với bảng thì phải tự sắp (thường là tăng dần).
-5. **Đáp án** nằm ở ô nào, và **truy vết** (nếu cần cả lời giải chứ không chỉ giá trị): lưu lại lựa chọn đã dẫn tới giá trị tối ưu ở mỗi ô, rồi lần ngược từ ô đáp án.
+def naive(coins, a):                                # số đồng ít nhất để trả đúng a
+    global calls; calls += 1
+    if a == 0: return 0
+    return min((1 + naive(coins, a - c) for c in coins if c <= a), default=INF)
 
-Chi phí luôn là **số trạng thái nhân chi phí xử lý một trạng thái**. Đây là cách đọc độ phức tạp của mọi bài DP.
+def memo_solve(coins, a):                           # như trên, nhưng nhớ kết quả từng a
+    memo, solved = {}, 0
+    def f(a):
+        nonlocal solved
+        if a == 0: return 0
+        if a not in memo:
+            solved += 1
+            memo[a] = min((1 + f(a - c) for c in coins if c <= a), default=INF)
+        return memo[a]
+    return f(a), solved
+```
 
-## Đổi tiền: số đồng ít nhất
+**Đoán trước:** với đồng `1, 2, 5` và `amount = 30`, đệ quy thẳng gọi hàm bao nhiêu lần: vài trăm, vài nghìn, hay hàng triệu? Có bao nhiêu bài con **khác nhau**?
 
-Cho các loại tiền `coins` và số tiền `amount`, trả đúng `amount` bằng **ít đồng nhất**. Gọi `dp[a]` là số đồng ít nhất để trả đúng `a`. Lựa chọn ở bước cuối là đồng nào `c` được dùng: sau khi dùng nó còn phải trả `a - c`, nên
+```python
+for amt in (10, 20, 25, 30):
+    calls = 0; r = naive([1, 2, 5], amt)
+    r2, solved = memo_solve([1, 2, 5], amt)
+    print(f"amount {amt}: {r} đồng | đệ quy thẳng {calls:>10,} lần gọi | có nhớ: giải {solved} bài con")
+```
+
+```text
+amount 10: 2 đồng | đệ quy thẳng        309 lần gọi | có nhớ: giải 10 bài con
+amount 20: 4 đồng | đệ quy thẳng     64,207 lần gọi | có nhớ: giải 20 bài con
+amount 25: 5 đồng | đệ quy thẳng    924,876 lần gọi | có nhớ: giải 25 bài con
+amount 30: 6 đồng | đệ quy thẳng 13,322,380 lần gọi | có nhớ: giải 30 bài con
+```
+
+Bài con chỉ là "trả đúng `a` đồng" với `a` từ 1 tới `amount`, nên có đúng `amount` bài con khác nhau. Đệ quy thẳng giải lại chúng theo cấp số nhân: `amount` thêm 5 thì số lời gọi nhân khoảng 14. Thêm một từ điển nhớ kết quả, mỗi bài con chỉ giải một lần.
+
+DP áp dụng được khi có hai điều:
+
+- **bài con chồng lấp**: cùng một bài con xuất hiện nhiều lần. Merge sort chia thành các nửa không trùng nhau, nên không cần nhớ gì.
+- **cấu trúc con tối ưu**: lời giải tốt nhất của bài lớn ghép từ lời giải tốt nhất của bài con. Ở đây: cách trả `a` tốt nhất là một đồng `c` cộng cách trả `a − c` tốt nhất.
+
+**Thử ngay:** có bao nhiêu cách leo cầu thang `n` bậc, mỗi bước leo 1 hoặc 2 bậc? Bài con là gì, và có chồng lấp không?
+
+<Expand title="Đáp án">
+
+Gọi `ways(n)` là số cách leo `n` bậc. Bước cuối là 1 bậc (trước đó đã leo `n − 1`) hoặc 2 bậc (trước đó đã leo `n − 2`), nên `ways(n) = ways(n−1) + ways(n−2)`, với `ways(0) = ways(1) = 1`. Đây chính là Fibonacci: `ways(n−2)` được gọi cả từ `ways(n)` lẫn `ways(n−1)`, nên chồng lấp rất nhiều. Có nhớ thì `O(n)`.
+
+</Expand>
+
+## Bảng từ dưới lên
+
+Thay vì đệ quy rồi nhớ (top-down), ta có thể điền một **bảng** theo thứ tự tăng dần (bottom-up), sao cho khi tính ô `a` thì mọi ô nó cần đã có. Với đổi tiền, gọi `dp[a]` là số đồng ít nhất để trả đúng `a`:
 
 ```text
 dp[0] = 0
-dp[a] = 1 + min( dp[a - c] )  với mọi đồng c <= a        (dp[a] = ∞ nếu không trả được)
+dp[a] = 1 + min(dp[a − c])   với mọi đồng c ≤ a
 ```
 
-Tính tay cho `coins = [1, 2, 5]` và `a` từ 0 tới 11. `dp[1] = 1 + dp[0] = 1`; `dp[2] = 1 + min(dp[1], dp[0]) = 1`; `dp[3] = 1 + min(dp[2], dp[1]) = 2`; `dp[5] = 1 + min(dp[4], dp[3], dp[0]) = 1`; ... `dp[11] = 1 + min(dp[10], dp[9], dp[6]) = 1 + min(2, 3, 2) = 3`. Ba cách cài đặt, cùng công thức:
-
-- **đệ quy thuần**: `naive`, mỗi lời gọi thử mọi đồng và gọi lại bài con;
-- **top-down có nhớ** (memoization): đệ quy y hệt nhưng lưu kết quả vào từ điển; thứ tự tính tự phát sinh;
-- **bottom-up** (bảng, tabulation): vòng lặp tăng dần `a`, mỗi ô chỉ dùng các ô nhỏ hơn đã tính. Thêm mảng `choice` để truy vết.
+**Đoán trước:** với đồng `1, 2, 5`, tính tay `dp[0]` tới `dp[6]`. Rồi `dp[11]` bằng bao nhiêu?
 
 ```python
-# Đổi tiền: số đồng ít nhất để trả đủ amount. Ba cách: đệ quy thuần, top-down có nhớ, bottom-up.
-import sys, time
-sys.setrecursionlimit(10000)
-INF = float("inf")
-
-calls = 0
-def naive(coins, amt):
-    global calls
-    calls += 1
-    if amt == 0: return 0
-    best = INF
-    for c in coins:
-        if c <= amt: best = min(best, 1 + naive(coins, amt - c))
-    return best
-
-def topdown(coins, amt):
-    memo, sub = {}, [0]
-    def f(a):
-        if a == 0: return 0
-        if a in memo: return memo[a]
-        sub[0] += 1
-        memo[a] = min((1 + f(a - c) for c in coins if c <= a), default=INF)
-        return memo[a]
-    r = f(amt); return r, sub[0]
-
 def bottomup(coins, amt):
     dp = [0] + [INF] * amt
-    choice = [0] * (amt + 1)                      # đồng nào được chọn ở trạng thái a: để truy vết
+    choice = [0] * (amt + 1)                        # đồng được chọn ở mỗi ô, để truy vết
     for a in range(1, amt + 1):
         for c in coins:
             if c <= a and dp[a - c] + 1 < dp[a]:
                 dp[a] = dp[a - c] + 1; choice[a] = c
     used, a = [], amt
-    while a > 0 and dp[amt] < INF: used.append(choice[a]); a -= choice[a]
+    while a > 0 and dp[amt] < INF:                  # lần ngược theo lựa chọn đã lưu
+        used.append(choice[a]); a -= choice[a]
     return dp, used
 
+dp, used = bottomup([1, 2, 5], 11)
+print("  a :", " ".join(f"{a:>2}" for a in range(12)))
+print(" dp :", " ".join(f"{x:>2}" for x in dp))
+print("truy vết 11 =", used)
+```
+
+```text
+  a :  0  1  2  3  4  5  6  7  8  9 10 11
+ dp :  0  1  1  2  2  1  2  2  3  3  2  3
+truy vết 11 = [1, 5, 5]
+```
+
+`dp[3] = 1 + min(dp[2], dp[1]) = 2`; `dp[5] = 1 + min(dp[4], dp[3], dp[0]) = 1`; `dp[11] = 1 + min(dp[10], dp[9], dp[6]) = 1 + min(2, 3, 2) = 3`. Mảng `choice` nhớ đồng đã chọn ở mỗi ô, nên lần ngược từ `11` ra lời giải cụ thể `[1, 5, 5]`. Bảng có `amount + 1` ô, mỗi ô thử mọi loại đồng: `O(amount × số loại đồng)`.
+
+**Thử ngay:** với đồng `1, 3, 4`, tính `dp[6]` bằng tay. Lời giải là những đồng nào?
+
+<Expand title="Đáp án">
+
+`dp[0..6] = 0, 1, 2, 1, 1, 2, 2`. `dp[6] = 1 + min(dp[5], dp[3], dp[2]) = 1 + min(2, 1, 2) = 2`, chọn đồng 3, rồi `dp[3]` chọn đồng 3: lời giải `[3, 3]`.
+
+</Expand>
+
+## Tham lam có đủ không
+
+Với tiền thật, người ta trả bằng cách **tham lam**: luôn lấy đồng lớn nhất còn vừa. Nhanh hơn DP nhiều. Có đúng không?
+
+**Đoán trước:** với đồng `1, 3, 4` và `amount = 6`, tham lam ra mấy đồng?
+
+```python
 def greedy(coins, amt):
     used = []
     for c in sorted(coins, reverse=True):
         while amt >= c: amt -= c; used.append(c)
-    return used if amt == 0 else None
+    return used
 
-coins = [1, 2, 5]
-dp, used = bottomup(coins, 11)
-print("bảng dp cho coins = [1, 2, 5], amount 0..11:")
-print("  a  :", " ".join(f"{a:>2}" for a in range(12)))
-print("  dp :", " ".join(f"{x:>2}" for x in dp), "  <- dp[a] = 1 + min(dp[a-1], dp[a-2], dp[a-5])")
-print("  truy vết 11 =", used)
-
-print()
-print(f"{'amount':>7} | {'đệ quy thuần: số lần gọi':>26} | {'top-down: số bài con':>21} | {'bottom-up: số ô':>16} | kết quả")
-for amt in (10, 20, 25, 30):
-    calls = 0; r1 = naive([1, 2, 5], amt); c1 = calls
-    r2, s2 = topdown([1, 2, 5], amt)
-    d, _ = bottomup([1, 2, 5], amt)
-    assert r1 == r2 == d[amt]
-    print(f"{amt:>7} | {c1:>26,} | {s2:>21} | {amt + 1:>16} | {r1}")
-
-print()
-print("tham lam có đủ không?")
 for cs, amt in (([1, 5, 10, 25], 63), ([1, 3, 4], 6), ([1, 5, 12], 15)):
     d, used = bottomup(cs, amt)
-    g = greedy(cs, amt)
-    print(f"  coins {cs}, amount {amt}: tham lam {g} ({len(g)} đồng) | DP {used} ({d[amt]} đồng)")
-
-print()
-big = 100_000
-t = time.perf_counter(); d, _ = bottomup([1, 5, 10, 25, 50, 100], big); dt = time.perf_counter() - t
-print(f"bottom-up với amount {big:,} và 6 loại tiền: {dt*1000:.0f} ms (số ô {big + 1:,} x 6 phép chọn)")
-try:
-    topdown([1, 5, 10, 25, 50, 100], big)
-except RecursionError:
-    print("top-down cùng bài: RecursionError (độ sâu đệ quy = amount / đồng nhỏ nhất)")
+    print(f"đồng {cs}, trả {amt}: tham lam {greedy(cs, amt)} | DP {used}")
 ```
 
 ```text
-bảng dp cho coins = [1, 2, 5], amount 0..11:
-  a  :  0  1  2  3  4  5  6  7  8  9 10 11
-  dp :  0  1  1  2  2  1  2  2  3  3  2  3   <- dp[a] = 1 + min(dp[a-1], dp[a-2], dp[a-5])
-  truy vết 11 = [1, 5, 5]
-
- amount |   đệ quy thuần: số lần gọi |  top-down: số bài con |  bottom-up: số ô | kết quả
-     10 |                        309 |                    10 |               11 | 2
-     20 |                     64,207 |                    20 |               21 | 4
-     25 |                    924,876 |                    25 |               26 | 5
-     30 |                 13,322,380 |                    30 |               31 | 6
-
-tham lam có đủ không?
-  coins [1, 5, 10, 25], amount 63: tham lam [25, 25, 10, 1, 1, 1] (6 đồng) | DP [1, 1, 1, 10, 25, 25] (6 đồng)
-  coins [1, 3, 4], amount 6: tham lam [4, 1, 1] (3 đồng) | DP [3, 3] (2 đồng)
-  coins [1, 5, 12], amount 15: tham lam [12, 1, 1, 1] (4 đồng) | DP [5, 5, 5] (3 đồng)
-
-bottom-up với amount 100,000 và 6 loại tiền: 35 ms (số ô 100,001 x 6 phép chọn)
-top-down cùng bài: RecursionError (độ sâu đệ quy = amount / đồng nhỏ nhất)
+đồng [1, 5, 10, 25], trả 63: tham lam [25, 25, 10, 1, 1, 1] | DP [1, 1, 1, 10, 25, 25]
+đồng [1, 3, 4], trả 6: tham lam [4, 1, 1] | DP [3, 3]
+đồng [1, 5, 12], trả 15: tham lam [12, 1, 1, 1] | DP [5, 5, 5]
 ```
 
-Bảng đầu khớp phép tính tay: `dp[11] = 3`, truy vết ra `[1, 5, 5]` (tổng 11, ba đồng). Phần bảng tiếp theo là điểm cốt lõi của DP:
+Tham lam đúng với hệ `1, 5, 10, 25` nhưng sai với `1, 3, 4` (lấy 4 trước nên còn phải trả 2 bằng hai đồng 1) và `1, 5, 12`.
 
-| `amount` | Đệ quy thuần (số lần gọi) | Top-down (số bài con) | Bottom-up (số ô) |
-|---|---|---|---|
-| 10 | 309 | 10 | 11 |
-| 20 | 64.207 | 20 | 21 |
-| 25 | 924.876 | 25 | 26 |
-| 30 | 13.322.380 | 30 | 31 |
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ chọn cái tốt nhất ở mỗi bước sẽ cho kết quả tốt nhất. Thật ra tham lam chỉ đúng khi bài toán có **tính chất lựa chọn tham lam**: luôn tồn tại một lời giải tối ưu chứa lựa chọn tham lam đầu tiên, thường được chứng minh bằng cách đổi một phần của lời giải tối ưu bất kỳ sang lựa chọn tham lam mà không làm nó tệ đi. Xếp lịch nhiều cuộc họp nhất (chọn cuộc kết thúc sớm nhất), mã Huffman, cây khung nhỏ nhất ở bài [Graph](/docs/dsa/graphs) có tính chất đó; đổi tiền với hệ đồng bất kỳ thì không. Không chứng minh được thì dùng DP: nó thử mọi lựa chọn.
 
-Mỗi lần `amount` tăng 5 thì số lần gọi của đệ quy thuần tăng khoảng 14 lần: **mũ**. Còn số bài con **khác nhau** chỉ tuyến tính (đúng bằng `amount`). Có memo thì mỗi bài con được giải một lần, chi phí giảm từ mũ xuống `O(amount × số loại tiền)`, ở ví dụ trên là 30 phép chọn cho 30 ô thay vì 13 triệu lời gọi.
+**Thử ngay:** tìm một `amount` mà tham lam sai với hệ đồng `1, 5, 12`, khác 15.
 
-### Top-down hay bottom-up
+<Expand title="Đáp án">
 
-| | Top-down (memo) | Bottom-up (bảng) |
-|---|---|---|
-| Viết | gần với công thức, chỉ cần thêm cache | phải tự xác định thứ tự điền |
-| Chỉ tính bài con **cần** | có (tính theo nhu cầu) | không (điền hết bảng) |
-| Độ sâu đệ quy | có giới hạn (stack) | không |
-| Tối ưu bộ nhớ (chỉ giữ vài hàng) | khó | dễ |
-| Tốc độ | chậm hơn do chi phí gọi hàm | nhanh hơn |
+Ví dụ 20: tham lam lấy `12, 5, 1, 1, 1` (5 đồng), DP lấy `5, 5, 5, 5` (4 đồng). Mọi `amount` mà dùng 12 làm thừa ra phần lẻ khó trả đều có thể là ví dụ.
 
-Hai dòng cuối trong output minh hoạ rõ: bottom-up giải `amount = 100.000` với 6 loại tiền trong **35 ms**; top-down cùng bài **hỏng với `RecursionError`**, vì độ sâu đệ quy bằng `amount` chia cho đồng nhỏ nhất, vượt xa giới hạn stack của Python. Vì thế dù viết công thức bằng đệ quy cho dễ nghĩ, nên cài bằng bảng khi trạng thái có thể sâu hoặc nhiều.
+</Expand>
 
-## Tham lam: khi nào đủ, khi nào không
+## Định nghĩa trạng thái: ba ví dụ
 
-Đổi tiền còn có cách "tham lam": luôn lấy đồng lớn nhất còn vừa. Hàng cuối của output cho thấy nó đúng với hệ tiền chuẩn và **sai** với hệ khác:
+Mọi bài DP đi theo năm bước:
 
-| Hệ tiền | `amount` | Tham lam | DP (tối ưu) |
-|---|---|---|---|
-| `1, 5, 10, 25` | 63 | 6 đồng | 6 đồng |
-| `1, 3, 4` | 6 | `[4, 1, 1]` = 3 đồng | `[3, 3]` = **2 đồng** |
-| `1, 5, 12` | 15 | `[12, 1, 1, 1]` = 4 đồng | `[5, 5, 5]` = **3 đồng** |
+1. **Trạng thái**: `dp[...]` nghĩa là gì, viết thành một câu.
+2. **Truy hồi**: liệt kê các lựa chọn ở bước cuối, mỗi lựa chọn dẫn về một trạng thái nhỏ hơn.
+3. **Cơ sở**: các trạng thái nhỏ nhất, biết ngay đáp án.
+4. **Thứ tự tính**: ô nào phải có trước ô nào.
+5. **Đáp án** nằm ở ô nào, và **truy vết** nếu cần cả lời giải.
 
-Hệ tiền thật (cent của Mỹ) có tính chất đặc biệt khiến tham lam đúng, nhưng thiếu điều đó thì không. Tham lam chỉ đúng khi bài toán có **tính chất lựa chọn tham lam**: tồn tại một lựa chọn "tốt nhất ngay lúc này" luôn nằm trong một lời giải tối ưu nào đó, thường chứng minh bằng **lập luận hoán đổi** (exchange argument): lấy một lời giải tối ưu bất kỳ, đổi một phần của nó sang lựa chọn tham lam mà không làm tệ đi. Ví dụ tham lam đúng: xếp lịch nhiều hoạt động nhất khi chọn hoạt động kết thúc sớm nhất; Huffman; Kruskal và Prim ở [Graph](/docs/dsa/graphs). Khi không chắc, **dùng DP**: nó thử mọi lựa chọn nên không cần chứng minh thêm điều gì, chỉ cần định nghĩa trạng thái đúng.
+### Ví dụ 1 (giải sẵn): knapsack 0/1
 
-## Knapsack, LCS và edit distance
+Có `n` món, món `i` nặng `w_i` và có giá trị `v_i`; túi chứa tối đa `W`. Mỗi món lấy hoặc không. Tối đa hoá tổng giá trị.
 
-Ba bài này cùng khuôn: bảng hai chiều, mỗi ô là một lựa chọn trong số ít, kèm truy vết.
-
-### Knapsack 0/1
-
-Có `n` món, món `i` nặng `w_i` và giá trị `v_i`; túi chứa tối đa `W`. Mỗi món lấy hoặc không (0/1), tối đa hoá tổng giá trị. Gọi `dp[i][w]` là giá trị lớn nhất khi chỉ xét `i` món đầu với sức chứa `w`. Với món `i` có hai lựa chọn: **bỏ** (`dp[i-1][w]`) hoặc **lấy** nếu vừa (`dp[i-1][w - w_i] + v_i`), chọn lớn hơn. Truy vết: món `i` được lấy nếu `dp[i][w]` khác ô ngay phía trên.
-
-### Longest Common Subsequence (LCS)
-
-Dãy con chung dài nhất của hai chuỗi (không cần liền nhau). `dp[i][j]` là độ dài LCS của `i` ký tự đầu của `a` và `j` ký tự đầu của `b`. Nếu hai ký tự cuối bằng nhau, nó thuộc LCS: `dp[i-1][j-1] + 1`. Nếu khác nhau, bỏ một trong hai: `max(dp[i-1][j], dp[i][j-1])`. LCS là nền của `diff`.
-
-### Edit distance (Levenshtein)
-
-Số thao tác (chèn, xoá, thay một ký tự) ít nhất để biến chuỗi `a` thành `b`. `dp[i][j]` là khoảng cách giữa `i` ký tự đầu của `a` và `j` ký tự đầu của `b`; ba lựa chọn cho ký tự cuối: xoá `a[i-1]` (`dp[i-1][j] + 1`), chèn `b[j-1]` (`dp[i][j-1] + 1`), hoặc thay (`dp[i-1][j-1] + (a[i-1] != b[j-1])`, bằng nhau thì không tốn thao tác). Cơ sở: biến `i` ký tự thành rỗng cần `i` lần xoá; từ rỗng ra `j` ký tự cần `j` lần chèn.
+1. **Trạng thái**: `dp[i][w]` là giá trị lớn nhất khi chỉ được chọn trong `i` món đầu, với sức chứa `w`.
+2. **Truy hồi**: với món thứ `i`, **bỏ** thì còn `dp[i−1][w]`; **lấy** (nếu vừa) thì được `v_i + dp[i−1][w − w_i]`. Chọn lớn hơn.
+3. **Cơ sở**: `dp[0][w] = 0`: chưa có món nào thì giá trị 0.
+4. **Thứ tự**: hàng `i` chỉ cần hàng `i − 1`, nên điền từng hàng từ trên xuống.
+5. **Đáp án**: `dp[n][W]`. Truy vết: món `i` được lấy khi `dp[i][w]` khác ô ngay phía trên.
 
 ```python
-# Knapsack 0/1, LCS, edit distance: bảng đầy đủ, truy vết, tối ưu bộ nhớ.
 def knapsack(items, W):
-    """items = [(tên, khối lượng, giá trị)]. dp[i][w] = giá trị lớn nhất dùng i món đầu, sức chứa w."""
     n = len(items)
     dp = [[0] * (W + 1) for _ in range(n + 1)]
     for i in range(1, n + 1):
         _, wt, val = items[i - 1]
         for w in range(W + 1):
-            dp[i][w] = dp[i - 1][w]                                  # không lấy món i
-            if wt <= w: dp[i][w] = max(dp[i][w], dp[i - 1][w - wt] + val)   # lấy món i
+            dp[i][w] = dp[i - 1][w]                                      # bỏ món i
+            if wt <= w: dp[i][w] = max(dp[i][w], dp[i - 1][w - wt] + val)  # lấy món i
     chosen, w = [], W
-    for i in range(n, 0, -1):                                        # truy vết: món i được lấy nếu dp đổi so với hàng trên
+    for i in range(n, 0, -1):
         if dp[i][w] != dp[i - 1][w]: chosen.append(items[i - 1][0]); w -= items[i - 1][1]
     return dp, chosen[::-1]
 
-def knapsack_1d(items, W):                                           # chỉ một hàng: duyệt w GIẢM dần
-    dp = [0] * (W + 1)
-    for _, wt, val in items:
-        for w in range(W, wt - 1, -1): dp[w] = max(dp[w], dp[w - wt] + val)
-    return dp[W]
+items = [("laptop", 3, 40), ("sách", 1, 10), ("đèn", 2, 25), ("áo", 2, 15)]
+dp, chosen = knapsack(items, 5)
+print("             w=" + "  ".join(f"{w:>2}" for w in range(6)))
+for i, row in enumerate(dp):
+    print(f"  i={i} {('(' + items[i - 1][0] + ')') if i else '':<9}" + "  ".join(f"{x:>2}" for x in row))
+print("đáp án", dp[-1][-1], "| chọn", chosen)
+```
 
+```text
+             w= 0   1   2   3   4   5
+  i=0           0   0   0   0   0   0
+  i=1 (laptop)  0   0   0  40  40  40
+  i=2 (sách)    0  10  10  40  50  50
+  i=3 (đèn)     0  10  25  40  50  65
+  i=4 (áo)      0  10  25  40  50  65
+đáp án 65 | chọn ['laptop', 'đèn']
+```
+
+Hàng `i = 1` chỉ có laptop (nặng 3): từ `w = 3` trở đi là 40. Hàng `i = 3` thêm đèn (nặng 2, giá 25): ở `w = 5` thành `25 + dp[2][3] = 25 + 40 = 65`. Áo ở hàng cuối không làm gì tốt hơn. Bảng có `(n+1)(W+1)` ô, mỗi ô `O(1)`: `O(nW)`.
+
+### Ví dụ 2 (giải một nửa): dãy con chung dài nhất
+
+**LCS** (longest common subsequence) của hai chuỗi là dãy ký tự dài nhất xuất hiện theo đúng thứ tự trong cả hai, không cần liền nhau. Ví dụ LCS của `AGGTAB` và `GXTXAYB` là `GTAB`. Đây là nền của lệnh `diff`. Điền vào chỗ trống:
+
+1. **Trạng thái**: `dp[i][j]` là độ dài LCS của ___ ký tự đầu của `a` và ___ ký tự đầu của `b`.
+2. **Truy hồi**: nếu `a[i−1] == b[j−1]`, ký tự đó thuộc LCS: `dp[i][j] =` ___. Nếu khác, bỏ ký tự cuối của một trong hai chuỗi: `dp[i][j] = max(` ___ `,` ___ `)`.
+3. **Cơ sở**: `dp[0][j] = dp[i][0] =` ___.
+4. **Đáp án** ở ô ___.
+
+<Expand title="Đáp án">
+
+1. `i` ký tự đầu của `a`, `j` ký tự đầu của `b`.
+2. `dp[i−1][j−1] + 1`; `max(dp[i−1][j], dp[i][j−1])`.
+3. `0`: một chuỗi rỗng thì LCS rỗng.
+4. `dp[len(a)][len(b)]`, góc dưới phải.
+
+```python
 def lcs(a, b):
     m, n = len(a), len(b)
     dp = [[0] * (n + 1) for _ in range(m + 1)]
     for i in range(1, m + 1):
         for j in range(1, n + 1):
             dp[i][j] = dp[i-1][j-1] + 1 if a[i-1] == b[j-1] else max(dp[i-1][j], dp[i][j-1])
-    out, i, j = [], m, n
+    out, i, j = [], m, n                            # truy vết từ góc dưới phải
     while i and j:
         if a[i-1] == b[j-1]: out.append(a[i-1]); i -= 1; j -= 1
         elif dp[i-1][j] >= dp[i][j-1]: i -= 1
         else: j -= 1
     return dp, "".join(reversed(out))
 
-def edit_distance(a, b):
-    m, n = len(a), len(b)
-    dp = [[0] * (n + 1) for _ in range(m + 1)]
-    for i in range(m + 1): dp[i][0] = i                              # xoá i ký tự
-    for j in range(n + 1): dp[0][j] = j                              # chèn j ký tự
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            dp[i][j] = min(dp[i-1][j] + 1,                           # xoá a[i-1]
-                           dp[i][j-1] + 1,                           # chèn b[j-1]
-                           dp[i-1][j-1] + (a[i-1] != b[j-1]))        # thay (hoặc giữ nếu giống)
-    ops, i, j = [], m, n
-    while i or j:
-        if i and j and dp[i][j] == dp[i-1][j-1] + (a[i-1] != b[j-1]):
-            ops.append("giữ " + a[i-1] if a[i-1] == b[j-1] else f"thay {a[i-1]}->{b[j-1]}"); i -= 1; j -= 1
-        elif i and dp[i][j] == dp[i-1][j] + 1: ops.append("xoá " + a[i-1]); i -= 1
-        else: ops.append("chèn " + b[j-1]); j -= 1
-    return dp, ops[::-1]
+def show(dp, a, b):
+    print("        " + "  ".join(f"{c:>2}" for c in b))
+    for i, row in enumerate(dp):
+        print(f"  {(' ' + a)[i]:>2}  " + "  ".join(f"{x:>2}" for x in row))
 
-def show(dp, rows, cols, rl, cl):
-    print("      " + "  ".join(f"{c:>2}" for c in cl))
-    for i, r in enumerate(rows):
-        print(f"  {rl[i]:>2}  " + "  ".join(f"{dp[i][j]:>2}" for j in range(len(cols))))
-
-items = [("laptop", 3, 40), ("sách", 1, 10), ("đèn", 2, 25), ("áo", 2, 15)]
-W = 5
-dp, chosen = knapsack(items, W)
-print(f"knapsack W={W}, món (khối lượng, giá trị): " + ", ".join(f"{n}({w},{v})" for n, w, v in items))
-print("bảng dp[i][w]  (hàng = đã xét i món đầu, cột = sức chứa w)")
-print("            w=" + "  ".join(f"{w:>2}" for w in range(W + 1)))
-for i, row in enumerate(dp):
-    print(f"  i={i} {('(' + items[i-1][0] + ')') if i else '':<8}" + "  ".join(f"{x:>2}" for x in row))
-print(f"đáp án {dp[len(items)][W]}, chọn {chosen}; bản 1 chiều cho {knapsack_1d(items, W)}")
-
-print()
-a, b = "AGGTAB", "GXTXAYB"
-dp, s = lcs(a, b)
-print(f"LCS({a!r}, {b!r}) = {s!r} (độ dài {dp[len(a)][len(b)]})")
-show(dp, " " + a, " " + b, " " + a, " " + b)
-
-print()
-a, b = "kitten", "sitting"
-dp, ops = edit_distance(a, b)
-print(f"khoảng cách chỉnh sửa {a!r} -> {b!r} = {dp[len(a)][len(b)]}; thao tác: {', '.join(ops)}")
-show(dp, " " + a, " " + b, " " + a, " " + b)
+dp, s = lcs("AGGTAB", "GXTXAYB")
+print("LCS =", s)
+show(dp, "AGGTAB", " GXTXAYB")
 ```
 
 ```text
-knapsack W=5, món (khối lượng, giá trị): laptop(3,40), sách(1,10), đèn(2,25), áo(2,15)
-bảng dp[i][w]  (hàng = đã xét i món đầu, cột = sức chứa w)
-            w= 0   1   2   3   4   5
-  i=0          0   0   0   0   0   0
-  i=1 (laptop) 0   0   0  40  40  40
-  i=2 (sách)   0  10  10  40  50  50
-  i=3 (đèn)    0  10  25  40  50  65
-  i=4 (áo)     0  10  25  40  50  65
-đáp án 65, chọn ['laptop', 'đèn']; bản 1 chiều cho 65
-
-LCS('AGGTAB', 'GXTXAYB') = 'GTAB' (độ dài 4)
-           G   X   T   X   A   Y   B
+LCS = GTAB
+             G   X   T   X   A   Y   B
        0   0   0   0   0   0   0   0
    A   0   0   0   0   0   1   1   1
    G   0   1   1   1   1   1   1   1
@@ -314,9 +279,51 @@ LCS('AGGTAB', 'GXTXAYB') = 'GTAB' (độ dài 4)
    T   0   1   1   2   2   2   2   2
    A   0   1   1   2   2   3   3   3
    B   0   1   1   2   2   3   3   4
+```
 
-khoảng cách chỉnh sửa 'kitten' -> 'sitting' = 3; thao tác: thay k->s, giữ i, giữ t, giữ t, thay e->i, giữ n, chèn g
-           s   i   t   t   i   n   g
+Giá trị tăng lên đúng ở các ô mà hai ký tự trùng nhau (`G`, `T`, `A`, `B`). Bảng có `m × n` ô: `O(mn)`.
+
+</Expand>
+
+### Ví dụ 3 (tự làm): edit distance
+
+**Edit distance** (khoảng cách Levenshtein) là số thao tác ít nhất để biến chuỗi `a` thành `b`, mỗi thao tác là chèn, xoá hoặc thay một ký tự. Ví dụ `kitten` thành `sitting` cần 3. Bộ gợi ý "có phải bạn muốn gõ..." dùng nó. Hãy tự viết năm bước, rồi tính khoảng cách giữa `kitten` và `sitting`.
+
+<Expand title="Đáp án">
+
+1. **Trạng thái**: `dp[i][j]` là số thao tác ít nhất để biến `i` ký tự đầu của `a` thành `j` ký tự đầu của `b`.
+2. **Truy hồi**: ba lựa chọn cho ký tự cuối: xoá `a[i−1]` (`dp[i−1][j] + 1`), chèn `b[j−1]` (`dp[i][j−1] + 1`), hoặc thay `a[i−1]` bằng `b[j−1]` (`dp[i−1][j−1] + 1`, hoặc `+ 0` nếu hai ký tự đã giống nhau). Lấy nhỏ nhất.
+3. **Cơ sở**: `dp[i][0] = i` (xoá hết), `dp[0][j] = j` (chèn hết).
+4. **Thứ tự**: từng hàng, trái sang phải.
+5. **Đáp án**: `dp[m][n]`.
+
+```python
+def edit_distance(a, b):
+    m, n = len(a), len(b)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m + 1): dp[i][0] = i
+    for j in range(n + 1): dp[0][j] = j
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            dp[i][j] = min(dp[i-1][j] + 1,                       # xoá a[i-1]
+                           dp[i][j-1] + 1,                       # chèn b[j-1]
+                           dp[i-1][j-1] + (a[i-1] != b[j-1]))    # thay, hoặc giữ nếu giống
+    ops, i, j = [], m, n
+    while i or j:
+        if i and j and dp[i][j] == dp[i-1][j-1] + (a[i-1] != b[j-1]):
+            ops.append(f"giữ {a[i-1]}" if a[i-1] == b[j-1] else f"thay {a[i-1]}->{b[j-1]}"); i -= 1; j -= 1
+        elif i and dp[i][j] == dp[i-1][j] + 1: ops.append(f"xoá {a[i-1]}"); i -= 1
+        else: ops.append(f"chèn {b[j-1]}"); j -= 1
+    return dp, ops[::-1]
+
+dp, ops = edit_distance("kitten", "sitting")
+print("khoảng cách =", dp[-1][-1], "|", ", ".join(ops))
+show(dp, "kitten", " sitting")
+```
+
+```text
+khoảng cách = 3 | thay k->s, giữ i, giữ t, giữ t, thay e->i, giữ n, chèn g
+             s   i   t   t   i   n   g
        0   1   2   3   4   5   6   7
    k   1   1   2   3   4   5   6   7
    i   2   2   1   2   3   4   5   6
@@ -326,30 +333,97 @@ khoảng cách chỉnh sửa 'kitten' -> 'sitting' = 3; thao tác: thay k->s, gi
    n   6   6   5   4   3   3   2   3
 ```
 
-Đọc từng bảng:
+</Expand>
 
-- **Knapsack** (`W = 5`): cột `w = 3` hàng `i = 1` là 40, vì chỉ có laptop (nặng 3) vừa. Hàng `i = 3` (thêm đèn nặng 2, giá 25) ở `w = 5` thành 65: lấy laptop (3) cộng đèn (2) = 40 + 25. Hàng cuối `i = 4` (áo nặng 2, giá 15) không đổi vì không có chỗ cho nó mà có lợi hơn. Truy vết ra `['laptop', 'đèn']`, đúng 65. Bản `knapsack_1d` dùng **một hàng** và duyệt `w` **giảm dần**: nếu duyệt tăng dần, ô `dp[w - wt]` đã bị món hiện tại cập nhật và món được lấy hai lần (thành knapsack không giới hạn); duyệt giảm đảm bảo ô cần đọc vẫn mang giá trị của hàng trước.
-- **LCS** (`AGGTAB` và `GXTXAYB`): bảng điền ra độ dài 4, truy vết ra `GTAB`. Nhìn đường chéo: các ô tăng giá trị nằm ở ký tự trùng (`G`, `T`, `A`, `B`).
-- **Edit distance** (`kitten` → `sitting`): 3 thao tác, truy vết cho đúng ba bước (thay `k` thành `s`, thay `e` thành `i`, chèn `g`). Ô góc dưới phải của bảng là đáp án; mỗi ô dựa vào ba ô lân cận phía trên-trái.
+## Top-down hay bottom-up
 
-Chi phí: knapsack `O(nW)`, LCS và edit distance `O(mn)`, cả hai đều **số ô nhân `O(1)` mỗi ô**. Lưu ý về knapsack: `O(nW)` phụ thuộc vào **giá trị** của `W`, không phải kích thước đầu vào (số bit của `W`); đó là thuật toán **giả đa thức**, và knapsack tổng quát là NP-hard. Khi `W` là số nhỏ (vài nghìn) thì rất thực dụng; khi `W` cỡ `10^12` thì bảng không dựng nổi.
+Hai cách cài cùng một công thức:
 
-## Tối ưu: bộ nhớ và độ phức tạp
+| | Top-down (đệ quy có nhớ) | Bottom-up (bảng) |
+|---|---|---|
+| Viết | gần công thức, chỉ thêm cache | phải tự xác định thứ tự điền |
+| Tính bài con nào | chỉ những bài con thật sự cần | mọi ô trong bảng |
+| Độ sâu đệ quy | bị giới hạn bởi stack | không có |
+| Tối ưu bộ nhớ | khó | dễ (chỉ giữ vài hàng) |
+| Tốc độ | chậm hơn vì gọi hàm | nhanh hơn |
 
-### Chỉ giữ vài hàng
-
-Mỗi ô LCS chỉ đọc hàng trước và ô bên trái, nên không cần cả bảng: giữ **hai hàng** là đủ, bộ nhớ giảm từ `O(mn)` xuống `O(n)`. Cái giá: mất khả năng truy vết bằng cách lần ngược bảng (có kỹ thuật Hirschberg khôi phục lời giải trong `O(n)` bộ nhớ nhưng tốn thêm công cài). Knapsack một hàng là cùng ý tưởng.
-
-### LIS: từ O(n²) xuống O(n log n)
-
-**Longest Increasing Subsequence**: dãy con tăng dài nhất. Cách DP chuẩn: `dp[i]` là độ dài dãy tăng dài nhất **kết thúc** tại `a[i]`; `dp[i] = 1 + max(dp[j])` với `j < i` và `a[j] < a[i]`. Hai vòng lồng, `O(n²)`. Có một cách khác thông minh hơn dựa vào nhận xét: với mỗi độ dài `k`, chỉ cần giữ **đuôi nhỏ nhất** có thể của dãy tăng dài `k`. Mảng `tails` luôn tăng, nên mỗi phần tử mới tìm nhị phân vị trí của nó: thay đuôi hoặc kéo dài. `O(n log n)`.
-
-Cả hai cùng kết quả, đo thời gian khác nhau xa, và hai cách cài LCS (bảng hai hàng so với đệ quy memo bằng `lru_cache`):
+**Đoán trước:** đổi tiền với `amount = 100.000` và 6 loại đồng. Bản bottom-up chạy mất bao lâu? Bản top-down thì sao?
 
 ```python
-# LIS: O(n^2) bằng DP và O(n log n) bằng "patience"; và hiệu năng memo vs bảng với LCS.
-import bisect, random, time, sys
-from functools import lru_cache
+import time
+coins6 = [1, 5, 10, 25, 50, 100]
+t = time.perf_counter(); d, _ = bottomup(coins6, 100_000); dt = time.perf_counter() - t
+print(f"bottom-up: dp[100000] = {d[-1]}, {dt * 1000:.0f} ms")
+try:
+    memo_solve(coins6, 100_000)
+except RecursionError as e:
+    print("top-down: RecursionError:", e)
+```
+
+```text
+bottom-up: dp[100000] = 1000, 67 ms
+top-down: RecursionError: maximum recursion depth exceeded
+```
+
+Bottom-up xong trong vài chục mili giây. Top-down hỏng: để tính `f(100000)` nó phải đệ quy xuống `f(99999)`, `f(99998)`... sâu tới cả trăm nghìn tầng, vượt giới hạn khoảng 1.000 tầng của Python (xem phần bộ nhớ đệ quy ở bài [Big-O & Complexity](/docs/dsa/complexity)). Nghĩ bằng đệ quy cho dễ, nhưng khi trạng thái có thể sâu, cài bằng bảng.
+
+**Thử ngay:** knapsack chỉ cần hàng trước để tính hàng sau. Bạn có thể dùng một mảng một chiều thay cho bảng `(n+1) × (W+1)` không? Có cần chú ý gì?
+
+<Expand title="Đáp án">
+
+Có, bộ nhớ giảm từ `O(nW)` xuống `O(W)`. Nhưng phải duyệt `w` **giảm dần** trong mỗi món. Nếu duyệt tăng dần, khi tính `dp[w]` thì ô `dp[w − wt]` đã bị món hiện tại cập nhật, nghĩa là món đó có thể được lấy hai lần:
+
+```python
+def knapsack_1d(items, W, decreasing=True):
+    dp = [0] * (W + 1)
+    for _, wt, val in items:
+        ws = range(W, wt - 1, -1) if decreasing else range(wt, W + 1)
+        for w in ws: dp[w] = max(dp[w], dp[w - wt] + val)
+    return dp[W]
+
+print("W=6: duyệt giảm:", knapsack_1d(items, 6), "| duyệt tăng:", knapsack_1d(items, 6, decreasing=False))
+```
+
+```text
+W=6: duyệt giảm: 75 | duyệt tăng: 80
+```
+
+Với sức chứa 6, đáp án đúng là 75 (laptop, đèn, sách). Duyệt tăng cho ra 80, tức hai cái laptop: đó là bài "mỗi món lấy bao nhiêu lần cũng được", không phải 0/1. Trả lời sai mà không báo lỗi gì.
+
+</Expand>
+
+## Tự kiểm tra tổng hợp
+
+Các câu dưới trộn kiến thức của nhiều mục, nên khó hơn câu "Thử ngay". Nếu vướng, quay lại mục tương ứng.
+
+1. Hàm `best(i, chosen)` trả về giá trị tốt nhất từ món `i` trở đi, trong đó `chosen` là một tuple các món đã chọn. Bạn thêm `@lru_cache` nhưng nó vẫn chậm như đệ quy thẳng. Vì sao?
+2. Knapsack có `n = 100` món, `W = 10^12` (khối lượng tính bằng miligam). Bảng `O(nW)` có chạy được không? Điều này nói gì về độ khó của bài?
+3. Tính edit distance giữa hai file văn bản, mỗi file 100.000 ký tự. Bảng đầy đủ tốn bao nhiêu ô? Muốn chỉ lấy con số khoảng cách thì giảm bộ nhớ thế nào?
+4. Xếp lịch: có các cuộc họp với giờ bắt đầu và kết thúc, chọn nhiều cuộc nhất không chồng nhau. Tham lam "chọn cuộc ngắn nhất trước" có đúng không? "Chọn cuộc kết thúc sớm nhất trước" thì sao?
+5. Đường dài nhất trong một DAG có trọng số (như đường tới hạn của một dự án) giải được bằng DP. Trạng thái và thứ tự tính là gì? Vì sao đồ thị có vòng thì không làm thế được?
+
+<Expand title="Đáp án">
+
+1. `chosen` làm trạng thái bùng nổ: cùng `i` nhưng mỗi tập món đã chọn là một khoá khác, nên cache gần như không bao giờ trúng. Trạng thái chỉ nên chứa đúng thông tin cần cho các lựa chọn còn lại, ở đây là sức chứa còn lại: `best(i, w)`.
+2. Không: `10^14` ô. `O(nW)` là **giả đa thức**: đa thức theo **giá trị** `W`, không theo số chữ số của nó. Knapsack tổng quát là NP-hard; DP chỉ thực dụng khi `W` nhỏ. Với `W` lớn, người ta dùng nhánh cận hoặc thuật toán xấp xỉ.
+3. `10^10` ô, khoảng 40 GB nếu mỗi ô 4 byte. Mỗi hàng chỉ cần hàng trước, nên giữ hai hàng: `O(n)` bộ nhớ. Muốn cả chuỗi thao tác mà vẫn ít bộ nhớ thì có thuật toán Hirschberg; `git diff` dùng thuật toán Myers, nhanh khi hai file giống nhau nhiều.
+4. "Ngắn nhất trước" sai: một cuộc ngắn nằm vắt ngang hai cuộc dài không chồng nhau sẽ chặn cả hai. "Kết thúc sớm nhất trước" đúng: đổi cuộc đầu tiên của bất kỳ lời giải tối ưu nào sang cuộc kết thúc sớm nhất không làm chồng thêm cuộc nào, nên luôn có lời giải tối ưu bắt đầu bằng lựa chọn tham lam.
+5. `dp[v]` là độ dài đường dài nhất kết thúc tại `v`; `dp[v] = max(dp[u] + w(u, v))` qua mọi cạnh `u → v`. Tính theo thứ tự topo (bài [Graph](/docs/dsa/graphs)) để mọi `u` có trước `v`. Đồ thị có vòng thì không có thứ tự topo: các bài con phụ thuộc vòng vào nhau, và đường dài nhất có thể đi vòng mãi.
+
+</Expand>
+
+## Đi sâu hơn
+
+Các phần dưới không cần để đọc tiếp chặng DSA.
+
+<Expand title="LIS: từ O(n²) xuống O(n log n)">
+
+**LIS** (longest increasing subsequence) là dãy con tăng dài nhất. DP thẳng: `dp[i]` là độ dài dãy tăng dài nhất **kết thúc** tại `a[i]`, `dp[i] = 1 + max(dp[j])` với `j < i` và `a[j] < a[i]`. Hai vòng lồng nhau, `O(n²)`.
+
+Cách nhanh hơn đổi cách nhìn: với mỗi độ dài `k`, chỉ cần nhớ **đuôi nhỏ nhất** của các dãy tăng dài `k`. Mảng `tails` này luôn tăng, nên mỗi phần tử mới chỉ cần tìm nhị phân chỗ của nó.
+
+```python
+import bisect, random
 
 def lis_n2(a):
     dp = [1] * len(a)
@@ -359,7 +433,7 @@ def lis_n2(a):
     return max(dp, default=0)
 
 def lis_nlogn(a):
-    tails = []                                    # tails[k] = đuôi nhỏ nhất của dãy tăng dài k+1
+    tails = []                                      # tails[k] = đuôi nhỏ nhất của dãy tăng dài k+1
     for x in a:
         i = bisect.bisect_left(tails, x)
         if i == len(tails): tails.append(x)
@@ -367,93 +441,31 @@ def lis_nlogn(a):
     return len(tails)
 
 random.seed(2)
-a = [random.randint(1, 1000) for _ in range(12)]
-print("ví dụ:", a, "-> LIS =", lis_n2(a), "/", lis_nlogn(a))
-print(f"{'n':>7} | {'O(n^2) (ms)':>12} {'O(n log n) (ms)':>16} | LIS")
 for n in (500, 2000, 8000):
     a = [random.randint(1, 10**9) for _ in range(n)]
     t = time.perf_counter(); r1 = lis_n2(a); t1 = time.perf_counter() - t
     t = time.perf_counter(); r2 = lis_nlogn(a); t2 = time.perf_counter() - t
     assert r1 == r2
-    print(f"{n:>7} | {t1*1000:>12.1f} {t2*1000:>16.2f} | {r1}")
-
-print()
-sys.setrecursionlimit(100000)
-def lcs_len_table(a, b):
-    prev = [0] * (len(b) + 1)                     # chỉ giữ hai hàng: O(min(m,n)) bộ nhớ
-    for x in a:
-        cur = [0]
-        for j, y in enumerate(b, 1):
-            cur.append(prev[j-1] + 1 if x == y else max(prev[j], cur[j-1]))
-        prev = cur
-    return prev[-1]
-def lcs_len_memo(a, b):
-    @lru_cache(None)
-    def f(i, j):
-        if i == len(a) or j == len(b): return 0
-        return 1 + f(i + 1, j + 1) if a[i] == b[j] else max(f(i + 1, j), f(i, j + 1))
-    return f(0, 0)
-print(f"{'độ dài':>7} | {'bảng 2 hàng (ms)':>17} {'memo lru_cache (ms)':>20} | LCS")
-random.seed(3)
-for n in (200, 500, 900):
-    a = "".join(random.choice("ACGT") for _ in range(n)); b = "".join(random.choice("ACGT") for _ in range(n))
-    t = time.perf_counter(); r1 = lcs_len_table(a, b); t1 = time.perf_counter() - t
-    try:
-        t = time.perf_counter(); r2 = lcs_len_memo(a, b); t2 = time.perf_counter() - t
-        assert r1 == r2
-        print(f"{n:>7} | {t1*1000:>17.1f} {t2*1000:>20.1f} | {r1}")
-    except RecursionError:
-        print(f"{n:>7} | {t1*1000:>17.1f} {'RecursionError':>20} | {r1}")
+    print(f"n={n:>5}: LIS = {r1:>3} | O(n^2) {t1 * 1000:7.1f} ms | O(n log n) {t2 * 1000:5.2f} ms")
 ```
 
 ```text
-ví dụ: [979, 884, 971, 870, 58, 94, 87, 370, 856, 174, 754, 829] -> LIS = 5 / 5
-      n |  O(n^2) (ms)  O(n log n) (ms) | LIS
-    500 |          3.9             0.04 | 36
-   2000 |         65.0             0.19 | 83
-   8000 |       1061.3             0.77 | 169
-
- độ dài |  bảng 2 hàng (ms)  memo lru_cache (ms) | LCS
-    200 |               2.3                  9.5 | 128
-    500 |              15.5                 61.3 | 323
-    900 |              51.0       RecursionError | 583
+n=  500: LIS =  37 | O(n^2)     7.6 ms | O(n log n)  0.11 ms
+n= 2000: LIS =  83 | O(n^2)   175.6 ms | O(n log n)  0.28 ms
+n= 8000: LIS = 169 | O(n^2)  2517.8 ms | O(n log n)  2.10 ms
 ```
 
-- **LIS**: với `n = 8.000`, `O(n²)` mất **1.061 ms**, bản `O(n log n)` mất **0,77 ms**, chênh hơn một nghìn lần; kết quả khớp nhau (169). Tối ưu ở đây không đến từ "bảng thông minh hơn" mà từ **đổi cách nhìn bài toán**, một dấu hiệu rằng sau khi có lời giải DP, đáng hỏi "có cấu trúc nào để bỏ bớt vòng lặp không?".
-- **LCS**: bảng hai hàng nhanh hơn memo bằng `lru_cache` khoảng **4 lần** (15,5 ms so với 61,3 ms ở độ dài 500), vì mỗi lời gọi hàm và mỗi lần tra cache có chi phí. Ở độ dài 900, bản memo thất bại với `RecursionError` còn bản bảng vẫn chạy 51 ms: lại là giới hạn độ sâu đệ quy.
+Khi đã có lời giải DP, nên hỏi tiếp: có cấu trúc nào (ở đây là tính đơn điệu của `tails`) cho phép bỏ một vòng lặp không?
 
-## Trong hệ thống thật
+</Expand>
 
-- **`diff` và `git diff`**: tìm dãy thay đổi ít nhất giữa hai file là bài toán gần LCS trên các dòng; Git mặc định dùng thuật toán của Myers (1986), `O(ND)` với `D` là số khác biệt, nhanh khi hai file giống nhau nhiều.
-- **Sửa lỗi chính tả, tìm mờ (fuzzy search)**: edit distance và các biến thể (Damerau-Levenshtein, khoảng cách Jaro-Winkler) nằm trong bộ gợi ý "có phải bạn muốn gõ...", trong công cụ tìm kiếm file và trong căn chỉnh chuỗi DNA (Needleman-Wunsch và Smith-Waterman là LCS và edit distance có trọng số).
-- **Định tuyến và đồ thị**: Bellman-Ford (xem [Graph](/docs/dsa/graphs)) và Floyd-Warshall (đường đi ngắn nhất giữa mọi cặp đỉnh) là DP trên đồ thị; đường dài nhất trong DAG, như đường tới hạn của roadmap trong bài Graph, cũng là DP trên thứ tự topo.
-- **Xử lý ngôn ngữ và nhận dạng giọng nói**: thuật toán Viterbi tìm chuỗi trạng thái ẩn có xác suất cao nhất là DP.
-- **Chia dòng văn bản**: thuật toán Knuth-Plass của TeX chọn chỗ ngắt dòng làm tổng "độ xấu" nhỏ nhất bằng DP.
-- **Trình biên dịch**: chọn lệnh máy tối ưu cho cây biểu thức (instruction selection) và phân bổ thanh ghi dùng các kỹ thuật DP.
+<Expand title="DP trong các hệ thống thật">
 
-## Quan sát và chẩn đoán
+- **`diff` và `git diff`**: tìm số thay đổi ít nhất giữa hai file là bài gần LCS trên các dòng. Git mặc định dùng thuật toán Myers (1986), `O(N·D)` với `D` là số khác biệt.
+- **Tin sinh học**: Needleman-Wunsch và Smith-Waterman căn chỉnh hai chuỗi DNA, là edit distance và LCS có trọng số.
+- **Đồ thị**: Bellman-Ford và Floyd-Warshall (đường ngắn nhất giữa mọi cặp đỉnh) là DP; đường dài nhất trong DAG cũng vậy.
+- **Nhận dạng giọng nói, gán nhãn từ loại**: thuật toán Viterbi tìm chuỗi trạng thái ẩn có xác suất cao nhất.
+- **TeX** ngắt dòng bằng thuật toán Knuth-Plass: chọn các chỗ ngắt làm tổng "độ xấu" của cả đoạn nhỏ nhất.
+- **Cơ sở dữ liệu**: planner chọn thứ tự join bằng DP trên các tập con bảng (xem [Query Processing](/docs/databases/query-processing)).
 
-- **Đếm số trạng thái trước khi cài**: nếu số trạng thái nhân chi phí mỗi trạng thái vượt chừng `10^8`, cần giảm chiều hoặc đổi cách nhìn; DP không phép màu hoá bài toán mũ có quá nhiều trạng thái.
-- **Kiểm tra bằng đệ quy thuần trên đầu vào nhỏ** (như phần đổi tiền): so kết quả DP với brute force trên `amount` nhỏ để chắc công thức đúng trước khi tin vào bảng.
-- **Truy vết sai** thường do quên lưu lựa chọn hoặc lần ngược theo thứ tự ưu tiên khác với lúc điền; kiểm tra bằng cách tính lại giá trị của lời giải truy vết ra.
-
-| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
-|---|---|---|
-| `RecursionError` với đầu vào lớn | top-down đệ quy sâu | chuyển sang bottom-up |
-| Chạy mãi dù đã thêm memo | trạng thái bị khoá bằng tham số thừa (thêm chiều không cần) | định nghĩa lại trạng thái cho gọn |
-| Đáp án sai ở cạnh biên | cơ sở sai, hoặc `∞ + 1` bị coi như hợp lệ | kiểm tra ô cơ sở và xử lý "không khả thi" |
-| Hết bộ nhớ với bảng hai chiều lớn | `O(mn)` ô | chỉ giữ hai hàng, hoặc dùng Hirschberg nếu cần truy vết |
-| Knapsack chạy quá chậm | `W` quá lớn, thuật toán giả đa thức | giảm độ chính xác của `W`, hoặc đổi sang cách xấp xỉ |
-| Tham lam chạy nhanh nhưng sai trên một số ca | thiếu tính chất lựa chọn tham lam | dùng DP, hoặc chứng minh bằng lập luận hoán đổi |
-
-## Lưu ý
-
-- Điều quan trọng nhất là **định nghĩa trạng thái** bằng một câu rõ ràng. Hầu hết lỗi DP là trạng thái mơ hồ hoặc thiếu thông tin cần cho lựa chọn kế tiếp.
-- DP chỉ có ích khi có **bài con chồng lấp**. Nếu các bài con không trùng nhau (merge sort), chia để trị là đủ và không cần bảng.
-- Đệ quy thuần cho bài DP thường là mũ; thêm memo biến nó thành đa thức. Độ phức tạp là **số trạng thái nhân chi phí mỗi trạng thái**.
-- Top-down viết nhanh và chỉ tính bài con cần; bottom-up nhanh hơn, không chạm giới hạn đệ quy, và dễ tối ưu bộ nhớ. Với trạng thái sâu, chọn bottom-up.
-- Knapsack 0/1 một hàng phải duyệt `w` **giảm dần**; duyệt tăng dần là một bài toán khác (mỗi món lấy được nhiều lần).
-- `O(nW)` của knapsack là giả đa thức: đa thức theo **giá trị** của `W`, không phải theo độ dài biểu diễn. Bài toán vẫn NP-hard.
-- Tham lam đúng với một số bài (xếp lịch, Huffman, MST) và sai với nhiều bài khác (đổi tiền với hệ bất kỳ). Không chắc thì dùng DP hoặc chứng minh bằng lập luận hoán đổi.
-- Sau khi có lời giải DP, hỏi tiếp "có cấu trúc nào cho phép bỏ một chiều của bảng không": LIS `O(n²)` thành `O(n log n)` là ví dụ.
-- Lấy giá trị tối ưu và lấy cả lời giải là hai việc khác nhau: truy vết cần lưu lựa chọn hoặc giữ cả bảng.
+</Expand>

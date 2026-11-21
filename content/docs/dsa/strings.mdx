@@ -1,6 +1,6 @@
 ---
 title: Strings
-description: Chuỗi là byte, code point và ký tự hiển thị (với Unicode tiếng Việt thật), bốn thuật toán tìm chuỗi con tự cài (naive, KMP, Rabin-Karp, Horspool), suffix array cho nhiều truy vấn, và regex bằng NFA so với backtracking kèm ReDoS đo được.
+description: Vì sao hai chuỗi nhìn giống hệt nhau lại có thể không bằng nhau, và làm sao tìm một chuỗi trong văn bản lớn mà không bị chậm bất thường?
 status: draft
 tags: [dsa, strings, regex, unicode]
 authors: [tranquocvy]
@@ -8,153 +8,146 @@ references:
   - title: "Sedgewick & Wayne — Algorithms, Chapter 5: Strings"
     url: https://algs4.cs.princeton.edu/50strings/
     kind: web
-    note: tìm chuỗi con (KMP, Boyer-Moore, Rabin-Karp), trie, regex bằng NFA, nén
+    note: tìm chuỗi con (KMP, Boyer-Moore, Rabin-Karp), regex bằng NFA
   - title: "CLRS (ấn bản 4) — Chapter 32: String Matching"
     kind: book
-    note: naive, Rabin-Karp, automat hữu hạn, Knuth-Morris-Pratt
-  - title: "Gusfield — Algorithms on Strings, Trees, and Sequences (1997)"
-    kind: book
-    note: suffix tree, suffix array và các ứng dụng trong sinh học tính toán
-  - title: "Russ Cox — Regular Expression Matching Can Be Simple And Fast"
-    url: https://swtch.com/~rsc/regexp/regexp1.html
-    kind: web
-    note: Thompson NFA so với backtracking, vì sao regex của Perl và Python có thể chậm theo cấp số mũ
+    note: naive, Rabin-Karp, Knuth-Morris-Pratt
   - title: "Unicode Standard Annex #15 — Unicode Normalization Forms"
     url: https://unicode.org/reports/tr15/
     kind: web
-    note: NFC, NFD, NFKC, NFKD và khi nào hai chuỗi được coi là tương đương
+    note: NFC, NFD và khi nào hai chuỗi được coi là tương đương
   - title: "Unicode Standard Annex #29 — Unicode Text Segmentation"
     url: https://unicode.org/reports/tr29/
     kind: web
     note: grapheme cluster, vì sao một ký tự hiển thị có thể gồm nhiều code point
-  - title: "Spolsky — The Absolute Minimum Every Software Developer Must Know About Unicode and Character Sets"
-    url: https://www.joelonsoftware.com/2003/10/08/the-absolute-minimum-every-software-developer-absolutely-positively-must-know-about-unicode-and-character-sets-no-excuses/
+  - title: "Russ Cox — Regular Expression Matching Can Be Simple And Fast"
+    url: https://swtch.com/~rsc/regexp/regexp1.html
     kind: web
-    note: bài nhập môn về mã hoá ký tự
+    note: Thompson NFA so với backtracking, nguồn của ví dụ ReDoS
   - title: "Cloudflare — Details of the Cloudflare outage on July 2, 2019"
     url: https://blog.cloudflare.com/details-of-the-cloudflare-outage-on-july-2-2019/
     kind: web
     note: một regex backtracking làm CPU toàn mạng lưới chạm 100%
+  - title: "Gusfield — Algorithms on Strings, Trees, and Sequences (1997)"
+    kind: book
+    note: suffix array, suffix tree; cho phần đi sâu hơn
 ---
+
+**Cần biết trước:** Big-O và hằng số ẩn ở bài [Big-O & Complexity](/docs/dsa/complexity); hàm băm ở bài [Hash Table](/docs/dsa/hash-tables). Cách số và ký tự được biểu diễn bằng bit nằm ở bài [Data Representation](/docs/architecture/data-representation).
+
+**Cách đọc bài:** mỗi mục có một câu **Đoán trước** và kết bằng một câu **Thử ngay**. Hãy tự trả lời trong đầu (hoặc ra giấy) rồi mới xem đáp án. Việc tự nhớ lại và tự đoán giúp nhớ lâu hơn nhiều so với chỉ đọc.
 
 ## Ý chính
 
-Chuỗi là kiểu dữ liệu phổ biến nhất: tên, địa chỉ, URL, log, mã nguồn, JSON. Trông như một mảng ký tự, nhưng hai điều khiến nó **không** đơn giản như mảng số: (1) "ký tự" là khái niệm mơ hồ (byte, code point hay thứ người nhìn thấy?), và (2) thao tác điển hình không phải truy cập theo chỉ số mà là **tìm** một chuỗi trong chuỗi khác, nên chi phí phụ thuộc vào thuật toán chứ không chỉ vào cấu trúc.
+Chuỗi trông như một mảng ký tự, nhưng "ký tự" có ba nghĩa: **byte** sau khi mã hoá, **code point** trong bảng Unicode, và thứ người đọc nhìn thấy là một ký tự. Tiếng Việt có hai cách viết cùng một chữ (dựng sẵn và tách dấu), nhìn y hệt nhưng khác byte, nên so sánh, băm và tìm kiếm đều thất bại nếu không **chuẩn hoá** trước.
 
-Bài này đi từ dưới lên. Đầu tiên là chuỗi **thực sự là gì** trong bộ nhớ với Unicode tiếng Việt, vì lỗi ở tầng này làm hỏng mọi thứ phía trên (tìm không thấy chữ trông y hệt, đảo ngược làm mất dấu). Sau đó là bốn thuật toán **tìm chuỗi con** tự cài, đếm số phép so sánh trên ba loại dữ liệu và đo thời gian; **suffix array**, chỉ mục cho trường hợp một văn bản và rất nhiều truy vấn; và cuối cùng **regex**, nơi cùng một cú pháp cho hai thuật toán khác nhau một trời một vực: backtracking (mũ) và NFA (tuyến tính), với một ví dụ ReDoS đo được. Code Python 3.13 chạy thật. Bài dùng [bảng băm](/docs/dsa/hash-tables) (Rabin-Karp), [cây và trie](/docs/dsa/trees), [sắp xếp](/docs/dsa/sorting) và [độ phức tạp](/docs/dsa/complexity).
+Thao tác điển hình trên chuỗi là **tìm** một mẫu trong văn bản. Cách ngây thơ thường nhanh, nhưng có đầu vào làm nó tốn `n × m` bước; KMP bảo đảm tuyến tính trong mọi trường hợp. Regex còn nguy hiểm hơn: engine kiểu backtracking (Python `re`, Java, JavaScript) có thể chậm theo **hàm mũ** với một chuỗi đầu vào chỉ vài chục ký tự, đủ làm sập cả một dịch vụ.
 
-## Chuỗi là gì
+## Byte, code point và ký tự nhìn thấy
 
-Có ba tầng khác nhau cùng gọi là "độ dài":
+**Unicode** gán cho mỗi ký tự một số gọi là **code point**, viết `U+1EC7`. **UTF-8** là cách mã hoá code point thành byte: ký tự ASCII 1 byte, chữ có dấu tiếng Việt 2 tới 3 byte, emoji 4 byte. `len()` của Python đếm code point.
 
-- **Byte**: dữ liệu thô sau khi **mã hoá** (UTF-8 là mã hoá phổ biến nhất: ký tự ASCII 1 byte, chữ có dấu tiếng Việt 2 đến 3 byte, emoji 4 byte).
-- **Code point** (điểm mã): một số trong bảng Unicode (`U+1EC7`). Python `len(s)` đếm code point.
-- **Grapheme cluster**: thứ người đọc thấy là **một ký tự**, có thể gồm nhiều code point.
+Tiếng Việt có hai cách viết chữ `ệ`: một code point **dựng sẵn**, hoặc chữ `e` cộng hai **dấu kết hợp** (dấu chấm dưới, dấu mũ). Unicode gọi hai dạng là **NFC** (dựng sẵn) và **NFD** (tách dấu).
+
+**Đoán trước:** chữ "Việt" viết theo NFC và theo NFD. Hai chuỗi có bằng nhau (`==`) không? `len` của mỗi chuỗi là bao nhiêu?
 
 ```python
-# Chuỗi không phải mảng ký tự: byte, code point và "ký tự người nhìn thấy" là ba thứ khác nhau.
 import unicodedata as ud
 
-def show(label, s):
-    print(f"{label:<22} {s!r:<24} len (code point) = {len(s):>2}   UTF-8 = {len(s.encode('utf-8')):>2} byte   UTF-16 = {len(s.encode('utf-16-le')) // 2:>2} đơn vị")
-
-print("--- cùng một chữ nhìn y hệt, hai cách biểu diễn khác nhau ---")
 nfc = ud.normalize("NFC", "Việt")
 nfd = ud.normalize("NFD", "Việt")
-show("NFC (dựng sẵn)", nfc); show("NFD (tách dấu)", nfd)
-print(f"   nfc == nfd ? {nfc == nfd}    (nhìn giống hệt trên màn hình, nhưng so sánh bằng False)")
-print("   code point của 'ệ' dựng sẵn :", [f"U+{ord(c):04X} {ud.name(c)}" for c in "ệ"])
-print("   code point của 'ệ' tách dấu :", [f"U+{ord(c):04X} {ud.name(c)}" for c in ud.normalize("NFD", "ệ")])
-print(f"   sau chuẩn hoá về NFC cả hai: {ud.normalize('NFC', nfd) == nfc}")
-
-print()
-print("--- hậu quả với cấu trúc dữ liệu ---")
-d = {nfc: "dòng 1"}
-print(f"   dict[{nfd!r}] -> ", d.get(nfd, "KHÔNG TÌM THẤY (băm khác nhau vì byte khác nhau)"))
-print(f"   đảo ngược chuỗi NFD làm mất dấu: {nfd[::-1]!r} (dấu tách rời bị gắn vào ký tự sai)")
-print(f"   cắt 4 ký tự đầu: NFC {nfc[:3]!r}  NFD {nfd[:3]!r}  (cắt giữa chữ và dấu)")
-
-print()
-print("--- đếm gì: byte, code point, hay ký tự hiển thị? ---")
-for label, s in (("ASCII", "Hanoi"), ("tiếng Việt NFC", "Hà Nội"), ("tiếng Việt NFD", ud.normalize("NFD", "Hà Nội")),
-                 ("cờ Việt Nam", "\U0001F1FB\U0001F1F3"), ("gia đình (ZWJ)", "\U0001F468‍\U0001F469‍\U0001F467")):
-    show(label, s)
-print("   (cờ = hai ký hiệu vùng; 'gia đình' = ba emoji nối bằng hai ký tự ZWJ ẩn; thứ người nhìn thấy là MỘT ký tự)")
-
-print()
-print("--- sắp xếp và so sánh không phân biệt hoa thường ---")
-words = ["Đà Nẵng", "Hà Nội", "An Giang", "Cần Thơ", "Huế", "đà lạt"]
-print("   sorted() theo code point :", sorted(words))
-print("   'Đ' (U+0110) đứng sau 'Z' trong bảng mã nên 'Đà Nẵng' bị xếp sau 'Huế'; 'đà lạt' (chữ thường) còn xếp xa hơn")
-print(f"   'ß'.upper() = {'ß'.upper()!r} (một ký tự thành hai); 'ǆ'.title() = {'ǆ'.title()!r}; 'İ'.lower() = {'İ'.lower()!r} (len {len('İ'.lower())})")
-print(f"   so sánh không phân biệt hoa thường nên dùng casefold: 'STRASSE'.casefold() == 'straße'.casefold() -> {'STRASSE'.casefold() == 'straße'.casefold()}")
-
-print()
-print("--- bộ nhớ của str trong CPython (PEP 393): mỗi ký tự 1, 2 hoặc 4 byte tuỳ code point lớn nhất trong chuỗi ---")
-import sys
-for label, ch in (("ASCII", "a"), ("Latin-1 (é)", "é"), ("tiếng Việt dựng sẵn (ệ)", "ệ"), ("emoji ngoài BMP", "😀")):
-    t = ch * 1000
-    print(f"   1000 ký tự '{label}': getsizeof = {sys.getsizeof(t):>5} byte  ({(sys.getsizeof(t) - sys.getsizeof('')) / 1000:.0f} byte mỗi ký tự)")
-mixed = "a" * 999 + "😀"
-print(f"   999 chữ 'a' + MỘT emoji            : getsizeof = {sys.getsizeof(mixed):>5} byte  (cả chuỗi bị nới lên 4 byte mỗi ký tự vì một ký tự)")
+print(f"NFC: len = {len(nfc)}, UTF-8 = {len(nfc.encode())} byte")
+print(f"NFD: len = {len(nfd)}, UTF-8 = {len(nfd.encode())} byte")
+print("nfc == nfd:", nfc == nfd)
+print("ệ dựng sẵn:", [f"U+{ord(c):04X} {ud.name(c)}" for c in ud.normalize("NFC", "ệ")])
+print("ệ tách dấu:", [f"U+{ord(c):04X} {ud.name(c)}" for c in ud.normalize("NFD", "ệ")])
 ```
 
 ```text
---- cùng một chữ nhìn y hệt, hai cách biểu diễn khác nhau ---
-NFC (dựng sẵn)         'Việt'                   len (code point) =  4   UTF-8 =  6 byte   UTF-16 =  4 đơn vị
-NFD (tách dấu)         'Việt'                 len (code point) =  6   UTF-8 =  8 byte   UTF-16 =  6 đơn vị
-   nfc == nfd ? False    (nhìn giống hệt trên màn hình, nhưng so sánh bằng False)
-   code point của 'ệ' dựng sẵn : ['U+1EC7 LATIN SMALL LETTER E WITH CIRCUMFLEX AND DOT BELOW']
-   code point của 'ệ' tách dấu : ['U+0065 LATIN SMALL LETTER E', 'U+0323 COMBINING DOT BELOW', 'U+0302 COMBINING CIRCUMFLEX ACCENT']
-   sau chuẩn hoá về NFC cả hai: True
-
---- hậu quả với cấu trúc dữ liệu ---
-   dict['Việt'] ->  KHÔNG TÌM THẤY (băm khác nhau vì byte khác nhau)
-   đảo ngược chuỗi NFD làm mất dấu: 'ṭ̂eiV' (dấu tách rời bị gắn vào ký tự sai)
-   cắt 4 ký tự đầu: NFC 'Việ'  NFD 'Vie'  (cắt giữa chữ và dấu)
-
---- đếm gì: byte, code point, hay ký tự hiển thị? ---
-ASCII                  'Hanoi'                  len (code point) =  5   UTF-8 =  5 byte   UTF-16 =  5 đơn vị
-tiếng Việt NFC         'Hà Nội'                 len (code point) =  6   UTF-8 =  9 byte   UTF-16 =  6 đơn vị
-tiếng Việt NFD         'Hà Nội'              len (code point) =  9   UTF-8 = 12 byte   UTF-16 =  9 đơn vị
-cờ Việt Nam            '🇻🇳'                     len (code point) =  2   UTF-8 =  8 byte   UTF-16 =  4 đơn vị
-gia đình (ZWJ)         '👨\u200d👩\u200d👧'        len (code point) =  5   UTF-8 = 18 byte   UTF-16 =  8 đơn vị
-   (cờ = hai ký hiệu vùng; 'gia đình' = ba emoji nối bằng hai ký tự ZWJ ẩn; thứ người nhìn thấy là MỘT ký tự)
-
---- sắp xếp và so sánh không phân biệt hoa thường ---
-   sorted() theo code point : ['An Giang', 'Cần Thơ', 'Huế', 'Hà Nội', 'Đà Nẵng', 'đà lạt']
-   'Đ' (U+0110) đứng sau 'Z' trong bảng mã nên 'Đà Nẵng' bị xếp sau 'Huế'; 'đà lạt' (chữ thường) còn xếp xa hơn
-   'ß'.upper() = 'SS' (một ký tự thành hai); 'ǆ'.title() = 'ǅ'; 'İ'.lower() = 'i̇' (len 2)
-   so sánh không phân biệt hoa thường nên dùng casefold: 'STRASSE'.casefold() == 'straße'.casefold() -> True
-
---- bộ nhớ của str trong CPython (PEP 393): mỗi ký tự 1, 2 hoặc 4 byte tuỳ code point lớn nhất trong chuỗi ---
-   1000 ký tự 'ASCII': getsizeof =  1041 byte  (1 byte mỗi ký tự)
-   1000 ký tự 'Latin-1 (é)': getsizeof =  1057 byte  (1 byte mỗi ký tự)
-   1000 ký tự 'tiếng Việt dựng sẵn (ệ)': getsizeof =  2058 byte  (2 byte mỗi ký tự)
-   1000 ký tự 'emoji ngoài BMP': getsizeof =  4060 byte  (4 byte mỗi ký tự)
-   999 chữ 'a' + MỘT emoji            : getsizeof =  4060 byte  (cả chuỗi bị nới lên 4 byte mỗi ký tự vì một ký tự)
+NFC: len = 4, UTF-8 = 6 byte
+NFD: len = 6, UTF-8 = 8 byte
+nfc == nfd: False
+ệ dựng sẵn: ['U+1EC7 LATIN SMALL LETTER E WITH CIRCUMFLEX AND DOT BELOW']
+ệ tách dấu: ['U+0065 LATIN SMALL LETTER E', 'U+0323 COMBINING DOT BELOW', 'U+0302 COMBINING CIRCUMFLEX ACCENT']
 ```
 
-Mấy điểm cần thuộc:
+Trên màn hình hai chuỗi giống hệt, nhưng chúng là hai dãy code point khác nhau nên `==` trả về `False`. Dữ liệu thật trộn cả hai dạng: bàn phím trên Windows thường gõ ra NFC, macOS lưu tên file dạng tách dấu, copy từ PDF có thể ra bất kỳ dạng nào.
 
-1. **Cùng một chữ, hai biểu diễn.** "Việt" có thể viết bằng 4 code point **dựng sẵn** (NFC: `ệ` là một code point `U+1EC7`) hoặc 6 code point **tách dấu** (NFD: `e` cộng dấu chấm dưới `U+0323` cộng dấu mũ `U+0302`). Hiển thị y hệt, nhưng `nfc == nfd` là `False`: byte khác nhau. Dữ liệu tiếng Việt từ nguồn khác nhau (bàn phím, copy từ PDF, hệ điều hành macOS lưu tên file dạng NFD) trộn cả hai dạng thường xuyên.
-2. **Hậu quả**: `dict` tìm `nfd` trong khoá `nfc` thất bại vì băm khác nhau; đảo ngược `nfd` ra `'ṭ̂eiV'` (dấu gắn nhầm vào ký tự bên cạnh); cắt 3 ký tự đầu của NFD ra `'Vie'` (mất `ệ` vì dấu bị tách). **Quy tắc**: chuẩn hoá về một dạng (thường NFC, qua `unicodedata.normalize`) ngay khi dữ liệu vào hệ thống, trước khi so sánh, băm, lưu hay đánh chỉ mục.
-3. **Đếm**: `Hà Nội` là 6 code point ở NFC (9 byte UTF-8) nhưng 9 code point ở NFD (12 byte). Cờ Việt Nam `🇻🇳` là **hai** code point (hai ký hiệu vùng "V" và "N"). Emoji gia đình là **năm** code point (ba emoji nối bằng hai ký tự nối vô hình ZWJ), 18 byte UTF-8, nhưng **một** ký tự hiển thị. Giới hạn "độ dài tối đa 20 ký tự" cho tên người dùng cần định nghĩa rõ đơn vị (thường là grapheme cluster, theo UAX #29).
-4. **Sắp xếp theo code point không đúng thứ tự từ điển**: `sorted()` cho `['An Giang', 'Cần Thơ', 'Huế', 'Hà Nội', 'Đà Nẵng', 'đà lạt']`: "Huế" đứng **trước** "Hà Nội" (vì `u` là `U+0075` nhỏ hơn `à` là `U+00E0`), và chữ `Đ` (`U+0110`) đứng sau cả bảng chữ cái Latin. Thứ tự đúng theo ngôn ngữ cần **collation** (ICU, hoặc `COLLATE "vi_VN.utf8"` trong PostgreSQL). Và so sánh không phân biệt hoa thường phải dùng `casefold()`, không phải `lower()` (`'ß'.upper()` thành `'SS'`, `'İ'.lower()` thành hai code point).
-5. **Bộ nhớ của `str` trong CPython** (PEP 393) dùng **1, 2 hoặc 4 byte mỗi ký tự** tuỳ code point **lớn nhất** trong chuỗi: 1.000 chữ ASCII chiếm 1.041 byte, 1.000 chữ `ệ` chiếm 2.058 byte, 1.000 emoji chiếm 4.060 byte. Chỉ **một** emoji trong 999 chữ `a` kéo cả chuỗi lên 4.060 byte. Truy cập `s[i]` luôn `O(1)` theo **code point**, một lợi ích của việc dùng độ rộng cố định trong cùng một chuỗi; các ngôn ngữ dùng UTF-8 thẳng (Go, Rust) lập chỉ mục theo **byte** và `O(1)`, nhưng chỉ số có thể rơi giữa một ký tự nhiều byte.
-
-## Tìm chuỗi con
-
-Bài toán: cho văn bản `T` dài `n` và mẫu `P` dài `m`, tìm mọi vị trí `P` xuất hiện trong `T`. Cách ngây thơ (**naive**): thử từng vị trí, so sánh ký tự từng ký tự, lệch thì dịch một bước và làm lại từ đầu. Tốn `O(n·m)` trong trường hợp xấu. Ba cải tiến mỗi cái giải một khía cạnh:
-
-- **KMP** (Knuth-Morris-Pratt): khi lệch, **không dịch mẫu ngây thơ** mà dùng thông tin "phần đã khớp có tiền tố nào cũng là hậu tố", nhảy mẫu tới vị trí thông minh, và **con trỏ trên văn bản không bao giờ lùi**. Cần bảng thất bại tính trước từ mẫu trong `O(m)`. Tổng `O(n + m)` trong **mọi** trường hợp.
-- **Rabin-Karp**: so **mã băm** của cửa sổ văn bản với mã băm của mẫu thay vì so ký tự; mã băm của cửa sổ kế tiếp tính trong `O(1)` từ cửa sổ trước (**băm lăn**, rolling hash). Khớp băm mới kiểm tra thật để loại va chạm. `O(n + m)` kỳ vọng; mạnh ở chỗ **mở rộng được ra nhiều mẫu cùng lúc** (một tập băm của mọi mẫu) và 2D.
-- **Horspool** (đơn giản hoá của Boyer-Moore): so ký tự **từ cuối mẫu**; khi lệch, nhìn ký tự cuối của cửa sổ văn bản và **nhảy** theo bảng "ký tự này cách cuối mẫu bao xa", có thể nhảy cả độ dài mẫu. Trường hợp tốt `O(n/m)`: **bỏ qua phần lớn văn bản**.
-
-Dưới đây là cả bốn, đếm số phép so sánh, kiểm tra cùng cho một danh sách vị trí, và đo thời gian trên ba loại văn bản; cuối cùng so với `str.find` có sẵn:
+Còn một tầng nữa: thứ người đọc thấy là **một** ký tự có thể gồm nhiều code point.
 
 ```python
-# Tìm chuỗi con: naive, KMP, Rabin-Karp (băm lăn) và Horspool. Đếm số lần so sánh ký tự (hoặc phép tính băm) và đo thời gian.
+samples = {"Hanoi": "Hanoi", "Hà Nội (NFC)": "Hà Nội", "Hà Nội (NFD)": ud.normalize("NFD", "Hà Nội"),
+           "cờ Việt Nam": "\U0001F1FB\U0001F1F3", "emoji gia đình": "\U0001F468‍\U0001F469‍\U0001F467"}
+for label, s in samples.items():
+    print(f"{label:<15} code point = {len(s):>2}, UTF-8 = {len(s.encode()):>2} byte")
+```
+
+```text
+Hanoi           code point =  5, UTF-8 =  5 byte
+Hà Nội (NFC)    code point =  6, UTF-8 =  9 byte
+Hà Nội (NFD)    code point =  9, UTF-8 = 12 byte
+cờ Việt Nam     code point =  2, UTF-8 =  8 byte
+emoji gia đình  code point =  5, UTF-8 = 18 byte
+```
+
+Cờ Việt Nam là hai code point (hai "ký hiệu vùng" V và N). Emoji gia đình là ba emoji nối bằng hai ký tự nối vô hình, năm code point, 18 byte, nhưng người dùng thấy một ký tự. Unicode gọi đơn vị "một ký tự nhìn thấy" là **grapheme cluster**.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ `len(s)` là số ký tự. Thật ra nó là số code point; số byte thì phải `len(s.encode())`; còn số ký tự nhìn thấy cần thư viện riêng (thư viện chuẩn Python không đếm được). Giới hạn "tên tối đa 20 ký tự" phải nói rõ đơn vị: cột database thường giới hạn byte hoặc code point, người dùng thì nghĩ theo ký tự nhìn thấy.
+
+**Thử ngay:** chuỗi `"Nội"` ở dạng NFD có bao nhiêu code point?
+
+<Expand title="Đáp án">
+
+5: `N`, `o`, dấu chấm dưới, dấu mũ, `i`. Chữ `ộ` tách thành `o` cộng hai dấu kết hợp. Ở dạng NFC thì 3.
+
+</Expand>
+
+## Chuẩn hoá trước khi so sánh
+
+Vì hai dạng khác nhau từng code point, mọi thao tác dựa trên so sánh hay băm đều bị ảnh hưởng.
+
+**Đoán trước:** dict có khoá "Việt" dạng NFC. Tra bằng "Việt" dạng NFD thì thấy không?
+
+```python
+d = {nfc: "có"}
+print("tra NFD trong dict khoá NFC:", d.get(nfd, "không thấy"))
+print("tra sau khi chuẩn hoá NFC  :", d.get(ud.normalize("NFC", nfd), "không thấy"))
+print("cắt 3 code point đầu: NFC", repr(nfc[:3]), "| NFD", repr(nfd[:3]))
+
+words = ["Đà Nẵng", "Hà Nội", "An Giang", "Cần Thơ", "Huế"]
+print("sorted():", sorted(words))
+print("lower(): ", "STRASSE".lower() == "straße".lower(), "| casefold():", "STRASSE".casefold() == "straße".casefold())
+```
+
+```text
+tra NFD trong dict khoá NFC: không thấy
+tra sau khi chuẩn hoá NFC  : có
+cắt 3 code point đầu: NFC 'Việ' | NFD 'Vie'
+sorted(): ['An Giang', 'Cần Thơ', 'Huế', 'Hà Nội', 'Đà Nẵng']
+lower():  False | casefold(): True
+```
+
+Ba lỗi từ cùng một gốc:
+
+- **Tra cứu thất bại**: hash khác nhau vì code point khác nhau. Sau khi chuẩn hoá về NFC thì tìm thấy.
+- **Cắt chuỗi hỏng chữ**: 3 code point đầu của NFD là `Vie`, mất dấu của `ệ`.
+- **Sắp xếp sai**: `sorted()` so theo code point, nên `Huế` đứng trước `Hà Nội` (`u` là `U+0075`, nhỏ hơn `à` là `U+00E0`), và `Đ` (`U+0110`) đứng sau cả bảng chữ cái. Thứ tự đúng theo tiếng Việt cần **collation** theo ngôn ngữ (thư viện ICU, hoặc `COLLATE` trong PostgreSQL).
+
+Quy tắc: **chuẩn hoá về NFC ngay khi dữ liệu vào hệ thống**, trước khi so sánh, băm, lưu hay đánh chỉ mục. So sánh không phân biệt hoa thường thì dùng `casefold()`, không dùng `lower()`: chữ `ß` của tiếng Đức viết hoa thành `SS`, và chỉ `casefold` xử lý đúng.
+
+**Thử ngay:** người dùng gõ "Nguyễn" vào ô tìm kiếm, nhưng database trả về không có, dù bản ghi "Nguyễn" hiện rõ trên màn hình quản trị. Bản ghi được nhập từ một máy Mac. Nghi ngờ đầu tiên là gì, và kiểm tra thế nào?
+
+<Expand title="Đáp án">
+
+Hai bên khác dạng chuẩn hoá: bản ghi có thể ở NFD, từ khoá ở NFC. Kiểm tra bằng cách in code point của cả hai (`[hex(ord(c)) for c in s]`) hoặc so `len`. Sửa: chuẩn hoá NFC khi ghi vào database và khi nhận từ khoá, rồi chuẩn hoá lại dữ liệu cũ.
+
+</Expand>
+
+## Tìm chuỗi con: cách ngây thơ và trường hợp xấu
+
+Bài toán: tìm mọi vị trí mẫu `P` (dài `m`) xuất hiện trong văn bản `T` (dài `n`). Cách ngây thơ: thử từng vị trí, so từng ký tự, lệch thì dịch mẫu một bước và so lại từ đầu mẫu.
+
+```python
 import random, time
 
 def naive(t, p):
@@ -167,45 +160,145 @@ def naive(t, p):
             j += 1
         if j == len(p): res.append(i)
     return res, cmp
+```
 
+**Đoán trước:** văn bản 200.000 ký tự. Với văn bản ngẫu nhiên và mẫu 8 ký tự, cách ngây thơ tốn bao nhiêu lần so sánh? Với văn bản toàn chữ `a` và mẫu là 99 chữ `a` rồi một chữ `b` thì sao?
+
+```python
+random.seed(1)
+text = "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=200_000))
+pat = text[123_456:123_464]
+print(f"ngẫu nhiên, mẫu 8 ký tự     : {naive(text, pat)[1]:>12,} lần so sánh")
+bad_t, bad_p = "a" * 200_000, "a" * 99 + "b"
+print(f"'aaa...a', mẫu 'a'*99 + 'b' : {naive(bad_t, bad_p)[1]:>12,} lần so sánh")
+```
+
+```text
+ngẫu nhiên, mẫu 8 ký tự     :      208,092 lần so sánh
+'aaa...a', mẫu 'a'*99 + 'b' :   19,990,100 lần so sánh
+```
+
+Với văn bản ngẫu nhiên, hầu hết vị trí lệch ngay ký tự đầu, nên chỉ khoảng `n` lần so sánh. Với văn bản toàn `a`, mỗi vị trí khớp 99 ký tự rồi mới lệch ở `b`, và cách ngây thơ vứt bỏ hết những gì đã khớp để bắt đầu lại ở vị trí kế tiếp: khoảng `n × m` lần so sánh, gần 20 triệu. Trường hợp này không hiếm: log lặp lại, chuỗi DNA, dữ liệu do người dùng gửi lên.
+
+**Thử ngay:** văn bản là `"abababab...ab"` (100.000 ký tự) và mẫu là `"ababababc"`. Cách ngây thơ tốn cỡ `n` hay cỡ `n × m`?
+
+<Expand title="Đáp án">
+
+Cỡ `n × m`. Ở mỗi vị trí chẵn, mẫu khớp 8 ký tự `abababab` rồi lệch ở `c`. Phần đã khớp chứa đầy thông tin (nó có dạng lặp lại), nhưng cách ngây thơ không dùng.
+
+</Expand>
+
+## KMP: không bao giờ lùi trên văn bản
+
+**KMP** (Knuth-Morris-Pratt) dùng chính phần đã khớp. Khi đã khớp `k` ký tự đầu của mẫu rồi lệch, nó hỏi: trong `k` ký tự vừa khớp, **đoạn đầu dài nhất cũng là đoạn cuối** là bao nhiêu? Đoạn đó đã khớp sẵn với văn bản, nên mẫu chỉ cần lùi về đó, còn con trỏ trên văn bản không lùi. Độ dài này được tính trước cho mọi vị trí của mẫu, gọi là **bảng thất bại** `f`: `f[i]` là độ dài đoạn đầu dài nhất của `p[0..i]` đồng thời là đoạn cuối của nó (không tính chính nó).
+
+```python
 def failure(p):
-    """f[i] = độ dài tiền tố dài nhất của p[:i+1] cũng là hậu tố (không tính chính nó)."""
     f, k = [0] * len(p), 0
     for i in range(1, len(p)):
-        while k and p[i] != p[k]: k = f[k - 1]
+        while k and p[i] != p[k]: k = f[k - 1]      # đoạn đầu không nối dài được: lùi về đoạn ngắn hơn
         if p[i] == p[k]: k += 1
         f[i] = k
     return f
 
 def kmp(t, p):
-    f, cmp, res, k = failure(p), 0, [], 0
-    for i, c in enumerate(t):
-        while k:
+    f, cmp, res, k = failure(p), 0, [], 0           # k: số ký tự của mẫu đang khớp
+    for i, c in enumerate(t):                       # mỗi ký tự văn bản đọc đúng một lần
+        while True:
             cmp += 1
-            if c == p[k]: break
-            k = f[k - 1]                           # lùi trong MẪU, con trỏ trên văn bản không bao giờ lùi
-        else:
-            cmp += 1
-        if c == p[k]: k += 1
-        if k == len(p): res.append(i - k + 1); k = f[k - 1]
+            if c == p[k]: k += 1; break
+            if k == 0: break
+            k = f[k - 1]                            # lùi trong mẫu, không lùi trên văn bản
+        if k == len(p):                             # khớp trọn mẫu, kết thúc ở vị trí i
+            res.append(i - k + 1); k = f[k - 1]
     return res, cmp
+```
 
-def rabin_karp(t, p, base=256, mod=1_000_003):
-    m, n = len(p), len(t)
-    if m > n: return [], 0
-    hp = ht = 0; high = pow(base, m - 1, mod); ops, res, collisions = 0, [], 0
-    for i in range(m): hp = (hp * base + ord(p[i])) % mod; ht = (ht * base + ord(t[i])) % mod
-    for i in range(n - m + 1):
-        ops += 1
-        if hp == ht:
-            if t[i:i + m] == p: res.append(i)
-            else: collisions += 1                  # băm trùng nhưng chuỗi khác: phải kiểm tra thật và loại
-        if i < n - m: ht = ((ht - ord(t[i]) * high) * base + ord(t[i + m])) % mod      # cập nhật băm trong O(1)
-    return res, ops, collisions
+### Tính bảng thất bại: ba ví dụ
 
+#### Ví dụ 1 (giải sẵn): mẫu `ABABCABAB`
+
+Ở mỗi vị trí `i`, nhìn đoạn `p[0..i]` và tìm đoạn đầu dài nhất cũng là đoạn cuối:
+
+1. `A`: không có đoạn đầu thật sự nào, `f[0] = 0`.
+2. `AB`: đoạn đầu `A`, đoạn cuối `B`, không khớp: `f[1] = 0`.
+3. `ABA`: `A` vừa là đầu vừa là cuối: `f[2] = 1`.
+4. `ABAB`: `AB` vừa là đầu vừa là cuối: `f[3] = 2`.
+5. `ABABC`: không đoạn đầu nào kết thúc bằng `C`: `f[4] = 0`.
+6. `ABABCA`, `ABABCAB`, `ABABCABA`, `ABABCABAB`: `A`, `AB`, `ABA`, `ABAB`, nên `1, 2, 3, 4`.
+
+```python
+p = "ABABCABAB"
+print("ký tự:", "  ".join(p))
+print("f[i] :", "  ".join(str(x) for x in failure(p)))
+```
+
+```text
+ký tự: A  B  A  B  C  A  B  A  B
+f[i] : 0  0  1  2  0  1  2  3  4
+```
+
+Nếu đã khớp 8 ký tự `ABABCABA` rồi lệch ở ký tự thứ 9, KMP lùi mẫu về `f[7] = 3`: ba ký tự `ABA` cuối cùng của phần vừa khớp chính là ba ký tự đầu của mẫu, nên không cần so lại.
+
+#### Ví dụ 2 (giải một nửa): mẫu `AABAAA`
+
+Điền vào chỗ trống:
+
+1. `f[0] = 0`; `AA`: `A` vừa đầu vừa cuối, `f[1] = 1`.
+2. `AAB`: không đoạn đầu nào kết thúc bằng `B`, `f[2] = 0`.
+3. `AABA`: `f[3] =` ___.
+4. `AABAA`: `f[4] =` ___.
+5. `AABAAA`: đoạn `AAB` không phải đoạn cuối; đoạn đầu dài nhất cũng là đoạn cuối là ___, nên `f[5] =` ___.
+
+<Expand title="Đáp án">
+
+3. `1` (`A`).
+4. `2` (`AA`).
+5. `AA`, nên `f[5] = 2`. Đây là chỗ vòng `while` trong `failure` lùi: đoạn `AA` đang có không nối thành `AAB` được (ký tự kế là `A`, không phải `B`), nên lùi về `f[1] = 1` rồi nối thành `AA`.
+
+```python
+print(failure("AABAAA"))
+```
+
+```text
+[0, 1, 0, 1, 2, 2]
+```
+
+</Expand>
+
+#### Ví dụ 3 (tự làm): mẫu `ABCABD`
+
+Tính bảng thất bại. Nếu đã khớp `ABCAB` rồi lệch ở ký tự thứ 6, KMP lùi mẫu về đâu?
+
+<Expand title="Đáp án">
+
+`f = [0, 0, 0, 1, 2, 0]`. Đã khớp `ABCAB` (5 ký tự) thì lùi về `f[4] = 2`: hai ký tự `AB` cuối của phần đã khớp là đầu mẫu, nên tiếp tục so ký tự thứ 3 của mẫu (`C`) với ký tự hiện tại của văn bản.
+
+```python
+print(failure("ABCABD"))
+```
+
+```text
+[0, 0, 0, 1, 2, 0]
+```
+
+</Expand>
+
+### So sánh trên ba loại dữ liệu
+
+Hai thuật toán khác đáng biết:
+
+- **Horspool** (bản đơn giản của Boyer-Moore) so từ **cuối** mẫu; khi lệch, nhìn ký tự cuối của cửa sổ văn bản và **nhảy** xa nhất có thể, có khi cả độ dài mẫu. Nó bỏ qua phần lớn văn bản.
+- **Rabin-Karp** so **hash** của cửa sổ văn bản với hash của mẫu, và tính hash của cửa sổ kế tiếp từ cửa sổ trước trong `O(1)` (**rolling hash**). Hash trùng mới so thật.
+
+Code dưới cài Horspool rồi chạy naive, KMP và Horspool trên ba loại dữ liệu, đếm số lần so sánh ký tự, kèm thời gian của `str.find` có sẵn.
+
+**Đoán trước:** trên văn bản ngẫu nhiên, thuật toán nào tốn ít so sánh nhất? Trên trường hợp xấu, KMP tốn cỡ bao nhiêu?
+
+```python
 def horspool(t, p):
-    m, shift, cmp, res = len(p), {}, 0, []
-    for i in range(m - 1): shift[p[i]] = m - 1 - i
+    m, cmp, res = len(p), 0, []
+    shift = {p[i]: m - 1 - i for i in range(m - 1)}  # ký tự này cách cuối mẫu bao xa
     i = 0
     while i <= len(t) - m:
         j = m - 1
@@ -214,181 +307,133 @@ def horspool(t, p):
             if t[i + j] != p[j]: break
             j -= 1
         if j < 0: res.append(i)
-        i += shift.get(t[i + m - 1], m)            # nhảy theo ký tự cuối cửa sổ: có thể nhảy cả độ dài mẫu
+        i += shift.get(t[i + m - 1], m)             # ký tự không có trong mẫu: nhảy cả độ dài mẫu
     return res, cmp
-
-print("bảng thất bại của KMP cho mẫu 'ABABCABAB' (tính tay: tiền tố cũng là hậu tố dài nhất ở mỗi vị trí):")
-p = "ABABCABAB"
-print("   ký tự :", "  ".join(p))
-print("   f[i]  :", "  ".join(str(x) for x in failure(p)))
 
 random.seed(1)
 cases = {
-    "văn bản ngẫu nhiên (26 chữ cái), mẫu 8 ký tự": ("".join(random.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(200_000)), None, 8),
-    "DNA (4 chữ cái), mẫu 12 ký tự":                ("".join(random.choice("ACGT") for _ in range(200_000)), None, 12),
-    "trường hợp xấu cho naive: 'aaaa...a' và mẫu 'aaa...ab'": ("a" * 200_000, "a" * 99 + "b", None),
+    "văn bản ngẫu nhiên, mẫu 8":  (text, pat),
+    "DNA (ACGT), mẫu 12":         ("".join(random.choices("ACGT", k=200_000)), None),
+    "'aaa...a', mẫu 'a'*99+'b'":  (bad_t, bad_p),
 }
-print()
-print(f"{'tình huống':<58} {'naive':>10} {'KMP':>10} {'Rabin-Karp':>12} {'Horspool':>10} {'find()':>8}   (số so sánh ký tự; dòng dưới: ms)")
-for name, (t, pat, plen) in cases.items():
-    if pat is None:
-        i0 = random.randrange(len(t) - plen); pat = t[i0:i0 + plen]
-    r1, c1 = naive(t, pat); r2, c2 = kmp(t, pat); r3, c3, col = rabin_karp(t, pat); r4, c4 = horspool(t, pat)
-    assert r1 == r2 == r3 == r4                  # bốn thuật toán cho cùng danh sách vị trí
-    ts = []
-    for fn in (naive, kmp, rabin_karp, horspool):
-        t0 = time.perf_counter(); fn(t, pat); ts.append((time.perf_counter() - t0) * 1000)
-    t0 = time.perf_counter()
-    for _ in range(5): t.find(pat)
-    tf = (time.perf_counter() - t0) / 5 * 1000
-    print(f"{name:<58} {c1:>10,} {c2:>10,} {c3:>12,} {c4:>10,} {tf:>6.2f}ms")
-    print(f"{'   thời gian (ms)':<58} {ts[0]:>10.0f} {ts[1]:>10.0f} {ts[2]:>12.0f} {ts[3]:>10.0f}")
-```
-
-```text
-bảng thất bại của KMP cho mẫu 'ABABCABAB' (tính tay: tiền tố cũng là hậu tố dài nhất ở mỗi vị trí):
-   ký tự : A  B  A  B  C  A  B  A  B
-   f[i]  : 0  0  1  2  0  1  2  3  4
-
-tình huống                                                      naive        KMP   Rabin-Karp   Horspool   find()   (số so sánh ký tự; dòng dưới: ms)
-văn bản ngẫu nhiên (26 chữ cái), mẫu 8 ký tự                  207,947    207,646      199,993     29,788   0.06ms
-   thời gian (ms)                                                  16         11           28          4
-DNA (4 chữ cái), mẫu 12 ký tự                                 266,459    249,032      199,989     51,091   0.07ms
-   thời gian (ms)                                                  18         15           29          6
-trường hợp xấu cho naive: 'aaaa...a' và mẫu 'aaa...ab'     19,990,100    399,901      199,901    199,901   0.56ms
-   thời gian (ms)                                                1044         23           28         26
-```
-
-**Bảng thất bại của KMP**, tính tay cho mẫu `ABABCABAB`: `f[i]` là độ dài tiền tố dài nhất của `p[0..i]` đồng thời là hậu tố của nó. Ví dụ `f[3] = 2` vì `AB` là tiền tố của `ABAB` và cũng là hậu tố của nó; `f[8] = 4` vì `ABAB` vừa là tiền tố của cả mẫu vừa là hậu tố. Khi đã khớp 8 ký tự `ABABCABA` mà ký tự thứ 9 lệch, KMP không quay lại đầu mà lùi mẫu về `f[7] = 3` (đã khớp sẵn `ABA`) và tiếp tục.
-
-Đọc bảng đo:
-
-| Tình huống | naive | KMP | Rabin-Karp | Horspool |
-|---|---|---|---|---|
-| Văn bản ngẫu nhiên, 26 chữ cái | 207.947 | 207.646 | 199.993 (lần băm) | **29.788** |
-| DNA, 4 chữ cái | 266.459 | 249.032 | 199.989 | **51.091** |
-| `aaaa...a`, mẫu `aaa...ab` | **19.990.100** | 399.901 | 199.901 | 199.901 |
-
-- Văn bản **ngẫu nhiên**, mọi thuật toán đều gần `n` phép so sánh (200.000): lệch gần như tức thì nên naive không tệ. **Horspool** bỏ qua phần lớn văn bản (chỉ ~30.000 so sánh, ít hơn 7 lần) vì bảng chữ cái lớn và mẫu dài cho phép nhảy xa. Với DNA (chỉ 4 chữ cái), mỗi ký tự xuất hiện trong mẫu nhiều hơn nên nhảy ngắn hơn (51.091).
-- **Trường hợp xấu cho naive**: văn bản toàn `a` và mẫu `aaa…ab` (99 chữ `a` rồi `b`): mỗi vị trí khớp 99 ký tự rồi mới lệch ở ký tự cuối. Naive tốn **19.990.100** phép so sánh (`≈ n·m`), **1.029 ms**; KMP chỉ **399.901** (`≈ 2n`) trong **23 ms**, nhanh hơn 45 lần; Rabin-Karp và Horspool cỡ `n` (199.901). Đây là điểm vì sao cần KMP: bảo đảm **tuyến tính trong mọi trường hợp**, không phụ thuộc dữ liệu.
-- **Thời gian**: bản Python tự cài tốn 4 đến 30 ms cho 200.000 ký tự ở hai loại văn bản đầu, trong khi **`str.find` chỉ mất 0,06 ms**: nhanh hơn hàng trăm lần vì chạy bằng C và dùng thuật toán tinh chỉnh (CPython kết hợp ý tưởng kiểu Horspool với thuật toán Two-Way cho mẫu dài, từ Python 3.10). Bài học cũ, đã thấy ở [Big-O](/docs/dsa/complexity): hằng số cài đặt có thể lấn át lý thuyết; trong thực tế **dùng hàm của thư viện**, và tự cài thuật toán khi bài toán đặc biệt (nhiều mẫu cùng lúc, dữ liệu dòng chảy, ràng buộc bộ nhớ).
-
-Rabin-Karp đáng nhắc riêng vì **băm lăn** là một kỹ thuật dùng ở nhiều nơi khác: công cụ đồng bộ file `rsync` dùng băm lăn để tìm khối trùng giữa hai phiên bản của một file, và các hệ thống sao lưu và loại bỏ trùng lặp dùng nó để **cắt dữ liệu thành khối theo nội dung** (content-defined chunking), chống việc chèn một byte ở đầu file làm đổi mọi khối.
-
-## Suffix array: một văn bản, rất nhiều truy vấn
-
-Mọi thuật toán trên đều **quét văn bản** cho mỗi truy vấn: `O(n)` mỗi lần. Nếu văn bản **cố định** và truy vấn **rất nhiều** (genome 3 tỉ ký tự, kho mã nguồn, từ điển), ta muốn **xây chỉ mục một lần** rồi trả lời mỗi truy vấn không phụ thuộc `n`. **Suffix array** là mảng chứa các chỉ số bắt đầu của mọi **hậu tố** của `T`, **sắp xếp theo thứ tự từ điển**. Mọi hậu tố bắt đầu bằng mẫu `P` nằm **liền nhau** trong mảng đã sắp xếp, nên tìm hai đầu bằng **tìm nhị phân** trong `O(m log n)`.
-
-Cách xây trực tiếp (sắp xếp các hậu tố) tốn `O(n² log n)`. Bản dưới dùng **nhân đôi tiền tố** (prefix doubling): xếp hạng hậu tố theo 1 ký tự đầu, rồi 2, 4, 8... và mỗi vòng dùng hạng của vòng trước để so sánh cặp, tổng `O(n log² n)`. Thêm **mảng LCP** (độ dài tiền tố chung của hai hậu tố liền kề trong mảng) tính bằng thuật toán Kasai trong `O(n)`, giúp tìm chuỗi lặp dài nhất, so sánh hai hậu tố bất kỳ...
-
-```python
-# Chỉ mục trên chuỗi: suffix array (xây bằng nhân đôi tiền tố), tìm mọi vị trí của một mẫu bằng tìm nhị phân, mảng LCP.
-import random, time, bisect
-
-def suffix_array(s):
-    """Prefix doubling: xếp hạng các hậu tố theo 1, 2, 4, 8... ký tự đầu, O(n log^2 n)."""
-    n = len(s); sa = list(range(n)); rank = [ord(c) for c in s]; k = 1
-    while True:
-        key = lambda i: (rank[i], rank[i + k] if i + k < n else -1)
-        sa.sort(key=key)
-        new = [0] * n
-        for a in range(1, n): new[sa[a]] = new[sa[a - 1]] + (key(sa[a]) != key(sa[a - 1]))
-        rank = new
-        if rank[sa[-1]] == n - 1: break
-        k *= 2
-    return sa
-
-def lcp_array(s, sa):
-    """Kasai: lcp[i] = độ dài tiền tố chung của hậu tố sa[i] và sa[i-1], tính trong O(n)."""
-    n = len(s); rank = [0] * n
-    for i, p in enumerate(sa): rank[p] = i
-    lcp, h = [0] * n, 0
-    for i in range(n):
-        if rank[i] > 0:
-            j = sa[rank[i] - 1]
-            while i + h < n and j + h < n and s[i + h] == s[j + h]: h += 1
-            lcp[rank[i]] = h
-            if h: h -= 1
-        else: h = 0
-    return lcp
-
-def search(s, sa, p):
-    """Mọi vị trí của p: các hậu tố bắt đầu bằng p nằm liền nhau trong mảng; tìm nhị phân hai đầu."""
-    lo = bisect.bisect_left(sa, p, key=lambda i: s[i:i + len(p)])
-    hi = bisect.bisect_right(sa, p, key=lambda i: s[i:i + len(p)])
-    return sorted(sa[lo:hi])
-
-s = "banana"
-sa = suffix_array(s)
-print(f"văn bản {s!r}: các hậu tố theo thứ tự từ điển")
-lcp = lcp_array(s, sa)
-for i, p in enumerate(sa): print(f"   sa[{i}] = {p}   {s[p:]:<8} lcp = {lcp[i]}")
-print("   tìm 'ana':", search(s, sa, "ana"), "| tìm 'na':", search(s, sa, "na"), "| tìm 'x':", search(s, sa, "x"))
-i = max(range(len(lcp)), key=lambda i: lcp[i])
-print(f"   chuỗi lặp dài nhất = {s[sa[i]:sa[i] + lcp[i]]!r} (độ dài {lcp[i]}): chính là lcp lớn nhất")
-
-random.seed(2)
-N = 100_000
-text = "".join(random.choice("abcdefghijklmnopqrstuvwxyz ") for _ in range(N))
-t0 = time.perf_counter(); sa = suffix_array(text); t_build = time.perf_counter() - t0
-assert all(text[sa[i]:] <= text[sa[i + 1]:] for i in range(0, N - 1, 997))
-patterns = [text[i:i + 6] for i in random.sample(range(N - 6), 2000)]
-t0 = time.perf_counter(); res_sa = [search(text, sa, p) for p in patterns]; t_sa = time.perf_counter() - t0
-def all_find(t, p):
+def find_all(t, p):                                 # mọi vị trí, bằng str.find có sẵn
     out, i = [], t.find(p)
     while i != -1: out.append(i); i = t.find(p, i + 1)
     return out
-t0 = time.perf_counter(); res_find = [all_find(text, p) for p in patterns]; t_find = time.perf_counter() - t0
-assert res_sa == res_find
-print()
-print(f"văn bản {N:,} ký tự, 2.000 mẫu 6 ký tự, mỗi mẫu tìm MỌI vị trí:")
-print(f"   suffix array: xây một lần {t_build * 1000:7.0f} ms, rồi 2.000 truy vấn {t_sa * 1000:7.0f} ms ({t_sa / 2000 * 1e6:6.0f} µs mỗi truy vấn)")
-print(f"   str.find lặp lại (quét lại cả văn bản mỗi truy vấn): {t_find * 1000:7.0f} ms ({t_find / 2000 * 1e6:6.0f} µs mỗi truy vấn)")
+
+def best_ms(fn, *args):
+    times = []
+    for _ in range(3):
+        t0 = time.perf_counter(); fn(*args); times.append(time.perf_counter() - t0)
+    return min(times) * 1000
+
+print(f"{'':<28}{'naive':>12}{'KMP':>11}{'Horspool':>10} | {'KMP (ms)':>9}{'str.find (ms)':>14}")
+for name, (t, p) in cases.items():
+    if p is None: p = t[50_000:50_012]
+    (r1, c1), (r2, c2), (r3, c3) = naive(t, p), kmp(t, p), horspool(t, p)
+    assert r1 == r2 == r3 == find_all(t, p)         # mọi cách cho cùng các vị trí
+    print(f"{name:<28}{c1:>12,}{c2:>11,}{c3:>10,} | {best_ms(kmp, t, p):>9.1f}{best_ms(find_all, t, p):>14.2f}")
 ```
 
 ```text
-văn bản 'banana': các hậu tố theo thứ tự từ điển
-   sa[0] = 5   a        lcp = 0
-   sa[1] = 3   ana      lcp = 1
-   sa[2] = 1   anana    lcp = 3
-   sa[3] = 0   banana   lcp = 0
-   sa[4] = 4   na       lcp = 0
-   sa[5] = 2   nana     lcp = 2
-   tìm 'ana': [1, 3] | tìm 'na': [2, 4] | tìm 'x': []
-   chuỗi lặp dài nhất = 'ana' (độ dài 3): chính là lcp lớn nhất
-
-văn bản 100,000 ký tự, 2.000 mẫu 6 ký tự, mỗi mẫu tìm MỌI vị trí:
-   suffix array: xây một lần     154 ms, rồi 2.000 truy vấn       8 ms (     4 µs mỗi truy vấn)
-   str.find lặp lại (quét lại cả văn bản mỗi truy vấn):     106 ms (    53 µs mỗi truy vấn)
+                                   naive        KMP  Horspool |  KMP (ms) str.find (ms)
+văn bản ngẫu nhiên, mẫu 8        208,092    207,796    30,087 |      23.6          0.09
+DNA (ACGT), mẫu 12               266,348    248,368    56,698 |      33.3          0.22
+'aaa...a', mẫu 'a'*99+'b'     19,990,100    399,901   199,901 |      44.9          0.59
 ```
 
-Với `banana`: các hậu tố xếp theo từ điển là `a`, `ana`, `anana`, `banana`, `na`, `nana` (chỉ số `5, 3, 1, 0, 4, 2`). Tìm `ana` cho `[1, 3]` và `na` cho `[2, 4]`, đúng; hậu tố `ana` và `anana` chung `ana` nên LCP bằng 3, **đó cũng là chuỗi lặp dài nhất** của văn bản: lặp dài nhất chính là giá trị lớn nhất của mảng LCP.
+- Văn bản ngẫu nhiên: naive và KMP đều quanh `n`. Horspool ít hơn nhiều lần, vì phần lớn ký tự cuối cửa sổ không có trong mẫu nên nó nhảy cả 8 ô.
+- DNA chỉ có 4 chữ cái: mỗi ký tự đều có trong mẫu, nên Horspool nhảy ngắn hơn, nhưng vẫn thắng.
+- Trường hợp xấu: naive gần 20 triệu, KMP chỉ khoảng `2n`. KMP bảo đảm `O(n + m)` với **mọi** đầu vào: mỗi bước hoặc tiến trên văn bản, hoặc lùi trong mẫu, và tổng số lần lùi không vượt số lần tiến.
 
-Với văn bản 100.000 ký tự và 2.000 mẫu 6 ký tự (mỗi mẫu tìm mọi vị trí): xây mảng một lần tốn **154 ms**, rồi mỗi truy vấn tốn khoảng **4 µs**; lặp lại `str.find` cho mỗi mẫu tốn **53 µs**, chậm hơn 13 lần, và tỉ lệ này **tăng theo `n`** (suffix array không quét lại văn bản, `find` thì có). Mỗi truy vấn tiết kiệm khoảng 49 µs nên chi phí xây (154 ms) hoà vốn sau khoảng 3.000 truy vấn. Cái giá: bộ nhớ (một số nguyên cho mỗi ký tự văn bản, thường gấp 4 đến 8 lần văn bản) và văn bản phải **cố định** (đổi văn bản là xây lại). Biến thể tiết kiệm bộ nhớ hơn là **FM-index** (dựa trên biến đổi Burrows-Wheeler, nén được tới gần kích thước nén của văn bản) mà các công cụ gióng hàng DNA như BWA và Bowtie dùng để tìm hàng triệu đoạn đọc trong bộ gen người. **Suffix tree** làm cùng việc ở dạng cây (xây trong `O(n)` bằng thuật toán Ukkonen, nhưng tốn bộ nhớ hơn nhiều).
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ tự cài KMP hay Horspool sẽ nhanh hơn `str.find`. Thật ra `str.find` chạy bằng C với thuật toán tinh chỉnh (CPython kết hợp ý tưởng kiểu Horspool với thuật toán Two-Way), và nhanh hơn KMP tự cài bằng Python từ khoảng 75 tới hơn 250 lần, như hai cột cuối cho thấy. Hiểu thuật toán để biết **vì sao** nó nhanh và khi nào nó có thể chậm; còn trong code thật, dùng hàm của thư viện.
 
-Họ hàng gần là **trie** ([Tree](/docs/dsa/trees)): trie của tập từ trả lời "từ nào bắt đầu bằng tiền tố này"; suffix array là cách rút gọn của trie của **mọi hậu tố**. Còn khi cần tìm **nhiều mẫu cùng lúc** trong một dòng văn bản (lọc từ khoá cấm, quét virus), thuật toán **Aho-Corasick** biến trie thành một automat chạy trên văn bản một lần trong `O(n + tổng độ dài mẫu + số kết quả)`.
+**Thử ngay:** vì sao Horspool nhảy xa hơn khi mẫu dài và bảng chữ cái lớn?
 
-## Regex: hai thuật toán sau một cú pháp
+<Expand title="Đáp án">
 
-Regex (biểu thức chính quy) mô tả một **tập chuỗi**; câu hỏi "chuỗi này có khớp không" có hai cách giải rất khác nhau.
+Bước nhảy tối đa bằng độ dài mẫu, và xảy ra khi ký tự cuối cửa sổ không có trong mẫu. Mẫu dài thì nhảy được xa; bảng chữ cái lớn thì xác suất một ký tự ngẫu nhiên không có trong mẫu cao. Với DNA (4 chữ cái), hầu như mọi ký tự đều có trong mẫu, nên bước nhảy ngắn.
 
-**Backtracking** (Perl, Python `re`, Java, JavaScript, PCRE): duyệt regex như một chương trình, mỗi khi gặp lựa chọn (`|`, `*`) thì thử một nhánh, **thất bại thì quay lui** thử nhánh khác. Dễ hiểu, hỗ trợ tính năng mạnh (tham chiếu ngược `\1`, lookahead), nhưng với regex có lựa chọn **lồng nhau** thì số nhánh phải thử tăng **theo cấp số mũ**.
+</Expand>
 
-**NFA** (Thompson, 1968; RE2, Rust `regex`, Go `regexp`, `grep` cổ điển): dựng **automat hữu hạn không tất định** từ regex, rồi chạy với **tập trạng thái đang sống**: mỗi ký tự của văn bản làm tập đó chuyển sang tập mới, không bao giờ quay lui. Thời gian `O(|regex| × |văn bản|)`, **tuyến tính trong mọi trường hợp**, đổi lại không hỗ trợ tham chiếu ngược (bài toán này NP-khó).
+## Regex: cùng cú pháp, hai thuật toán
 
-Dưới đây là bộ dựng NFA kiểu Thompson (hỗ trợ ký tự, `.`, `|`, `*`, `+`, `?`, ngoặc) cùng bộ mô phỏng tập trạng thái, so với `re` của Python trên regex `(a+)+b` với văn bản toàn chữ `a` (không bao giờ khớp, vì không có `b`):
+Regex mô tả một tập chuỗi. Có hai cách kiểm tra một chuỗi có khớp không:
+
+- **Backtracking** (Python `re`, Java, JavaScript, PCRE): đi theo regex như một chương trình; gặp lựa chọn (`|`, `*`, `+`) thì thử một nhánh, thất bại thì **quay lui** thử nhánh khác. Hỗ trợ nhiều tính năng (tham chiếu ngược `\1`, lookahead), nhưng số nhánh có thể bùng nổ.
+- **Automat hữu hạn** (Thompson NFA, 1968; dùng trong RE2, Rust `regex`, Go `regexp`, `grep`): giữ **tập mọi trạng thái** có thể đang ở, mỗi ký tự văn bản cập nhật cả tập một lần, không bao giờ quay lui. Luôn tuyến tính theo độ dài văn bản, đổi lại không hỗ trợ tham chiếu ngược.
+
+**Đoán trước:** regex `(a+)+b` trên chuỗi `n` chữ `a` (không có `b`, nên không bao giờ khớp). Khi `n` thêm 2, thời gian của `re` tăng bao nhiêu lần?
 
 ```python
-# Regex hai kiểu: backtracking (như module re của Python) và mô phỏng NFA kiểu Thompson (không bao giờ quay lui).
-# Hỗ trợ: ký tự thường, '.', '|', '*', '+', '?', ngoặc ( ).
-import re, time
+import re
+prev = None
+for n in (16, 18, 20, 22, 24, 26):
+    t0 = time.perf_counter(); re.match(r"(a+)+b", "a" * n); dt = time.perf_counter() - t0
+    print(f"n={n}: {dt * 1000:8.1f} ms" + (f"   (x{dt / prev:.1f} so với n-2)" if prev else ""))
+    prev = dt
+t0 = time.perf_counter(); re.match(r"a+b", "a" * 100_000); dt = time.perf_counter() - t0
+print(f"a+b trên 100.000 chữ a: {dt * 1000:.1f} ms")
+```
 
-# ---- phân tích cú pháp thành cây, rồi dựng NFA bằng cấu trúc Thompson ----
+```text
+n=16:      5.2 ms
+n=18:     15.8 ms   (x3.0 so với n-2)
+n=20:     80.3 ms   (x5.1 so với n-2)
+n=22:    333.5 ms   (x4.2 so với n-2)
+n=24:   1169.3 ms   (x3.5 so với n-2)
+n=26:   4583.3 ms   (x3.9 so với n-2)
+a+b trên 100.000 chữ a: 0.2 ms
+```
+
+Mỗi khi thêm 2 ký tự, thời gian nhân khoảng 4: thời gian **gấp đôi với mỗi ký tự**, tăng theo hàm mũ. Lý do: `(a+)+` có thể chia `n` chữ `a` thành các nhóm theo `2^(n-1)` cách, và vì không có `b` để khớp, backtracking thử hết mọi cách chia rồi mới chịu thua. Cùng đường cong đó, 40 chữ `a` sẽ mất hàng giờ. Regex tương đương không có lặp lồng nhau, `a+b`, xử lý 100.000 chữ `a` trong tích tắc.
+
+Đây là **ReDoS** (regular expression denial of service): kẻ tấn công không cần gửi nhiều dữ liệu, chỉ cần một chuỗi ngắn được chọn đúng. Năm 2016 Stack Overflow ngừng hoạt động vì một regex xử lý khoảng trắng gặp một bài đăng có hàng nghìn khoảng trắng; năm 2019 Cloudflare làm CPU toàn mạng lưới lên 100% vì một quy tắc tường lửa có regex kiểu này.
+
+**Hiểu lầm hay gặp ở đây:** nhiều người nghĩ regex luôn chạy tuyến tính theo độ dài chuỗi. Thật ra chỉ engine kiểu automat (RE2, Rust, Go) mới bảo đảm điều đó. Với engine backtracking, tránh lặp lồng nhau (`(a+)+`, `(a|aa)+`, `(.*)*`), giới hạn độ dài đầu vào, và dùng engine tuyến tính cho dữ liệu không tin cậy.
+
+**Thử ngay:** regex `^(\w+\s?)*$` dùng để kiểm tra "chuỗi gồm các từ cách nhau bởi khoảng trắng". Vì sao nó có thể bị ReDoS, và viết lại thế nào?
+
+<Expand title="Đáp án">
+
+`(\w+\s?)*` là lặp lồng nhau, và vì `\s?` có thể rỗng, một từ dài có thể chia thành nhiều lần `\w+` theo hàm mũ cách. Với một chuỗi dài toàn chữ kết thúc bằng một ký tự không hợp lệ (như `!`), backtracking thử mọi cách chia. Viết lại sao cho mỗi vị trí chỉ có một cách khớp: `^\w+(\s\w+)*$`, khoảng trắng bắt buộc giữa các từ.
+
+</Expand>
+
+## Tự kiểm tra tổng hợp
+
+Các câu dưới trộn kiến thức của nhiều mục, nên khó hơn câu "Thử ngay". Nếu vướng, quay lại mục tương ứng.
+
+1. Một trường "tên hiển thị" giới hạn 20 ký tự. Người dùng nhập 10 emoji gia đình và bị báo quá dài. Hệ thống đang đếm theo đơn vị nào, và nên đếm theo gì?
+2. Một hệ thống loại bỏ file trùng bằng cách so sánh tên file. Hai file tên `Báo cáo.docx`, một tạo trên Windows, một trên macOS, bị coi là khác nhau. Vì sao, và nên sửa ở đâu?
+3. Bạn tìm một mẫu 1.000 ký tự trong log 1 GB gồm các dòng gần như giống hệt nhau. Có nên lo về cách ngây thơ không? Nếu dùng `str.find` thì sao?
+4. API nhận một trường email và kiểm tra bằng regex phức tạp lấy từ Internet, chạy trên Python `re`. Có rủi ro gì? Đề xuất hai cách giảm rủi ro.
+5. `sorted(names)` cho danh sách tên tiếng Việt xếp "Đức" sau "Yến". Vì sao, và có nên tự viết hàm so sánh không?
+
+<Expand title="Đáp án">
+
+1. Mỗi emoji gia đình là 5 code point, 18 byte. 10 emoji là 50 code point hay 180 byte, vượt 20 theo cả hai đơn vị. Giới hạn hiển thị nên đếm theo grapheme cluster (10 ký tự nhìn thấy); giới hạn lưu trữ thì đếm byte, và nói rõ cho người dùng.
+2. macOS lưu tên file dạng tách dấu (gần NFD), Windows dùng dạng dựng sẵn (NFC). Cùng tên nhìn thấy nhưng khác code point. Chuẩn hoá tên về NFC ngay khi đọc vào, trước khi so sánh hay băm.
+3. Có: các dòng gần giống nhau đúng là trường hợp mẫu khớp gần hết rồi mới lệch, cách ngây thơ tiến tới `n × m` (`10^12` lần so sánh). `str.find` của CPython dùng thuật toán Two-Way cho mẫu dài, bảo đảm tuyến tính, nên an toàn.
+4. Regex phức tạp với lặp lồng nhau có thể bị ReDoS: một chuỗi vài chục ký tự giữ một luồng CPU hàng giây tới hàng giờ. Giảm rủi ro: giới hạn độ dài trường trước khi chạy regex; dùng regex đơn giản không lặp lồng nhau (hoặc thư viện kiểm tra email chuyên dụng); hoặc dùng engine tuyến tính như RE2.
+5. `sorted()` so theo code point: `Đ` là `U+0110`, lớn hơn mọi chữ Latin không dấu kể cả `Y`. Không nên tự viết: thứ tự chữ cái tiếng Việt (dấu, chữ `đ`, `ơ`, `ư`) có nhiều quy tắc. Dùng collation có sẵn: ICU (`PyICU`), hoặc `COLLATE` của database.
+
+</Expand>
+
+## Đi sâu hơn
+
+Các phần dưới không cần để đọc tiếp chặng DSA.
+
+<Expand title="Tự dựng một regex engine kiểu Thompson NFA">
+
+Bộ dựng dưới hỗ trợ ký tự, `.`, `|`, `*`, `+`, `?` và ngoặc. Nó biến regex thành một automat với các trạng thái `char` (đọc một ký tự) và `split` (rẽ hai nhánh không đọc gì), rồi chạy bằng cách giữ **tập** trạng thái đang sống.
+
+```python
 class Frag:
-    def __init__(self, start, outs): self.start, self.outs = start, outs     # outs: danh sách (state, ô) cần nối tới đích
+    def __init__(self, start, outs): self.start, self.outs = start, outs
 
 class NFA:
-    def __init__(self): self.t = []                                           # t[i] = ('char', c, next) | ('split', a, b) | ('match',)
+    def __init__(self): self.t = []                 # ('char', c, next) | ('split', a, b) | ('match',)
     def add(self, s): self.t.append(list(s)); return len(self.t) - 1
     def patch(self, outs, target):
         for st, slot in outs: self.t[st][slot] = target
@@ -399,125 +444,111 @@ def compile_regex(pat):
     def eat(): c = pat[pos[0]]; pos[0] += 1; return c
     def alt():
         f = seq()
-        while peek() == '|':
-            eat(); g = seq(); s = nfa.add(('split', f.start, g.start)); f = Frag(s, f.outs + g.outs)
+        while peek() == "|":
+            eat(); g = seq(); s = nfa.add(("split", f.start, g.start)); f = Frag(s, f.outs + g.outs)
         return f
     def seq():
         frags = []
-        while peek() not in (None, '|', ')'): frags.append(rep())
-        if not frags: s = nfa.add(('split', None, None)); return Frag(s, [(s, 1), (s, 2)])     # chuỗi rỗng
+        while peek() not in (None, "|", ")"): frags.append(rep())
         f = frags[0]
         for g in frags[1:]: nfa.patch(f.outs, g.start); f = Frag(f.start, g.outs)
         return f
     def rep():
         f = atom()
-        while peek() in ('*', '+', '?'):
-            op = eat()
-            if op == '*': s = nfa.add(('split', f.start, None)); nfa.patch(f.outs, s); f = Frag(s, [(s, 2)])
-            elif op == '+': s = nfa.add(('split', f.start, None)); nfa.patch(f.outs, s); f = Frag(f.start, [(s, 2)])
-            else: s = nfa.add(('split', f.start, None)); f = Frag(s, f.outs + [(s, 2)])
+        while peek() in ("*", "+", "?"):
+            op = eat(); s = nfa.add(("split", f.start, None))
+            if op == "*": nfa.patch(f.outs, s); f = Frag(s, [(s, 2)])
+            elif op == "+": nfa.patch(f.outs, s); f = Frag(f.start, [(s, 2)])
+            else: f = Frag(s, f.outs + [(s, 2)])
         return f
     def atom():
         c = eat()
-        if c == '(': f = alt(); eat(); return f                             # nuốt ')'
-        s = nfa.add(('char', c, None)); return Frag(s, [(s, 2)])
-    f = alt()
-    m = nfa.add(('match',)); nfa.patch(f.outs, m)
+        if c == "(": f = alt(); eat(); return f
+        s = nfa.add(("char", c, None)); return Frag(s, [(s, 2)])
+    f = alt(); m = nfa.add(("match",)); nfa.patch(f.outs, m)
     return nfa, f.start
 
 def nfa_match(nfa, start, text):
-    """Giữ TẬP các trạng thái đang sống; mỗi ký tự chỉ duyệt tập đó một lần: O(|regex| x |text|), không quay lui."""
-    def closure(states):
+    def closure(states):                            # mọi trạng thái tới được không cần đọc ký tự
         seen, stack = set(), list(states)
         while stack:
             s = stack.pop()
             if s in seen: continue
             seen.add(s)
-            if nfa.t[s][0] == 'split': stack += [x for x in nfa.t[s][1:3] if x is not None]
+            if nfa.t[s][0] == "split": stack += [x for x in nfa.t[s][1:3] if x is not None]
         return seen
-    cur = closure([start]); peak = len(cur)
+    cur = closure([start])
     for ch in text:
-        nxt = [s[2] for i in cur for s in [nfa.t[i]] if s[0] == 'char' and (s[1] == ch or s[1] == '.')]
-        cur = closure(nxt); peak = max(peak, len(cur))
-        if not cur: return False, peak
-    return any(nfa.t[i][0] == 'match' for i in cur), peak
+        cur = closure([nfa.t[i][2] for i in cur if nfa.t[i][0] == "char" and nfa.t[i][1] in (ch, ".")])
+        if not cur: return False
+    return any(nfa.t[i][0] == "match" for i in cur)
 
-nfa, start = compile_regex("(a|b)*abb")
-print("regex (a|b)*abb:", {w: nfa_match(nfa, start, w)[0] for w in ("abb", "aabb", "babb", "ab", "abba")})
-for pat, tests in (("a(b|c)*d", ["ad", "abcbd", "abx"]), ("(ab)+c?", ["ab", "ababc", "abb"]), ("h.llo", ["hello", "hallo", "hllo"])):
+for pat, tests in (("(a|b)*abb", ["abb", "aabb", "ab", "abba"]), ("a(b|c)*d", ["ad", "abcbd", "abx"]), ("h.llo", ["hello", "hllo"])):
     c, s = compile_regex(pat)
-    assert all(nfa_match(c, s, w)[0] == bool(re.fullmatch(pat, w)) for w in tests)
-print("NFA khớp với module re trên 3 regex nữa và 9 xâu thử: đúng")
-
-print()
-print("ReDoS: regex (a+)+b trên 'aaaa...a' (không có 'b'), cho tới khi thất bại:")
-print(f"{'n':>4} {'re (backtracking)':>20} {'NFA (Thompson)':>16} {'trạng thái sống tối đa':>24}")
-pat = "(a+)+b"
-c, s = compile_regex(pat)
-prev = None
-for n in (16, 18, 20, 22, 24, 26):
-    text = "a" * n
-    t0 = time.perf_counter(); re.match(pat, text); t_re = time.perf_counter() - t0
-    t0 = time.perf_counter(); ok, peak = nfa_match(c, s, text); t_nfa = time.perf_counter() - t0
-    ratio = f"x{t_re / prev:4.1f}" if prev else "     "
-    print(f"{n:>4} {t_re * 1000:>12.1f} ms {ratio} {t_nfa * 1000:>12.2f} ms {peak:>14}")
-    prev = t_re
+    assert all(nfa_match(c, s, w) == bool(re.fullmatch(pat, w)) for w in tests)
+c, s = compile_regex("(a+)+b")
+for n in (26, 1000, 100_000):
+    t0 = time.perf_counter(); ok = nfa_match(c, s, "a" * n)
+    print(f"NFA, (a+)+b trên {n:>7,} chữ a: {ok}, {(time.perf_counter() - t0) * 1000:7.2f} ms")
 ```
 
 ```text
-regex (a|b)*abb: {'abb': True, 'aabb': True, 'babb': True, 'ab': False, 'abba': False}
-NFA khớp với module re trên 3 regex nữa và 9 xâu thử: đúng
-
-ReDoS: regex (a+)+b trên 'aaaa...a' (không có 'b'), cho tới khi thất bại:
-   n    re (backtracking)   NFA (Thompson)   trạng thái sống tối đa
-  16          1.7 ms               0.02 ms              4
-  18          6.8 ms x 4.0         0.03 ms              4
-  20         27.2 ms x 4.0         0.02 ms              4
-  22        113.4 ms x 4.2         0.03 ms              4
-  24        449.7 ms x 4.0         0.04 ms              4
-  26       1802.1 ms x 4.0         0.05 ms              4
+NFA, (a+)+b trên      26 chữ a: False,    0.05 ms
+NFA, (a+)+b trên   1,000 chữ a: False,    1.46 ms
+NFA, (a+)+b trên 100,000 chữ a: False,  164.16 ms
 ```
 
-Đầu tiên là kiểm tra đúng đắn: NFA khớp đúng như module `re` trên bốn regex và 14 xâu thử. Rồi bảng **ReDoS** (regular expression denial of service): với regex `(a+)+b` trên `a` lặp `n` lần, `re` tốn 1,7 ms ở `n = 16`, **1.802 ms ở `n = 26`**; **mỗi lần thêm 2 ký tự thời gian nhân 4** (tức nhân đôi mỗi ký tự thêm), đường cong mũ điển hình. Ngoại suy cùng đường cong tới `n = 40` (thêm 14 ký tự, nhân 2^14) thì mất khoảng 1,8 s × 16.384 ≈ **8 giờ**. Còn NFA: 0,02 đến 0,05 ms, **tăng tuyến tính**, và tập trạng thái sống chỉ có **4** ở mọi `n`.
+Cùng regex làm `re` mất vài giây ở `n = 26`, automat xử lý 100.000 ký tự tuyến tính. Russ Cox, "Regular Expression Matching Can Be Simple And Fast", giải thích chi tiết.
 
-Vấn đề không nằm ở `n` lớn mà ở việc **kẻ tấn công chọn được đầu vào**: một chuỗi 30 ký tự có thể giữ một luồng CPU hàng phút. Hai sự cố nổi tiếng: **Stack Overflow** (tháng 7 năm 2016) ngừng hoạt động vì một regex xử lý khoảng trắng gặp một bài đăng có hàng nghìn khoảng trắng; **Cloudflare** (2 tháng 7 năm 2019) làm CPU toàn bộ mạng lưới chạm 100% do một quy tắc WAF có regex backtracking, gây sự cố toàn cầu. Cách phòng:
+</Expand>
 
-- Dùng engine **bảo đảm thời gian tuyến tính** (RE2, Rust `regex`, Go `regexp`) cho đầu vào không tin cậy.
-- Với engine backtracking: tránh **lặp lồng nhau** (`(a+)+`, `(a|aa)+`, `(.*)*`), đặt giới hạn thời gian và độ dài đầu vào, dùng **lặp chiếm hữu** (possessive) hoặc nhóm nguyên tử nếu engine hỗ trợ (Java, PCRE, `re` của Python từ 3.11 có `(?>...)` và `a++`).
-- Đừng dùng regex cho thứ phân tích cú pháp được bằng parser (HTML, email đầy đủ, JSON): chúng vừa dễ sai vừa dễ dính ReDoS.
+<Expand title="Suffix array: một văn bản, rất nhiều truy vấn">
 
-## Trong hệ thống thật
+Khi văn bản cố định và có rất nhiều truy vấn (bộ gen, kho mã nguồn), ta xây chỉ mục một lần. **Suffix array** là danh sách vị trí bắt đầu của mọi hậu tố, sắp theo thứ tự từ điển. Mọi hậu tố bắt đầu bằng mẫu `P` nằm liền nhau trong mảng, nên tìm bằng tìm nhị phân trong `O(m log n)`, không quét lại văn bản.
 
-- **`grep` và `ripgrep`**: dùng automat hữu hạn (không backtracking, trừ khi bạn dùng PCRE); `ripgrep` dựng lên trên crate `regex` của Rust, kết hợp **SIMD** để tìm các byte đặc trưng của mẫu (một biến thể của ý tưởng nhảy kiểu Horspool) trước khi chạy automat.
-- **Thư viện chuẩn**: `str.find` của Python và `String.indexOf` của Java, `strstr` của glibc đều dùng thuật toán tinh chỉnh (glibc cho mẫu dài dùng Two-Way); đừng tự viết trừ khi có lý do.
-- **Cơ sở dữ liệu**: `LIKE '%abc%'` không dùng được chỉ mục B-tree (xem [Indexing](/docs/databases/indexing)); giải pháp là chỉ mục **trigram** (`pg_trgm`, cắt văn bản thành mọi ba ký tự liền nhau và lập chỉ mục ngược, chính là ý tưởng "băm cửa sổ" của Rabin-Karp đưa vào chỉ mục GIN) hoặc tìm kiếm toàn văn (Elasticsearch, PostgreSQL `tsvector`: chỉ mục ngược theo **từ**, chứ không theo vị trí ký tự).
-- **Bộ gen**: BWA, Bowtie dùng FM-index trên bộ gen người (3 tỉ ký tự) để gióng hàng hàng triệu đoạn đọc ngắn trong vài giờ.
-- **Chuỗi trong bộ nhớ**: nhiều runtime **intern** chuỗi (dùng chung một bản cho các chuỗi giống nhau: tên biến, khoá JSON lặp lại), dựa vào băm ([Hash Table](/docs/dsa/hash-tables)); Java 9+ lưu chuỗi Latin-1 bằng 1 byte mỗi ký tự tương tự PEP 393 của Python.
+```python
+import bisect
 
-## Quan sát và chẩn đoán
+def suffix_array(s):                                # nhân đôi tiền tố: xếp theo 1, 2, 4, ... ký tự đầu
+    n, sa, rank, k = len(s), list(range(len(s))), [ord(c) for c in s], 1
+    while True:
+        key = lambda i: (rank[i], rank[i + k] if i + k < n else -1)
+        sa.sort(key=key)
+        new = [0] * n
+        for a in range(1, n): new[sa[a]] = new[sa[a - 1]] + (key(sa[a]) != key(sa[a - 1]))
+        rank = new
+        if rank[sa[-1]] == n - 1: return sa
+        k *= 2
 
-- Python: `len(s)`, `len(s.encode())`, `unicodedata.normalize('NFC', s)`, `unicodedata.name(c)` để biết đang đếm gì. Để đếm grapheme cần thư viện (`regex` với `\X`, `grapheme`) vì thư viện chuẩn không có.
-- So sánh hai chuỗi nhìn y hệt mà `==` sai: in `[hex(ord(c)) for c in s]` cả hai.
-- Với regex nghi chậm: thử với đầu vào xấu cố ý (lặp ký tự rồi đổi ký tự cuối) và đo thời gian khi tăng `n` từng bước nhỏ; nếu thời gian **nhân lên** theo `n` là có vấn đề; công cụ `regex101` hiển thị số bước backtrack, và có công cụ phân tích tĩnh phát hiện mẫu nguy hiểm.
+def sa_search(s, sa, p):
+    lo = bisect.bisect_left(sa, p, key=lambda i: s[i:i + len(p)])
+    hi = bisect.bisect_right(sa, p, key=lambda i: s[i:i + len(p)])
+    return sorted(sa[lo:hi])
 
-| Triệu chứng | Nguyên nhân hay gặp | Cách xử lý |
-|---|---|---|
-| Tìm hoặc so sánh không thấy chữ trông y hệt | NFC so với NFD (hoặc hai biến thể Unicode khác) | chuẩn hoá về NFC khi nhập dữ liệu và khi so sánh |
-| Cắt hoặc đảo chuỗi làm hỏng dấu, emoji | thao tác theo code point cắt giữa một grapheme | thao tác theo grapheme cluster |
-| Giới hạn độ dài trường nhập báo sai | đếm byte hay code point thay vì ký tự hiển thị | chọn đơn vị đúng cho từng ràng buộc |
-| Thứ tự sắp xếp tên tiếng Việt sai | sắp theo code point | collation theo ngôn ngữ (ICU, `COLLATE`) |
-| CPU kẹt 100% khi gặp một đầu vào lạ | regex backtracking gặp đầu vào xấu | engine tuyến tính (RE2), giới hạn thời gian, bỏ lặp lồng nhau |
-| Tìm chuỗi con trên văn bản lớn lặp lại rất chậm | quét lại cả văn bản mỗi truy vấn | chỉ mục (suffix array, trigram, chỉ mục ngược) |
-| `LIKE '%x%'` quét cả bảng | B-tree không hỗ trợ tìm giữa chuỗi | chỉ mục trigram hoặc tìm kiếm toàn văn |
+s = "banana"; sa = suffix_array(s)
+for i, p in enumerate(sa): print(f"sa[{i}] = {p}  {s[p:]}")
+print("tìm 'ana':", sa_search(s, sa, "ana"), "| tìm 'na':", sa_search(s, sa, "na"))
+```
 
-## Lưu ý
+```text
+sa[0] = 5  a
+sa[1] = 3  ana
+sa[2] = 1  anana
+sa[3] = 0  banana
+sa[4] = 4  na
+sa[5] = 2  nana
+tìm 'ana': [1, 3] | tìm 'na': [2, 4]
+```
 
-- "Độ dài chuỗi" có ít nhất ba nghĩa (byte, code point, grapheme cluster); luôn nói rõ đơn vị. Tiếng Việt và emoji làm ba con số khác nhau.
-- Chuẩn hoá Unicode (NFC) **trước** khi so sánh, băm, lưu hay đánh chỉ mục; hai chuỗi nhìn giống hệt có thể khác nhau byte.
-- Sắp xếp theo code point không đúng thứ tự từ điển của ngôn ngữ; dùng collation. So sánh không phân biệt hoa thường dùng `casefold`.
-- Naive tìm chuỗi con có thể `O(n·m)`; KMP bảo đảm `O(n + m)`, Horspool thường nhảy qua phần lớn văn bản, Rabin-Karp mạnh khi nhiều mẫu. Trong thực tế dùng hàm có sẵn của thư viện.
-- Băm lăn tính hash của cửa sổ kế tiếp trong `O(1)`; nó là nền của `rsync` và của cắt khối theo nội dung.
-- Suffix array đổi `O(n)` mỗi truy vấn lấy `O(m log n)`, với chi phí xây một lần và bộ nhớ lớn; chỉ có lợi khi văn bản cố định và truy vấn nhiều.
-- Regex backtracking có thể chậm theo **cấp số mũ** trên đầu vào xấu (ReDoS); với đầu vào không tin cậy dùng engine tuyến tính, và tránh lặp lồng nhau.
-- Đừng dùng regex để phân tích cú pháp ngôn ngữ lồng nhau (HTML, JSON); dùng parser.
-- `LIKE '%x%'` trong cơ sở dữ liệu không dùng được chỉ mục thường; cần trigram hoặc tìm kiếm toàn văn.
+Biến thể nén của nó, **FM-index**, là thứ các công cụ gióng hàng DNA như BWA và Bowtie dùng để tìm hàng triệu đoạn đọc trong bộ gen người 3 tỷ ký tự. Khi cần tìm **nhiều mẫu cùng lúc** trong một dòng văn bản (lọc từ khoá, quét virus), thuật toán **Aho-Corasick** biến trie của các mẫu (xem [Tree](/docs/dsa/trees)) thành một automat chạy qua văn bản một lần.
+
+</Expand>
+
+<Expand title="Chuỗi trong hệ thống thật">
+
+- **Bộ nhớ của `str` trong CPython** (PEP 393): mỗi ký tự 1, 2 hoặc 4 byte tuỳ code point **lớn nhất** trong chuỗi. 1.000 chữ ASCII khoảng 1 KB; thêm một emoji, cả chuỗi lên khoảng 4 KB. Nhờ độ rộng cố định, `s[i]` là `O(1)`. Go và Rust lưu UTF-8 thẳng, nên chỉ số là theo byte và có thể rơi giữa một ký tự.
+- **Rolling hash** của Rabin-Karp có mặt trong `rsync` (tìm khối trùng giữa hai phiên bản file) và trong các hệ thống sao lưu (cắt dữ liệu thành khối theo nội dung, để chèn một byte ở đầu file không làm đổi mọi khối).
+- **Cơ sở dữ liệu**: `LIKE '%abc%'` không dùng được B-tree (xem [Indexing](/docs/databases/indexing)); cần chỉ mục trigram (`pg_trgm`) hoặc tìm kiếm toàn văn (chỉ mục ngược theo từ).
+- **`grep`, `ripgrep`**: dùng automat hữu hạn, cộng SIMD để tìm nhanh các byte đặc trưng của mẫu trước.
+
+</Expand>

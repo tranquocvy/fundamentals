@@ -47,6 +47,14 @@
         "as"
       ]
     },
+    "avl tree": {
+      "def": "Cây tìm kiếm nhị phân tự cân bằng: tại mọi nút, chiều cao hai cây con lệch nhau tối đa 1, giữ bằng phép xoay sau mỗi lần chèn hoặc xoá, nên mọi thao tác tốn O(log n).",
+      "subject": "dsa",
+      "label": "AVL tree",
+      "aliases": [
+        "avl"
+      ]
+    },
     "b-tree": {
       "def": "Cây tìm kiếm cân bằng mà mỗi nút chứa nhiều khoá (cỡ một trang đĩa) và mọi lá cùng độ sâu, nên rất thấp và ít lần đọc đĩa; nền của chỉ mục cơ sở dữ liệu.",
       "subject": "dsa",
@@ -320,6 +328,13 @@
       "def": "Các thread vẫn chạy và liên tục phản ứng với nhau nhưng không bên nào tiến triển; khác deadlock ở chỗ không ai bị block.",
       "subject": "os"
     },
+    "load factor": {
+      "def": "Hệ số tải của bảng băm: số khoá chia số ô. Chi phí tra cứu tăng theo nó, nên bảng phải lớn lên khi nó vượt một ngưỡng.",
+      "subject": "dsa",
+      "aliases": [
+        "hệ số tải"
+      ]
+    },
     "locality of reference": {
       "def": "Xu hướng chương trình truy cập lại cùng vùng nhớ hoặc vùng nhớ liền kề trong thời gian ngắn, điều mà cache khai thác để chạy nhanh.",
       "subject": "dsa",
@@ -403,6 +418,10 @@
       "label": "NULL",
       "def": "Giá trị đặc biệt của SQL nghĩa là không biết hoặc không áp dụng; so sánh với NULL cho kết quả UNKNOWN chứ không phải đúng hay sai.",
       "subject": "databases"
+    },
+    "open addressing": {
+      "def": "Cách xử lý va chạm của bảng băm: mọi khoá nằm thẳng trong mảng, khoá bị va chạm đi tìm ô trống khác theo một quy tắc cố định (ví dụ linear probing: thử ô kế tiếp).",
+      "subject": "dsa"
     },
     "page": {
       "def": "Khối bộ nhớ ảo có kích thước cố định (thường 4 KB), đơn vị OS dùng để ánh xạ và chuyển dữ liệu giữa RAM và đĩa.",
@@ -502,6 +521,13 @@
     "response time": {
       "def": "Thời gian từ lúc job đến tới lúc nó được chạy lần đầu; quan trọng với chương trình tương tác.",
       "subject": "os"
+    },
+    "ring buffer": {
+      "def": "Hàng đợi trên một mảng sức chứa cố định với chỉ số đầu và độ dài; tới cuối mảng thì quấn về đầu, nên thêm và lấy đều O(1) mà không dịch hay cấp phát lại.",
+      "subject": "dsa",
+      "aliases": [
+        "circular buffer"
+      ]
     },
     "rtt": {
       "label": "RTT",
@@ -631,6 +657,14 @@
       "label": "UDP",
       "def": "User Datagram Protocol: giao thức transport không kết nối, gửi từng gói độc lập, không đảm bảo tới nơi hay đúng thứ tự.",
       "subject": "networking"
+    },
+    "union-find": {
+      "def": "Cấu trúc giữ các nhóm rời nhau với hai thao tác: tìm đại diện của nhóm chứa một phần tử, và gộp hai nhóm; có nén đường và hợp theo hạng thì gần như O(1) mỗi thao tác.",
+      "subject": "dsa",
+      "aliases": [
+        "disjoint set",
+        "disjoint-set"
+      ]
     },
     "virtual memory": {
       "def": "Cơ chế OS và phần cứng dịch địa chỉ ảo của process sang địa chỉ vật lý, cho mỗi process một address space riêng.",
